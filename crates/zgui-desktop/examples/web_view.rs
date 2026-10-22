@@ -7,7 +7,9 @@
 //! script evaluation against live AppKit state, prints `FIXTURE` lines,
 //! holds the window for a screenshot (`WINDOW <n>`, `screencapture -l <n>`),
 //! then exits (non-zero on failure).
-use std::{cell::RefCell, rc::Rc, time::Duration};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
+use std::{cell::RefCell, rc::Rc};
 use zgui::{
     compose::prelude::*,
     web_view::{WebView, WebViewEvent, WebViewOptions},
@@ -606,4 +608,7 @@ fn run_fixture(
             }
         });
     }
+    // The fixture checks AppKit state; elsewhere there is nothing to check.
+    #[cfg(not(target_os = "macos"))]
+    let _ = (cx, web, view, menu_open, page_shown, finished, messages);
 }
