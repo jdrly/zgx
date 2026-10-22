@@ -4792,6 +4792,11 @@ impl GpuRenderer {
             self.texture_uploads
                 .push(target, (x, y, width, height), rgba);
         } else {
+            // A copy keeps bytes as they are: in `FORMAT`'s order, BGRA (an
+            // upload pass writes colours, which the target stores in its own).
+            for pixel in rgba.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: target,
