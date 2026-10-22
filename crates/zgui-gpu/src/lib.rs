@@ -6745,3 +6745,53 @@ mod native_surface_shader_tests {
             });
     }
 }
+
+#[cfg(test)]
+mod texel_upload_tests {
+    use super::*;
+    use zgui::scene::{Color, Layout, Style};
+
+    /// Images keep their channels whichever way texels reach the GPU: the
+    /// adapter's own (an upload pass where CPU and GPU share memory) and the
+    /// queue copy every other adapter takes, forced here. macOS writes shared
+    /// textures directly instead.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn images_keep_red_and_blue_through_either_upload_path() {
+        let image = Arc::new(
+            zgui::image::ImageData::new(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]).unwrap(),
+        );
+        for copied in [false, true] {
+            let mut gpu = GpuRenderer::new(40, 20).unwrap();
+            if copied {
+                gpu.mapped = None;
+            }
+            let mut scene = Scene::new(40., 20.);
+            scene.set_kind(scene.root(), NodeKind::Container(Layout::Overlay));
+            scene.append(
+                scene.root(),
+                NodeKind::Rect(Color(0, 0, 0, 255)),
+                Style {
+                    width: Some(40.),
+                    height: Some(20.),
+                    ..Default::default()
+                },
+            );
+            scene.append(
+                scene.root(),
+                NodeKind::Image(image.clone()),
+                Style {
+                    width: Some(40.),
+                    height: Some(20.),
+                    ..Default::default()
+                },
+            );
+            let report = scene.flush();
+            gpu.render(&scene, &report.damage).unwrap();
+            let pixels = gpu.readback().unwrap();
+            let pixel = |x: usize| &pixels[(10 * 40 + x) * 4..(10 * 40 + x) * 4 + 4];
+            assert_eq!(pixel(2), &[255, 0, 0, 255], "left, copied={copied}");
+            assert_eq!(pixel(37), &[0, 0, 255, 255], "right, copied={copied}");
+        }
+    }
+}
