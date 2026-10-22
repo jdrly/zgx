@@ -1896,6 +1896,8 @@ impl Host {
         self.frame_heartbeat = None;
         self.frame_redraw_requested = false;
         self.native.suspend();
+        // It redraws the window it was made with: the next one makes its own.
+        self._background_effect = None;
         self.window = None;
         self.force = true;
     }
