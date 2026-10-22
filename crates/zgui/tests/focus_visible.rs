@@ -75,6 +75,53 @@ fn a_clicked_button_shows_no_focus_ring_but_a_tabbed_one_does() {
 }
 
 #[test]
+fn a_key_pressed_on_a_clicked_button_shows_its_ring_but_a_shortcut_does_not() {
+    let mut ui = Ui::new(300., 200.);
+    let view = ui.mount(column().child(button().id("a").size(80., 30.).child(text("A"))));
+    let a = view.find("a").unwrap();
+    settle(&mut ui);
+    let resting = look(&ui, a);
+    ui.dispatch(InputEvent::PointerDown {
+        x: 10.,
+        y: 10.,
+        button: PointerButton::Primary,
+    });
+    ui.dispatch(InputEvent::PointerUp {
+        x: 10.,
+        y: 10.,
+        button: PointerButton::Primary,
+    });
+    ui.dispatch(InputEvent::PointerMove { x: 250., y: 150. });
+    settle(&mut ui);
+    assert_eq!(ui.input.focused(), Some(a));
+    assert_eq!(look(&ui, a), resting);
+
+    let key = |ui: &mut Ui, key: Key, modifiers: Modifiers| {
+        ui.dispatch(InputEvent::KeyDown {
+            key: key.clone(),
+            modifiers,
+            repeat: false,
+        });
+        ui.dispatch(InputEvent::KeyUp { key, modifiers });
+        settle(ui);
+    };
+    let meta = Modifiers {
+        meta: true,
+        ..Default::default()
+    };
+    key(&mut ui, Key::Character("c".into()), meta);
+    assert_eq!(look(&ui, a), resting, "a shortcut chord draws no ring");
+
+    key(&mut ui, Key::Space, Modifiers::default());
+    assert_eq!(ui.input.focused(), Some(a));
+    assert_ne!(
+        look(&ui, a),
+        resting,
+        "Space activates the button with its ring showing"
+    );
+}
+
+#[test]
 fn an_editor_shows_its_focus_style_however_it_was_focused() {
     let mut ui = Ui::new(300., 200.);
     let value = ui.signal(String::new());
