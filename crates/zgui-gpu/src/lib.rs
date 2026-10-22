@@ -6746,16 +6746,15 @@ mod native_surface_shader_tests {
     }
 }
 
-#[cfg(test)]
+// macOS writes shared textures directly; the paths tested are the others'.
+#[cfg(all(test, not(target_os = "macos")))]
 mod texel_upload_tests {
     use super::*;
     use zgui::scene::{Color, Layout, Style};
 
     /// Images keep their channels whichever way texels reach the GPU: the
     /// adapter's own (an upload pass where CPU and GPU share memory) and the
-    /// queue copy every other adapter takes, forced here. macOS writes shared
-    /// textures directly instead.
-    #[cfg(not(target_os = "macos"))]
+    /// queue copy every other adapter takes, forced here.
     #[test]
     fn images_keep_red_and_blue_through_either_upload_path() {
         let image = Arc::new(
