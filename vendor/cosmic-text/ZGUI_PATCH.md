@@ -43,3 +43,14 @@ directions) both versions panic, as upstream documents. Reshaping a
 streaming transcript's last seven 105-byte lines takes 40.2 µs a tick instead
 of 48.7 µs (M5 Max), and zgui's headless lab stream lays out in 0.047 ms a
 tick instead of 0.061 ms.
+
+## Axis ranges from the font file
+
+A font file can give a variation axis a minimum above its maximum, and neither
+skrifa nor swash checks: upstream's weight clamp in `swash.rs` called
+`f32::clamp` on that range and panicked, so one malformed installed or
+registered font ended the process the first time its glyphs were drawn. It
+goes through `clamp_to_axis` (`src/lib.rs`), which never panics, as
+`read-fonts` guards its own. `variation_axis_tests` in zgui-gpu's
+`src/text.rs` shapes and draws a font with its `wght` or `opsz` axis
+reversed.

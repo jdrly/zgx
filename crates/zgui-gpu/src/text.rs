@@ -1528,6 +1528,114 @@ mod rich_tests {
     }
 }
 
+#[cfg(test)]
+mod variation_axis_tests {
+    //! A font's variation axes come from its file, which an application may
+    //! not trust: an axis whose minimum is above its maximum shapes and draws
+    //! like any other, where `f32::clamp` on its range would panic.
+    use super::*;
+    use zgui::text_layout::{FontFamily, FontStyle};
+
+    /// The bundled font, given an `fvar` table with one `tag` axis.
+    fn with_axis(tag: &[u8; 4], min: f32, default: f32, max: f32) -> Vec<u8> {
+        let font: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
+        let u16_at = |at: usize| usize::from(u16::from_be_bytes([font[at], font[at + 1]]));
+        let u32_at = |at: usize| u32::from_be_bytes(font[at..at + 4].try_into().unwrap()) as usize;
+        // Version 1.0, axes at 16, one 20-byte axis, no named instances.
+        let mut fvar: Vec<u8> = [1u16, 0, 16, 2, 1, 20, 0, 8]
+            .iter()
+            .flat_map(|field| field.to_be_bytes())
+            .collect();
+        fvar.extend(tag);
+        for value in [min, default, max] {
+            fvar.extend(((value * 65536.) as i32).to_be_bytes());
+        }
+        fvar.extend([0, 0, 1, 0]); // No flags; name 256.
+        let mut tables: Vec<([u8; 4], &[u8])> = (0..u16_at(4))
+            .map(|index| {
+                let record = 12 + 16 * index;
+                let (offset, len) = (u32_at(record + 8), u32_at(record + 12));
+                (
+                    font[record..record + 4].try_into().unwrap(),
+                    &font[offset..offset + len],
+                )
+            })
+            .collect();
+        tables.push((*b"fvar", &fvar));
+        tables.sort_by_key(|(tag, _)| *tag);
+        let count = tables.len();
+        let selector = count.ilog2() as usize;
+        let mut out = font[..4].to_vec();
+        for field in [
+            count,
+            16 << selector,
+            selector,
+            (count - (1 << selector)) * 16,
+        ] {
+            out.extend((field as u16).to_be_bytes());
+        }
+        let mut data = Vec::new();
+        for (tag, table) in &tables {
+            out.extend(tag);
+            out.extend([0; 4]); // Checksums go unchecked.
+            out.extend(((12 + 16 * count + data.len()) as u32).to_be_bytes());
+            out.extend((table.len() as u32).to_be_bytes());
+            data.extend(*table);
+            data.resize(data.len().next_multiple_of(4), 0);
+        }
+        out.extend(data);
+        out
+    }
+
+    /// Shapes "Hello" in `font` at `weight` through `FontData`, then draws
+    /// each glyph as an image and as an outline.
+    fn shape_and_draw(font: Vec<u8>, weight: u16) {
+        let data = FontData::new(font).expect("a font with an fvar table");
+        let mut fonts = FontSystem::new_with_locale_and_db(
+            "en-US".into(),
+            cosmic_text::fontdb::Database::new(),
+        );
+        data.install(&mut fonts);
+        let style = FontStyle {
+            family: FontFamily::from("DejaVu Sans"),
+            weight,
+            ..Default::default()
+        };
+        let shaped = ShapedText::with_font(&mut fonts, "Hello", 13., None, &style);
+        let glyphs: Vec<_> = shaped
+            .buffer
+            .layout_runs()
+            .flat_map(|run| {
+                run.glyphs
+                    .iter()
+                    .map(|g| g.physical((0., 0.), 1.).cache_key)
+            })
+            .collect();
+        assert_eq!(glyphs.len(), 5);
+        let mut swash = cosmic_text::SwashCache::new();
+        for glyph in glyphs {
+            assert!(swash.get_image_uncached(&mut fonts, glyph).is_some());
+            assert!(
+                swash
+                    .get_outline_commands_uncached(&mut fonts, glyph)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn an_optical_size_axis_shapes_and_draws_whichever_way_its_range_runs() {
+        shape_and_draw(with_axis(b"opsz", 17., 28., 96.), 400);
+        shape_and_draw(with_axis(b"opsz", 96., 28., 17.), 400);
+    }
+
+    #[test]
+    fn a_weight_axis_shapes_and_draws_whichever_way_its_range_runs() {
+        shape_and_draw(with_axis(b"wght", 100., 400., 900.), 700);
+        shape_and_draw(with_axis(b"wght", 900., 400., 100.), 700);
+    }
+}
+
 /// A visual fragment of a run decoration, relative to the paragraph origin.
 #[derive(Clone, Copy, Debug)]
 pub struct RichDecoration {
