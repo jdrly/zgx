@@ -1722,6 +1722,9 @@ impl Ui {
         );
         let editor = Rc::new(RefCell::new(TextEditor::new(initial)));
         let focused = Rc::new(RefCell::new(false));
+        // Blurred only because its window went to the back: still the focused field.
+        let window_blurred = Rc::new(Cell::new(false));
+        let draw_window_blurred = window_blurred.clone();
         let scroll = Rc::new(RefCell::new((0f32, 0f32)));
         let selection_nodes = Rc::new(RefCell::new(Vec::new()));
         self.semantics.borrow_mut().set(
@@ -1958,14 +1961,22 @@ impl Ui {
                 },
             );
             let mut effects = s.effects(caret);
-            effects.opacity =
-                if *focus.borrow() && e.preedit().is_none_or(|preedit| preedit.cursor.is_some()) {
-                    1.
-                } else {
-                    0.
-                };
+            // Read-only text shows a selection but no caret.
+            effects.opacity = if *focus.borrow()
+                && !draw_read_only.get()
+                && e.preedit().is_none_or(|preedit| preedit.cursor.is_some())
+            {
+                1.
+            } else {
+                0.
+            };
             s.set_effects(caret, effects);
-            let rects: Vec<_> = if e.preedit().is_none() {
+            // An editable field shows its selection only while it has the focus (or its
+            // window merely went to the back), as AppKit's do: the selection is kept, and
+            // shows again when the focus comes back. Read-only text gives its up on blur.
+            let shows_selection =
+                *focus.borrow() || draw_window_blurred.get() || draw_read_only.get();
+            let rects: Vec<_> = if e.preedit().is_none() && shows_selection {
                 layout
                     .selection(selection.range())
                     .into_iter()
@@ -2363,7 +2374,6 @@ impl Ui {
         };
         *interaction_refresh.borrow_mut() = Some(Rc::downgrade(&arm));
         let draw = refresh.clone();
-        let window_blurred = Cell::new(false);
         self.on_event(root, true, move |cx| {
             if cx.phase != EventPhase::Target {
                 return;
@@ -2438,6 +2448,13 @@ impl Ui {
                     *focused.borrow_mut() = false;
                     gesture.cancel();
                     editor.borrow_mut().cancel_preedit();
+                    // Read-only text gives up its selection with the focus, as a
+                    // selectable label does, unless only its window went back.
+                    if read_only.get() && !window_blurred.get() {
+                        let mut edit = editor.borrow_mut();
+                        let end = edit.selection().focus;
+                        edit.set_selection(end, end);
+                    }
                     if let Some(state) = &bg_state {
                         state.set(RESTING);
                     }
