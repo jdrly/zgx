@@ -237,13 +237,15 @@ pub(crate) fn format_color(c: [f64; 4]) -> String {
 pub(crate) fn parse_color(text: &str) -> Option<[f64; 4]> {
     let text = text.trim();
     if let Some(hex) = text.strip_prefix('#') {
-        let digits: Vec<u8> = hex
-            .chars()
-            .map(|c| c.to_digit(16).map(|d| d as u8))
-            .collect::<Option<_>>()?;
+        let mut digits = [0u8; 8];
+        let mut len = 0;
+        for c in hex.chars() {
+            *digits.get_mut(len)? = c.to_digit(16)? as u8;
+            len += 1;
+        }
         let pair = |i: usize| (digits[i] * 16 + digits[i + 1]) as f64;
         let single = |i: usize| (digits[i] * 17) as f64;
-        return Some(match digits.len() {
+        return Some(match len {
             3 => [single(0), single(1), single(2), 1.],
             4 => [single(0), single(1), single(2), single(3) / 255.],
             6 => [pair(0), pair(2), pair(4), 1.],

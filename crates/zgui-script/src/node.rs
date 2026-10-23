@@ -1330,10 +1330,25 @@ pub(crate) fn source(lua: &Lua, ty: Ty, name: &str, value: mlua::Value) -> mlua:
         }
         other => {
             let raw = crate::design::is_raw(&other);
-            let value = lua.unpack::<Value>(other)?;
-            let lit = lit(&value, ty).ok_or_else(|| {
-                mlua::Error::runtime(format!("`{name}` expects a {ty:?}, got {value:?}"))
-            })?;
+            // A colour written out, the commonest string a style takes, is
+            // read where it lies, not copied into a value first.
+            let written = match (&other, ty) {
+                (mlua::Value::String(s), Ty::Color) => s
+                    .to_str()
+                    .ok()
+                    .filter(|s| !s.starts_with('$'))
+                    .and_then(|s| parse_color(&s)),
+                _ => None,
+            };
+            let lit = match written {
+                Some(color) => Lit::Color(color),
+                None => {
+                    let value = lua.unpack::<Value>(other)?;
+                    lit(&value, ty).ok_or_else(|| {
+                        mlua::Error::runtime(format!("`{name}` expects a {ty:?}, got {value:?}"))
+                    })?
+                }
+            };
             if !raw
                 && crate::design::mode(lua) != crate::DesignLint::Off
                 && let Some(prop) = Prop::parse(name)
@@ -1627,6 +1642,32 @@ fn set_handler(
     Ok(None)
 }
 
+/// Style keys a script has used, by the address of their (interned) Lua
+/// string: one met before is its `Prop` without reading or matching the
+/// name again. Each entry holds its string, so the address is not reused
+/// while it is here, and there are at most as many as there are props.
+#[derive(Default)]
+pub(crate) struct StyleKeys(
+    RefCell<std::collections::HashMap<usize, (mlua::LuaString, Prop), BuildAddressHasher>>,
+);
+type BuildAddressHasher = std::hash::BuildHasherDefault<AddressHasher>;
+#[derive(Default)]
+struct AddressHasher(u64);
+impl std::hash::Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        // Aligned addresses end in zeros: fold the high bits down.
+        self.0 ^ (self.0 >> 32)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn write_usize(&mut self, address: usize) {
+        self.0 = (address as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
 /// Fills a node's properties, pseudo-states, handlers and children.
 fn fill(lua: &Lua, node: Node, table: Option<&Table>) -> mlua::Result<Node> {
     fill_from(lua, node, table, None)
@@ -1653,8 +1694,9 @@ fn fill_from(
     // One walk over the table: properties as they come, children kept to
     // put in order after.
     let mut items = Vec::new();
+    let keys = lua.app_data_ref::<StyleKeys>();
     table.for_each(|key: mlua::Value, value: mlua::Value| {
-        let key = match key {
+        let string = match key {
             mlua::Value::String(key) => key,
             mlua::Value::Integer(1) if let Some(text) = text.as_deref_mut() => {
                 text.content = value;
@@ -1666,7 +1708,16 @@ fn fill_from(
             }
             _ => return Ok(()),
         };
-        let key = key.to_str()?;
+        let address = string.to_pointer() as usize;
+        let known = keys
+            .as_ref()
+            .and_then(|keys| keys.0.borrow().get(&address).map(|(_, prop)| *prop));
+        if let Some(prop) = known {
+            node.props
+                .push((prop, source(lua, prop.ty(), prop.name(), value)?));
+            return Ok(());
+        }
+        let key = string.to_str()?;
         let key: &str = &key;
         if key == "literal"
             && let Some(text) = text.as_deref_mut()
@@ -2026,6 +2077,9 @@ fn fill_from(
             name => {
                 let prop = Prop::parse(name)
                     .ok_or_else(|| mlua::Error::runtime(format!("unknown property `{name}`")))?;
+                if let Some(keys) = &keys {
+                    keys.0.borrow_mut().insert(address, (string.clone(), prop));
+                }
                 node.props
                     .push((prop, source(lua, prop.ty(), name, value)?));
             }
@@ -2274,6 +2328,7 @@ fn span(lua: &Lua, arg: mlua::Value, literal: bool) -> mlua::Result<Span> {
 
 /// Installs the read-only `ui` global.
 pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
+    lua.set_app_data(StyleKeys::default());
     let ui = lua.create_table()?;
     let container = |kind: fn() -> Kind| {
         lua.create_function(move |lua, table: Option<Table>| {
