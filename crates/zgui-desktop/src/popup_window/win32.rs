@@ -24,6 +24,7 @@
 use super::PopupInput;
 use std::{
     cell::{Cell, RefCell},
+    mem::ManuallyDrop,
     rc::Rc,
 };
 use windows::{
@@ -268,8 +269,10 @@ fn over_client(hwnd: HWND) -> bool {
 }
 
 thread_local! {
-    /// DirectComposition's device for every popup window of the thread.
-    static DEVICE: RefCell<Option<IDCompositionDevice>> = const { RefCell::new(None) };
+    /// DirectComposition's device for every popup window of the thread,
+    /// left to the system as the process exits (see `POOL`).
+    static DEVICE: ManuallyDrop<RefCell<Option<IDCompositionDevice>>> =
+        const { ManuallyDrop::new(RefCell::new(None)) };
 }
 fn device() -> Result<IDCompositionDevice, String> {
     DEVICE.with(|device| {
@@ -515,8 +518,12 @@ impl Drop for Panel {
 }
 
 thread_local! {
-    /// Hidden windows, ready to show.
+    /// Hidden windows, ready to show; released as the last window's host
+    /// goes, while the GPU device is alive (released in the thread's
+    /// teardown, after it, they ended the process partway).
     static POOL: RefCell<Vec<Panel>> = const { RefCell::new(Vec::new()) };
+    /// Live `PopupHost`s, one per window.
+    static HOSTS: Cell<usize> = const { Cell::new(0) };
     /// Windows that have shown popups, their hosts, client origins and
     /// shown popup windows.
     static PARENTS: RefCell<Vec<Parent>> = const { RefCell::new(Vec::new()) };
@@ -780,6 +787,7 @@ pub(crate) struct PopupHost {
 }
 impl PopupHost {
     pub fn new(send: impl Fn(PopupInput) + 'static) -> Self {
+        HOSTS.set(HOSTS.get() + 1);
         Self {
             shown: Vec::new(),
             send: Rc::new(send),
@@ -967,6 +975,11 @@ impl Drop for PopupHost {
         }
         if let Some(parent) = self.parent {
             PARENTS.with(|parents| parents.borrow_mut().retain(|entry| entry.hwnd != parent));
+        }
+        HOSTS.set(HOSTS.get().saturating_sub(1));
+        if HOSTS.get() == 0 {
+            let pool = POOL.with(|pool| std::mem::take(&mut *pool.borrow_mut()));
+            drop(pool);
         }
     }
 }

@@ -128,6 +128,27 @@ A new window that would not fit its monitor's work area (the screen less the
 taskbar) at that monitor's scale shrinks to fit, never below its minimum
 size, and moves inside it. A window given `bounds` keeps them.
 
+## Popups
+
+Menus, submenus, context menus, selects, popovers and tooltips reach past
+their window, as Windows' own menus do: they flip and clamp to the work area
+of the monitor their trigger is on, not to the window. Each shows in a window
+of its own (`popup_window/win32.rs`): owned by its window (above it, minimized
+with it, never on the taskbar) and never activated, so the window keeps the
+keyboard and typing reaches a popover's field. A popup draws at its monitor's
+scale. It moves with its window, and closes as the app deactivates, when the
+title bar is pressed, on Escape and on a press outside it.
+
+A menu or popover that is one rounded panel gets DWM's rounded corners, rim
+and shadow, as Windows 11 frames its menus. It keeps the theme's background
+rather than acrylic: DWM draws a never-activated window's system backdrop as
+a flat colour.
+
+No popup window exists before the pointer first reaches something that opens
+one, and a closed one is kept hidden for the next: an app that never opens a
+popup has none. `ZGUI_POPUP_WINDOWS=0` keeps popups inside their window, as
+they are where Direct3D 12 is not available.
+
 ## System settings
 
 The built-in themes take these from Windows, read at startup and again when
@@ -323,13 +344,14 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
 python scripts/windows_platform_smoke.py target/debug/examples
 python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --both
 python scripts/windows_touch_smoke.py target/debug/examples
+python scripts/windows_popup_smoke.py target/debug/examples
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -367,6 +389,13 @@ python scripts/windows_touch_smoke.py target/debug/examples
   the user scrolls and hides after with "Always show scrollbars" off, and
   shows at rest with it on. `--both` runs each setting both ways (the user's
   own restored after).
+- `windows_popup_smoke.py` (`popup_probe`): no popup window before the first
+  popup; a menu opens past its window's bottom edge within milliseconds of
+  the click and shows on screen; hovering and clicking, or pressing the
+  trigger and releasing over an item, chooses it; the menu moves with its
+  window and closes as the app deactivates and on a press on the title bar.
+  It posts mouse messages to its own windows only, so it leaves the pointer
+  alone. `--idle` adds the probe's idle spans (about a minute).
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range
