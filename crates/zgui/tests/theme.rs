@@ -570,3 +570,45 @@ fn system_tokens_apply_over_built_in_themes_and_under_the_apps() {
     themes.set_system_tokens([]);
     assert_eq!(themes.root().color(tok::SELECTION), builtin);
 }
+
+#[test]
+fn the_system_text_size_scales_font_tokens_whichever_theme_sets_them() {
+    let ui = Ui::new(200., 200.);
+    let size = |ui: &Ui| ui.theme().root().number_untracked(tok::FONT_SIZE_MD);
+    let line = |ui: &Ui| ui.theme().root().number_untracked(tok::FONT_LINE_MD);
+    let (base, base_line) = (size(&ui), line(&ui));
+    ui.theme().set_system_text_scale(1.5);
+    assert_eq!(size(&ui), base * 1.5);
+    assert_eq!(line(&ui), base_line * 1.5);
+    // Spacing is not text.
+    let space = ui.theme().root().number_untracked(tok::SPACE_3);
+    ui.theme().set_system_text_scale(1.);
+    assert_eq!(ui.theme().root().number_untracked(tok::SPACE_3), space);
+    assert_eq!(size(&ui), base);
+    // An app theme's own sizes scale too.
+    ui.theme().register(
+        Theme::new("test-large", ThemeKind::Dark)
+            .extending(DARK)
+            .with(tok::FONT_SIZE_MD, 20.),
+    );
+    ui.theme().set("test-large").unwrap();
+    ui.theme().set_system_text_scale(2.);
+    assert_eq!(size(&ui), 40.);
+    assert_eq!(ui.theme().system_text_scale(), 2.);
+}
+
+#[test]
+fn a_scope_with_fixed_text_sizes_keeps_them_under_the_system_text_size() {
+    let ui = Ui::new(200., 200.);
+    let root = ui.theme().root();
+    let base = root.number_untracked(tok::FONT_SIZE_MD);
+    let fixed = root.child(ThemeOverride::new().fixed_text_size());
+    let nested = fixed.child(ThemeOverride::new().with(tok::SPACE_3, 20.));
+    let free = root.child(ThemeOverride::new().with(tok::SPACE_3, 20.));
+    ui.theme().set_system_text_scale(1.25);
+    assert_eq!(root.number_untracked(tok::FONT_SIZE_MD), base * 1.25);
+    assert_eq!(free.number_untracked(tok::FONT_SIZE_MD), base * 1.25);
+    // A terminal's grid: its own sizes, and its children's.
+    assert_eq!(fixed.number_untracked(tok::FONT_SIZE_MD), base);
+    assert_eq!(nested.number_untracked(tok::FONT_SIZE_MD), base);
+}

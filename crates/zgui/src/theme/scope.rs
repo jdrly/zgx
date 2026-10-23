@@ -89,6 +89,8 @@ struct State {
     /// What the platform sets (`Themes::set_system_tokens`): the system's
     /// selection colours, say.
     system: Vec<(TokenId, Arc<Expr>)>,
+    /// The system's text size (`Themes::set_system_text_scale`).
+    text_scale: f32,
 }
 impl State {
     /// Every token's expression under `name`: declarations, then the
@@ -180,6 +182,32 @@ impl Evaluator<'_> {
         self.state[i] = 2;
         self.values[i] = value.clone();
         value
+    }
+}
+/// The font size and line height tokens, times the system's text size. A
+/// size set in points on a view stays as it is, as CSS's `px`.
+fn scale_text(values: &mut [TokenValue], scale: f32) {
+    if scale == 1. {
+        return;
+    }
+    use super::tok;
+    for token in [
+        tok::FONT_SIZE_XS,
+        tok::FONT_SIZE_SM,
+        tok::FONT_SIZE_MD,
+        tok::FONT_SIZE_LG,
+        tok::FONT_SIZE_XL,
+        tok::FONT_SIZE_XXL,
+        tok::FONT_LINE_XS,
+        tok::FONT_LINE_SM,
+        tok::FONT_LINE_MD,
+        tok::FONT_LINE_LG,
+        tok::FONT_LINE_XL,
+        tok::FONT_LINE_XXL,
+    ] {
+        if let Some(TokenValue::Number(n)) = values.get_mut(token.0.index()) {
+            *n *= scale;
+        }
     }
 }
 fn evaluate(exprs: &[Option<Arc<Expr>>]) -> Vec<TokenValue> {
@@ -276,10 +304,21 @@ impl ThemeScope {
         scope.refresh();
         scope
     }
+    /// The system's text size here: 1 under a scope with fixed text sizes.
+    fn text_scale(&self, system: f32) -> f32 {
+        let mut scope = Some(self);
+        while let Some(current) = scope {
+            if current.spec.borrow().fixed_text_size {
+                return 1.;
+            }
+            scope = current.parent.as_deref();
+        }
+        system
+    }
     /// Recompute this scope's values, notify what read changed tokens and do
     /// the same for its children. Call inside a batch.
     fn refresh(&self) {
-        let (name, exprs) = {
+        let (name, exprs, text_scale) = {
             let state = self.shared.state.borrow();
             let spec = self.spec.borrow();
             let (name, base): (Arc<str>, Exprs) = match (&self.parent, &spec.theme) {
@@ -306,9 +345,10 @@ impl ThemeScope {
                 }
                 Rc::new(own)
             };
-            (name, exprs)
+            (name, exprs, self.text_scale(state.text_scale))
         };
-        let values = evaluate(&exprs);
+        let mut values = evaluate(&exprs);
+        scale_text(&mut values, text_scale);
         *self.exprs.borrow_mut() = exprs;
         *self.name.borrow_mut() = name;
         if *self.values.borrow() != values {
@@ -557,6 +597,7 @@ impl Themes {
                 files: Vec::new(),
                 reader: None,
                 system: Vec::new(),
+                text_scale: 1.,
             }),
             current: runtime.signal(DARK.into()),
         });
@@ -660,6 +701,28 @@ impl Themes {
     /// system's selection colours on macOS. They apply over the built-in
     /// themes, and under app themes and `theme_scope` overrides, which keep
     /// what they set. An empty list returns the tokens to the themes'.
+    /// The system's text size, as a factor (the desktop host calls this):
+    /// Windows' "Text size" (Settings, Accessibility). It scales the font
+    /// size and line height tokens (`font.size.*`, `font.line.*`) whichever
+    /// theme sets them; a size a view sets in points stays, as CSS's `px`.
+    pub fn set_system_text_scale(&self, scale: f32) {
+        let scale = if scale.is_finite() {
+            scale.clamp(0.5, 4.)
+        } else {
+            1.
+        };
+        {
+            let mut state = self.shared.state.borrow_mut();
+            if state.text_scale == scale {
+                return;
+            }
+            state.text_scale = scale;
+        }
+        self.refresh();
+    }
+    pub fn system_text_scale(&self) -> f32 {
+        self.shared.state.borrow().text_scale
+    }
     pub fn set_system_tokens(&self, tokens: impl IntoIterator<Item = (TokenId, TokenInput)>) {
         let system: Vec<(TokenId, Arc<Expr>)> = tokens
             .into_iter()

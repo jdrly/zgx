@@ -381,10 +381,19 @@ fn describe(expr: &Expr) -> String {
 pub struct ThemeOverride {
     pub(crate) theme: Option<String>,
     pub(crate) tokens: Vec<(TokenId, Arc<Expr>)>,
+    /// The system's text size does not apply in the subtree.
+    pub(crate) fixed_text_size: bool,
 }
 impl ThemeOverride {
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Keep the theme's font sizes in the subtree whatever the system's
+    /// text size (`Themes::set_system_text_scale`): a terminal's fixed grid,
+    /// a canvas laid out in points.
+    pub fn fixed_text_size(mut self) -> Self {
+        self.fixed_text_size = true;
+        self
     }
     /// Use the theme `name` in the subtree.
     pub fn theme(mut self, name: impl Into<String>) -> Self {
