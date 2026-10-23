@@ -27,9 +27,11 @@ python3-pil
 sway
 swaybg
 weston
+wl-clipboard
 x11-utils
 x11-xserver-utils
 xauth
+xclip
 xdg-desktop-portal
 xdg-desktop-portal-gtk
 xdotool

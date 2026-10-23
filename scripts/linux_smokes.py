@@ -53,6 +53,8 @@ SMOKES = [
     ("variable-virtual-list", "python3 scripts/variable_virtual_list_smoke.py {bin}/variable_virtual_list --output {out}", False),
     ("measured-virtual-list", "python3 scripts/measured_virtual_list_smoke.py {bin}/measured_virtual_list --output {out}", False),
     ("wayland-input", "python3 scripts/wayland_input_smoke.py {bin}/form --output {out}", False),
+    ("primary-selection", "python3 scripts/primary_selection_smoke.py {bin}/primary_selection --output {out}", False),
+    ("primary-selection-wayland", "python3 scripts/primary_selection_smoke.py {bin}/primary_selection --wayland --output {out}", False),
     ("event-hooks", "python3 scripts/event_hooks_smoke.py {bin}/event_hooks --output {out}", False),
     ("wrapped-editor", "python3 scripts/wrapped_editor_smoke.py {bin}/wrapped_editor --output {out}", False),
     ("editor-paging", "python3 scripts/editor_paging_smoke.py {bin}/editor_paging --output {out}", False),

@@ -926,6 +926,9 @@ struct Host {
     tasks: LocalExecutor,
     pending: Rc<RefCell<VecDeque<FutureTask>>>,
     clipboard: Rc<RefCell<Option<crate::clipboard::Clipboard>>>,
+    /// The editor selection last published as the primary selection.
+    #[cfg(target_os = "linux")]
+    primary: Option<String>,
     cursor: (f32, f32),
     pending_file_drops: crate::file_drop::FileDropBatch,
     modifiers: Modifiers,
@@ -1113,6 +1116,8 @@ impl Host {
             },
             pending,
             clipboard,
+            #[cfg(target_os = "linux")]
+            primary: None,
             cursor: (0., 0.),
             scroll: Default::default(),
             pending_file_drops: Default::default(),
@@ -1511,6 +1516,44 @@ impl Host {
         }
         self.sync_accessibility();
         Ok(())
+    }
+    /// X11's and Wayland's primary selection follows what is selected in
+    /// the focused editor, published as each selection settles (a pointer
+    /// gesture ends, a key changes it). A password field publishes nothing.
+    #[cfg(target_os = "linux")]
+    fn publish_editor_primary(&mut self) {
+        let Some(editor) = self.context.ui.focused_editor() else {
+            return;
+        };
+        let text = editor.copy();
+        if text.is_empty() || self.primary.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        if let Some(clipboard) = self.clipboard.borrow_mut().as_mut()
+            && clipboard.set_primary_text(text.clone()).is_ok()
+        {
+            self.primary = Some(text);
+        }
+    }
+    /// A middle press put an editor's caret under the pointer: the primary
+    /// selection goes in there, and the editor takes focus.
+    #[cfg(target_os = "linux")]
+    fn paste_primary(&mut self, node: NodeId) {
+        let Some(editor) = self.context.ui.editor(node) else {
+            return;
+        };
+        let text = self
+            .clipboard
+            .borrow_mut()
+            .as_mut()
+            .and_then(|clipboard| clipboard.get_primary_text().ok().flatten());
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.context
+                .ui
+                .input
+                .focus(&self.context.ui.scene, Some(node));
+            editor.paste(&text);
+        }
     }
     fn clipboard_key(&mut self, key: &Key) -> bool {
         if !self.modifiers.primary_shortcut() {
@@ -2195,6 +2238,15 @@ impl Host {
                 } else {
                     InputEvent::PointerUp { x, y, button }
                 })?;
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(node) = self.context.ui.take_primary_paste() {
+                        self.paste_primary(node);
+                    }
+                    if state == ElementState::Released {
+                        self.publish_editor_primary();
+                    }
+                }
                 // A press in a `window_drag` region.
                 if let Some(gesture) = self.context.ui.take_window_gesture() {
                     self.window_gesture(gesture)?;
@@ -2292,6 +2344,8 @@ impl Host {
                         if !prevented {
                             prevented = self.clipboard_key(&key);
                         }
+                        #[cfg(target_os = "linux")]
+                        self.publish_editor_primary();
                     } else {
                         self.dispatch(InputEvent::KeyUp {
                             key,

@@ -438,6 +438,9 @@ struct UiStorage {
     interaction: RefCell<Option<InteractionDeadline>>,
     advancing_interaction: Cell<bool>,
     window_gesture: Cell<Option<WindowGesture>>,
+    /// An editor a middle press put its caret in, for the host to paste the
+    /// primary selection into (`Ui::take_primary_paste`).
+    primary_paste: Cell<Option<NodeId>>,
     /// Display text's selection (`View::selectable`).
     selection: RefCell<crate::selection::State>,
 }
@@ -581,6 +584,7 @@ impl Ui {
             interaction: RefCell::new(None),
             advancing_interaction: Cell::new(false),
             window_gesture: Cell::new(None),
+            primary_paste: Cell::new(None),
             selection: Default::default(),
         });
         Self::from_storage(storage)
@@ -1420,6 +1424,11 @@ impl Ui {
     /// window, once: the desktop host takes it after each pointer press.
     pub fn take_window_gesture(&self) -> Option<WindowGesture> {
         self.storage.window_gesture.take()
+    }
+    /// The editor whose caret the last middle press placed, once: the
+    /// desktop host pastes X11's and Wayland's primary selection there.
+    pub fn take_primary_paste(&self) -> Option<NodeId> {
+        self.storage.primary_paste.take()
     }
     pub(crate) fn request_window_gesture(&self, gesture: WindowGesture) {
         self.storage.window_gesture.set(Some(gesture));
@@ -2614,6 +2623,31 @@ impl Ui {
                     position.set(focus);
                     gesture.cancel();
                     gesture.mode.set(Some(mode));
+                }
+                // Middle-click paste, where the desktop has a primary
+                // selection: the caret goes under the pointer, and the host
+                // inserts the selection there.
+                InputEvent::PointerDown {
+                    x,
+                    y,
+                    button: PointerButton::Middle,
+                } if cfg!(all(unix, not(target_os = "macos"))) && !read_only.get() => {
+                    let s = scene.borrow();
+                    let bounds = s.bounds(viewport);
+                    let scroll = *scroll.borrow();
+                    let (_, size, font) = typography.borrow().clone();
+                    let mut edit = editor.borrow_mut();
+                    let layout = editor_layout(
+                        &input_storage, &s, root, edit.text(), size,
+                        wrap.get().then_some(bounds.width.max(1.)), &font,
+                    );
+                    let hit = layout.hit_position(x - bounds.x + scroll.0, y - bounds.y + scroll.1);
+                    edit.set_selection(hit.byte_offset, hit.byte_offset);
+                    position.set(hit);
+                    gesture.cancel();
+                    if let Some(storage) = input_storage.upgrade() {
+                        storage.primary_paste.set(Some(root));
+                    }
                 }
                 InputEvent::PointerMove { x, y } if gesture.mode.get().is_some() => {
                     gesture.pointer.set((x, y));

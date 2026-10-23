@@ -72,7 +72,6 @@ impl Clipboard {
 
     /// The primary selection: the text last selected anywhere, which a middle
     /// click pastes. None where the platform has no such selection.
-    #[allow(dead_code)] // For selectable text and editors' middle-click paste.
     pub(crate) fn get_primary_text(&mut self) -> Result<Option<String>> {
         match &mut self.backend {
             #[cfg(target_os = "linux")]
@@ -93,7 +92,6 @@ impl Clipboard {
     }
 
     /// Publish the primary selection; a no-op where the platform has none.
-    #[allow(dead_code)] // For selectable text and editors' middle-click paste.
     pub(crate) fn set_primary_text(&mut self, text: String) -> Result<()> {
         match &mut self.backend {
             #[cfg(target_os = "linux")]

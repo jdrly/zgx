@@ -15,6 +15,7 @@ from platform_smoke import stop, wait_for_wm
 # Reads the X11 primary selection (what a middle click pastes) through GTK.
 PRIMARY = """
 import gi, sys
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 text = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).wait_for_text()
