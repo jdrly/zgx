@@ -2982,6 +2982,14 @@ impl Host {
                 self.context.ui.dismiss_popups();
                 Ok(())
             }
+            PopupInput::Screens => {
+                if let Some(window) = &self.window {
+                    self.context
+                        .ui
+                        .set_popup_screens(crate::popup_window::popup_screens(window));
+                }
+                Ok(())
+            }
         }
     }
     fn accessibility_event(&mut self, event: accesskit_winit::WindowEvent) {
@@ -4017,6 +4025,15 @@ impl ApplicationHandler<Event> for WindowManager {
                     host.context.ui.popup_soon_heard();
                     if let Some(renderer) = &host.renderer {
                         crate::popup_window::warm(&renderer.context(), host.scale_factor as f32);
+                    }
+                    // The work areas as the popup opens (the taskbar may have
+                    // moved since the window last did); none if no popup
+                    // window could be readied.
+                    #[cfg(windows)]
+                    if let Some(window) = &host.window {
+                        host.context
+                            .ui
+                            .set_popup_screens(crate::popup_window::popup_screens(window));
                     }
                 }
             }

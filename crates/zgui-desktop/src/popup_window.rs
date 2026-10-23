@@ -16,23 +16,11 @@
 //! opens one has none. A hidden panel draws nothing and never wakes. A
 //! closing popup fades out, as AppKit's menus do.
 //!
+//! Windows does the same over owned, never-activated popup windows drawn
+//! through DirectComposition (`popup_window/win32.rs`).
+//!
 //! Elsewhere, popups stay inside their window (the host gives no screens to
 //! show them on, `Ui::set_popup_screens`).
-//! todo(windows): the same `PopupHost` over owned popup windows:
-//! - `CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
-//!   WS_EX_NOREDIRECTIONBITMAP, WS_POPUP)` owned by the parent `HWND` (above
-//!   it, hidden with it), shown with `SW_SHOWNOACTIVATE`, answering
-//!   `WM_MOUSEACTIVATE` with `MA_NOACTIVATE` so the parent keeps the keyboard;
-//! - its frames through a DirectComposition visual, as the window's overlay
-//!   plane presents (`GpuRenderer::set_popup` as here);
-//! - DWM's rounded corners and shadow (`DWMWA_WINDOW_CORNER_PREFERENCE`), and
-//!   a menu's acrylic behind a translucent panel
-//!   (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW`);
-//! - pointer input posted to the parent's host in its coordinates, as here;
-//! - screens from `EnumDisplayMonitors` (`rcWork`, `GetDpiForMonitor`);
-//! - an owned window does not follow its owner: move it on the owner's
-//!   `WM_WINDOWPOSCHANGED`; close popups on `WM_ACTIVATEAPP` (false) and on
-//!   a press in the owner's non-client area (`WM_NCLBUTTONDOWN`).
 //!
 //! X11 (`x11`): override-redirect ARGB windows typed as popup menus
 //! (`_NET_WM_WINDOW_TYPE_POPUP_MENU`), placed by the app on the monitors
@@ -46,7 +34,7 @@ use winit::event::{MouseButton, MouseScrollDelta, TouchPhase};
 
 /// Pointer input over a popup window, in its parent window's coordinates.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub(crate) enum PopupInput {
     Moved {
         x: f32,
@@ -68,6 +56,9 @@ pub(crate) enum PopupInput {
     Left,
     /// A press elsewhere in the parent window (its title bar): popups close.
     Dismiss,
+    /// The screens changed (a monitor, the taskbar), or popups can have no
+    /// windows of their own after all: `popup_screens` again.
+    Screens,
 }
 
 #[cfg(target_os = "macos")]
@@ -75,8 +66,10 @@ pub(crate) use macos::{
     PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
 };
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(crate) use other::{
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+pub(crate) use win32::{
     PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
 };
 
@@ -86,7 +79,12 @@ pub(crate) use x11::{
     window_at, window_number,
 };
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+pub(crate) use other::{
+    PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
+};
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod other {
     use super::PopupInput;
     use zgui::scene::{Rect, Scene};
