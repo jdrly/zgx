@@ -107,7 +107,12 @@ top right, drawn by zgui and reported to Windows as its own (`WM_NCHITTEST`),
 so they get the system's tooltips and the maximize button's snap layouts; the
 buttons minimize, maximize, restore and close through the system's commands.
 The title bar and the window menu (Alt+Space) follow the system's light or
-dark mode.
+dark mode. Where windows run right to left (the user's language, or
+`ZGUI_DIRECTION=rtl`), `Inset`'s buttons sit at the top left, Close outermost,
+as Windows lays out a mirrored window's, and `WindowInfo::titlebar_area` and
+`controls` mirror with them. A `Standard` title bar keeps the system's own
+layout, its buttons at the right: winit makes its windows unmirrored, and
+Windows mirrors a caption only for a window made so (`WS_EX_LAYOUTRTL`).
 
 Windows present through a DirectComposition visual, so `WindowOptions::transparent`
 windows are transparent where zgui paints nothing, and `WindowOptions::glass`

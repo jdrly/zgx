@@ -1705,6 +1705,7 @@ impl Host {
                 // XIM takes a baseline spot and ignores the supplied rectangle
                 // height; Wayland/macOS consume the actual caret rectangle.
                 let y = if self.x11 { r.y + r.height } else { r.y };
+                zgui_gpu::present_log::log(|| format!("ime area {r:?}"));
                 window.set_ime_cursor_area(
                     LogicalPosition::new(r.x as f64, y as f64)
                         .to_physical::<f64>(self.scale_factor),

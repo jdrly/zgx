@@ -239,6 +239,9 @@ mod win {
         /// The window has no frame (Inset, Hidden): its edges resize it.
         frameless: bool,
         buttons: bool,
+        /// The window runs right to left (the user's language,
+        /// `ZGUI_DIRECTION`): its buttons are at its top left.
+        rtl: bool,
         /// The buttons show: not in fullscreen, where a window has none.
         shown: Cell<bool>,
         /// The system's settings or colours changed (high contrast, the
@@ -405,10 +408,18 @@ mod win {
     }
 
     /// The caption strip of a frameless window `width` points wide, and the
-    /// caption buttons `Inset` draws at its right (none for `Hidden`).
+    /// caption buttons `Inset` draws at its right, or its left where windows
+    /// run right to left (none for `Hidden`).
     pub(super) fn titlebar_area(
         width: f32,
         titlebar: Titlebar,
+    ) -> (Option<zgui::scene::Rect>, Option<zgui::scene::Rect>) {
+        caption_strip(width, titlebar, rtl())
+    }
+    fn caption_strip(
+        width: f32,
+        titlebar: Titlebar,
+        rtl: bool,
     ) -> (Option<zgui::scene::Rect>, Option<zgui::scene::Rect>) {
         use zgui::scene::Rect;
         let height = BUTTON_HEIGHT as f32;
@@ -416,6 +427,12 @@ mod win {
             return (Some(Rect::new(0., 0., width, height)), None);
         }
         let buttons = (3. * BUTTON_WIDTH as f32).min(width);
+        if rtl {
+            return (
+                Some(Rect::new(buttons, 0., width - buttons, height)),
+                Some(Rect::new(0., 0., buttons, height)),
+            );
+        }
         (
             Some(Rect::new(0., 0., width - buttons, height)),
             Some(Rect::new(width - buttons, 0., buttons, height)),
@@ -605,6 +622,7 @@ mod win {
         let caption = Rc::new(Caption {
             frameless,
             buttons: titlebar == Titlebar::Inset,
+            rtl: rtl(),
             shown: Cell::new(true),
             settings_changed: Cell::new(false),
             hovered: Cell::new(None),
@@ -661,18 +679,27 @@ mod win {
             scale(hwnd),
             maximized,
             caption.buttons && caption.shown.get(),
+            caption.rtl,
         )
+    }
+    /// Whether windows run right to left (the user's language,
+    /// `ZGUI_DIRECTION`), as their title bars then do.
+    fn rtl() -> bool {
+        crate::system_colors::locale_direction() == zgui::scene::Direction::Rtl
     }
 
     /// What client point (`x`, `y`) of a frameless window `width` by
     /// `height` physical pixels is at `scale`, if not its content: a resize
-    /// band or one of its caption buttons (`buttons`).
+    /// band or one of its caption buttons (`buttons`), at its top right, or
+    /// top left where the window runs right to left (`rtl`), as Windows lays
+    /// out a mirrored (`WS_EX_LAYOUTRTL`) window's.
     fn hit(
         (x, y): (i32, i32),
         (width, height): (i32, i32),
         scale: f64,
         maximized: bool,
         buttons: bool,
+        rtl: bool,
     ) -> Option<u32> {
         let band = if maximized {
             0
@@ -684,9 +711,10 @@ mod win {
         // The caption buttons keep all but the window's outermost pixels.
         if buttons && y >= band.min(1) && f64::from(y) < BUTTON_HEIGHT * scale {
             let button = (BUTTON_WIDTH * scale).round() as i32;
-            let from_right = width - 1 - x;
-            if (band.min(1)..3 * button).contains(&from_right) {
-                return Some(match from_right / button {
+            // Close nearest the edge they sit at.
+            let from_edge = if rtl { x } else { width - 1 - x };
+            if (band.min(1)..3 * button).contains(&from_edge) {
+                return Some(match from_edge / button {
                     0 => HTCLOSE,
                     1 => HTMAXBUTTON,
                     _ => HTMINBUTTON,
@@ -946,10 +974,15 @@ mod win {
                     )
             };
             let fullscreen = self.fullscreen.clone();
-            row()
-                .absolute()
-                .top(0.)
-                .right(0.)
+            // At the top right, or the top left right to left: there the
+            // row runs from the right, Close outermost still.
+            let strip = row().absolute().top(0.);
+            let strip = if self.caption.rtl {
+                strip.left(0.)
+            } else {
+                strip.right(0.)
+            };
+            strip
                 .pointer_events(false)
                 .reactive_style(move || {
                     Styles::new().opacity(if fullscreen.get() { 0. } else { 1. })
@@ -967,7 +1000,7 @@ mod win {
         #[test]
         fn a_frameless_windows_edges_resize_and_its_corner_buttons_answer() {
             let size = (800, 600);
-            let at = |x, y| hit((x, y), size, 1., false, true);
+            let at = |x, y| hit((x, y), size, 1., false, true, false);
             assert_eq!(at(400, 300), None, "content");
             assert_eq!(at(0, 300), Some(HTLEFT));
             assert_eq!(at(799, 300), Some(HTRIGHT));
@@ -984,31 +1017,34 @@ mod win {
             assert_eq!(at(640, 10), None, "left of the buttons");
             assert_eq!(at(790, 40), None, "below the buttons");
             // Without buttons (`Titlebar::Hidden`) the corner resizes.
-            assert_eq!(hit((790, 2), size, 1., false, false), Some(HTTOP));
+            assert_eq!(hit((790, 2), size, 1., false, false, false), Some(HTTOP));
         }
 
         #[test]
         fn bands_and_buttons_scale_and_a_maximized_window_has_no_bands() {
             let size = (1600, 1200);
             // At 200% the band is 10 pixels and the buttons 92 by 64.
-            assert_eq!(hit((9, 600), size, 2., false, false), Some(HTLEFT));
-            assert_eq!(hit((10, 600), size, 2., false, false), None);
-            assert_eq!(hit((1599 - 91, 60), size, 2., false, true), Some(HTCLOSE));
+            assert_eq!(hit((9, 600), size, 2., false, false, false), Some(HTLEFT));
+            assert_eq!(hit((10, 600), size, 2., false, false, false), None);
             assert_eq!(
-                hit((1599 - 92, 60), size, 2., false, true),
+                hit((1599 - 91, 60), size, 2., false, true, false),
+                Some(HTCLOSE)
+            );
+            assert_eq!(
+                hit((1599 - 92, 60), size, 2., false, true, false),
                 Some(HTMAXBUTTON)
             );
             // Maximized, the edges are the screen's: nothing resizes, and the
             // buttons reach the very corner.
-            assert_eq!(hit((0, 600), size, 1., true, true), None);
-            assert_eq!(hit((1599, 0), size, 1., true, true), Some(HTCLOSE));
+            assert_eq!(hit((0, 600), size, 1., true, true, false), None);
+            assert_eq!(hit((1599, 0), size, 1., true, true, false), Some(HTCLOSE));
         }
 
         #[test]
         fn the_titlebar_area_is_the_caption_strip_less_the_buttons() {
             use zgui::scene::Rect;
             assert_eq!(
-                titlebar_area(800., Titlebar::Inset),
+                caption_strip(800., Titlebar::Inset, false),
                 (
                     Some(Rect::new(0., 0., 662., 32.)),
                     Some(Rect::new(662., 0., 138., 32.))
@@ -1016,8 +1052,30 @@ mod win {
             );
             // `Hidden` has no buttons: the whole strip is the app's.
             assert_eq!(
-                titlebar_area(800., Titlebar::Hidden),
+                caption_strip(800., Titlebar::Hidden, false),
                 (Some(Rect::new(0., 0., 800., 32.)), None)
+            );
+        }
+
+        #[test]
+        fn right_to_left_the_buttons_and_the_titlebar_area_mirror() {
+            use zgui::scene::Rect;
+            // As Windows lays out a mirrored window's: the buttons at the
+            // top left, Close outermost.
+            let size = (800, 600);
+            let at = |x, y| hit((x, y), size, 1., false, true, true);
+            assert_eq!(at(10, 10), Some(HTCLOSE));
+            assert_eq!(at(60, 10), Some(HTMAXBUTTON));
+            assert_eq!(at(100, 10), Some(HTMINBUTTON));
+            assert_eq!(at(160, 10), None, "right of the buttons");
+            assert_eq!(at(798, 10), Some(HTRIGHT), "the right edge only resizes");
+            assert_eq!(at(0, 10), Some(HTLEFT), "the outermost pixel still resizes");
+            assert_eq!(
+                caption_strip(800., Titlebar::Inset, true),
+                (
+                    Some(Rect::new(138., 0., 662., 32.)),
+                    Some(Rect::new(0., 0., 138., 32.))
+                )
             );
         }
 

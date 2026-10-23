@@ -153,7 +153,9 @@ fn step_button(plus: bool) -> View {
     let bar = |w: f32, h: f32| div().absolute().size(w, h).rounded(1.).bg(rgb(0xffffff));
     let mut icon = overlay().size(16., 16.).child(bar(16., 2.).mt(7.));
     if plus {
-        icon = icon.child(bar(2., 16.).ml(7.));
+        // Placed from the left either way: a margin would place it from the
+        // right, right to left (an absolute box starts where its line does).
+        icon = icon.child(bar(2., 16.).left(7.));
     }
     button()
         .size(76., 48.)
