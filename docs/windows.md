@@ -135,8 +135,10 @@ their window, as Windows' own menus do: they flip and clamp to the work area
 of the monitor their trigger is on, not to the window. Each shows in a window
 of its own (`popup_window/win32.rs`): owned by its window (above it, minimized
 with it, never on the taskbar) and never activated, so the window keeps the
-keyboard and typing reaches a popover's field. A popup draws at its monitor's
-scale. It moves with its window, and closes as the app deactivates, when the
+keyboard and typing reaches a popover's field. A popup draws at its window's
+scale, on whichever monitor it lands: zgui keeps it on its trigger's screen,
+so on a monitor of another scale it sits beside a trigger the window draws
+there at its own, the same size. It moves with its window, and closes as the app deactivates, when the
 title bar is pressed, on Escape and on a press outside it.
 
 A menu or popover that is one rounded panel gets DWM's rounded corners, rim

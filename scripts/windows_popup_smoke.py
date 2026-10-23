@@ -6,8 +6,9 @@ and other apps are never touched). Checks that:
 
 - no popup window exists before the first popup (an app that never opens
   one makes none);
-- the menu opens past the window's edge, within a few milliseconds of the
-  click once a popup window is ready;
+- the menu opens past the window's edge (at 100%; at larger scales the
+  window is taller and it may flip above its trigger), within a few
+  milliseconds of the click once a popup window is ready;
 - hovering and clicking its items chooses one, five times over, and a press
   on the trigger dragged to an item and released there chooses it;
 - the menu shows on screen (a screenshot of it open differs from one of its
@@ -75,7 +76,12 @@ def main():
             raise AssertionError(f"missing {pattern!r} in:\n{out}")
 
     need(r"^POPUP_WINDOWS_BEFORE 0$")
-    need(r"^POPUP_RECT .* past_window_bottom=true$")
+    # At 100% the window leaves room below it on the screen; larger, the menu
+    # may flip above its trigger instead.
+    if re.search(r"^POPUP_RECT .* scale=1$", out, re.M):
+        need(r"^POPUP_RECT .* past_window_bottom=true scale=1$")
+    else:
+        need(r"^POPUP_RECT ")
     for round in range(5):
         need(rf'^ROUND {round} chosen="Item 6" open=false popups=0$')
     need(r'^PRESS_DRAG chosen="Item 3" open=false closed_after_ms=Some')

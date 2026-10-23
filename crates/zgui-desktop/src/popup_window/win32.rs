@@ -40,13 +40,13 @@ use windows::{
                 DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DwmSetWindowAttribute,
             },
             Gdi::{
-                ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
-                MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ScreenToClient,
+                ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+                ScreenToClient,
             },
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
+            HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
                 GetCapture, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
             },
@@ -439,16 +439,11 @@ impl Panel {
         }
         Ok(self.renderer.as_mut().expect("made above"))
     }
-    /// Place it at `rect` (its parent's coordinates): its origin from the
-    /// parent's client origin at the parent's scale, its size at its own.
-    fn place(&mut self, origin: (i32, i32), parent_scale: f32, rect: Rect) {
+    /// Place it at `rect` (its parent's coordinates), its parent's client
+    /// origin on the screen at `origin`.
+    fn place(&mut self, origin: (i32, i32), rect: Rect) {
         self.rect = Some(rect);
-        let screen = (
-            origin.0 + (rect.x * parent_scale).round() as i32,
-            origin.1 + (rect.y * parent_scale).round() as i32,
-            (rect.width * self.scale).round().max(1.) as i32,
-            (rect.height * self.scale).round().max(1.) as i32,
-        );
+        let screen = screen_rect(origin, self.scale, rect);
         self.target.origin.set((rect.x, rect.y));
         self.target.scale.set(self.scale);
         if self.screen == Some(screen) {
@@ -640,19 +635,45 @@ pub(crate) fn popup_screens(window: &winit::window::Window) -> Vec<Rect> {
     let Some(hwnd) = hwnd_of(window) else {
         return Vec::new();
     };
-    let (x, y) = client_origin(hwnd);
-    let scale = window_scale(hwnd);
-    work_areas()
-        .into_iter()
+    screens_in(client_origin(hwnd), window_scale(hwnd), &work_areas())
+}
+
+/// Monitors' work `areas` (physical pixels) in the coordinates of a window
+/// whose client origin is at `origin`, at its `scale`.
+///
+/// A popup draws at its window's scale on any monitor, as the window's own
+/// pixels do on a monitor of another scale it reaches onto: zgui keeps a
+/// popup on the screen its trigger is on, so it lies on another monitor than
+/// its window only beside a trigger drawn there at the window's scale. One
+/// scale for both keeps it the size of its trigger, beside it, and inside
+/// the area these give.
+fn screens_in(origin: (i32, i32), scale: f32, areas: &[RECT]) -> Vec<Rect> {
+    areas
+        .iter()
         .map(|area| {
             Rect::new(
-                (area.left - x) as f32 / scale,
-                (area.top - y) as f32 / scale,
+                (area.left - origin.0) as f32 / scale,
+                (area.top - origin.1) as f32 / scale,
                 (area.right - area.left) as f32 / scale,
                 (area.bottom - area.top) as f32 / scale,
             )
         })
         .collect()
+}
+/// Where `rect` (a window's coordinates, its client origin at `origin`, at
+/// its `scale`) is on the screen: left, top, width and height in physical
+/// pixels, its edges rounded as the renderer snaps a popup's box.
+fn screen_rect(origin: (i32, i32), scale: f32, rect: Rect) -> (i32, i32, i32, i32) {
+    let left = (rect.x * scale).round() as i32;
+    let top = (rect.y * scale).round() as i32;
+    let right = ((rect.x + rect.width) * scale).round() as i32;
+    let bottom = ((rect.y + rect.height) * scale).round() as i32;
+    (
+        origin.0 + left,
+        origin.1 + top,
+        (right - left).max(1),
+        (bottom - top).max(1),
+    )
 }
 fn work_areas() -> Vec<RECT> {
     unsafe extern "system" fn each(monitor: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
@@ -681,24 +702,6 @@ fn work_areas() -> Vec<RECT> {
     };
     areas
 }
-/// The scale of the monitor holding `rect`'s centre (the parent's
-/// coordinates): a popup draws at the scale it shows at.
-fn scale_at(origin: (i32, i32), parent_scale: f32, rect: Rect) -> f32 {
-    let point = POINT {
-        x: origin.0 + ((rect.x + rect.width / 2.) * parent_scale) as i32,
-        y: origin.1 + ((rect.y + rect.height / 2.) * parent_scale) as i32,
-    };
-    let (mut x, mut y) = (0, 0);
-    // SAFETY: reads the system's monitor and its DPI into locals.
-    unsafe {
-        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-        if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y).is_err() {
-            return parent_scale;
-        }
-    }
-    x.max(96) as f32 / 96.
-}
-
 /// The parent's subclass: popups follow it, and close as the app
 /// deactivates or its frame is pressed.
 unsafe extern "system" fn parent_proc(
@@ -846,7 +849,6 @@ impl PopupHost {
             release(panel);
         }
         let origin = client_origin(parent);
-        let parent_scale = scale;
         if !wanted.is_empty() && self.parent.replace(parent.0 as usize).is_none() {
             // SAFETY: a subclass of our own window, on its thread; it holds
             // no data of its own.
@@ -870,16 +872,13 @@ impl PopupHost {
                 .find(|(shown, _)| *shown == root)
                 .expect("pushed above")
                 .1;
-            // Its monitor's scale, found as it shows.
-            let popup_scale = match new {
-                true => scale_at(origin, parent_scale, bounds),
-                false => panel.scale,
-            };
-            // Popups are small: one that changed is drawn whole.
+            // Popups are small: one that changed is drawn whole (and at a
+            // new scale, by a new renderer).
             let revision = scene.layer_revision(root);
-            let changed = new || full || panel.revision != Some(revision);
+            let changed = new || full || panel.revision != Some(revision) || panel.scale != scale;
             panel.revision = Some(revision);
-            let renderer = match panel.renderer(context, popup_scale) {
+            // At its window's scale (see `screens_in`).
+            let renderer = match panel.renderer(context, scale) {
                 Ok(renderer) => renderer,
                 Err(error) => {
                     self.unsupported(error);
@@ -897,7 +896,7 @@ impl PopupHost {
                 renderer.render(scene, &[])?;
                 renderer.present()?;
             }
-            panel.place(origin, parent_scale, rect);
+            panel.place(origin, rect);
             panel.set_corner(corner_of(scene, root, rect));
             if new {
                 // Its first frame is in its visual before it shows.
@@ -1025,6 +1024,51 @@ mod tests {
         // Painting past its panel (a shadow of its own), zgui draws it all.
         let (scene, root) = popup(80., 8.);
         assert_eq!(corner_of(&scene, root, window), DWMWCP_DONOTROUND);
+    }
+
+    fn area(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+    /// The popup zgui places in `screen` (window coordinates): flush with its
+    /// right and bottom edges, as a clamped menu is.
+    fn clamped(screen: Rect, width: f32, height: f32) -> Rect {
+        Rect::new(
+            screen.x + screen.width - width,
+            screen.y + screen.height - height,
+            width,
+            height,
+        )
+    }
+
+    #[test]
+    fn a_popup_on_a_monitor_of_another_scale_stays_on_it() {
+        // A 100% monitor, and a 150% one to its right, 2560 by 1400 pixels.
+        let monitors = [area(0, 0, 1920, 1040), area(1920, 0, 4480, 1400)];
+        // A window at 100%, its client at (100, 100), its trigger reaching
+        // onto the 150% monitor: a popup clamped to that monitor's edges.
+        let screens = screens_in((100, 100), 1., &monitors);
+        assert_eq!(screens[1], Rect::new(1820., -100., 2560., 1400.));
+        let popup = screen_rect((100, 100), 1., clamped(screens[1], 200., 300.));
+        assert_eq!(popup, (4280, 1100, 200, 300));
+        // A window at 150% on the right monitor, a popup clamped to the
+        // 100% one's left and bottom edges: still inside it, its size the
+        // window's 200 by 300 points at 150%.
+        let screens = screens_in((2000, 100), 1.5, &monitors);
+        let menu = Rect::new(
+            screens[0].x,
+            screens[0].y + screens[0].height - 300.,
+            200.,
+            300.,
+        );
+        let (left, top, width, height) = screen_rect((2000, 100), 1.5, menu);
+        assert_eq!((left, top + height), (0, 1040));
+        assert_eq!((width, height), (300, 450));
+        assert!(left + width <= 1920);
     }
 
     #[test]

@@ -315,12 +315,13 @@ mod win32 {
                 let rect = screen_rect(popup);
                 let window = screen_rect(main);
                 println!(
-                    "POPUP_RECT {} {} {} {} past_window_bottom={}",
+                    "POPUP_RECT {} {} {} {} past_window_bottom={} scale={}",
                     rect.left,
                     rect.top,
                     rect.right,
                     rect.bottom,
-                    rect.bottom > window.bottom
+                    rect.bottom > window.bottom,
+                    scale(main)
                 );
                 sleep(300).await;
                 if shot {
