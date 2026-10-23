@@ -1,7 +1,9 @@
 //! Tabs dragged between windows, and torn off into windows of their own
 //! (macOS): drag a tab onto the other window's strip to move it there, or
 //! drop it outside every window to open it in a new one, the tab under the
-//! pointer where it was grabbed. Elsewhere a tab drags within its strip.
+//! pointer where it was grabbed. A window's only tab moves the window
+//! itself, and dropped on the other window's strip, merges into it.
+//! Elsewhere a tab drags within its strip.
 use std::{cell::Cell, rc::Rc};
 use zgui::{
     compose::prelude::*,
@@ -115,7 +117,8 @@ fn tab_strip(
                             }
                         }
                     };
-                    let (removed, torn, picked) = (tabs.clone(), tabs.clone(), tabs.clone());
+                    let (removed, torn, picked, alone) =
+                        (tabs.clone(), tabs.clone(), tabs.clone(), tabs.clone());
                     let remove_torn = remove.clone();
                     let windows = windows.clone();
                     div()
@@ -144,6 +147,10 @@ fn tab_strip(
                             kept: Rc::default(),
                         })
                         .drag_preview(move |_: &TabDrag| tab_chip(&label))
+                        // A window's only tab moves the window itself.
+                        .drag_moves_window(move |_: &TabDrag| {
+                            alone.with_untracked(|tabs| tabs.len() == 1)
+                        })
                         .on_drag_end(move |drag: &TabDrag, accepted| {
                             if accepted && !drag.kept.get() {
                                 remove(&removed, drag.tab.id);

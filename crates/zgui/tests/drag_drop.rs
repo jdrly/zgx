@@ -537,3 +537,23 @@ fn drags_cross_windows_and_tear_off() {
     assert_eq!(*log.borrow(), ["end:3:false", "outside:3:true"]);
     assert!(source.input.take_drag_ended().unwrap().outside);
 }
+
+/// A source whose drag moves its window says so as it starts
+/// (`drag_moves_window`), for the value it carries.
+#[test]
+fn a_drag_may_move_its_window() {
+    let mut ui = Ui::new(300., 200.);
+    ui.mount(
+        div()
+            .id("source")
+            .size(100., 40.)
+            .on_drag(|| Card(1))
+            .drag_moves_window(|card: &Card| card.0 == 1),
+    );
+    ui.prepare_frame();
+    down(&ui, 10., 10.);
+    moved(&ui, 30., 10.);
+    assert!(ui.input.drag_state().expect("dragging").moves_window);
+    up(&ui, 30., 10.);
+    assert!(!ui.input.is_dragging());
+}

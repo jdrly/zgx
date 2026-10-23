@@ -136,6 +136,27 @@ impl View {
             }
         })
     }
+    /// Whether the drag moves its window instead, the grab point under the
+    /// pointer, with no preview (macOS): a window's only tab, as in Safari
+    /// and Chrome. Released over another window's destination it drops
+    /// there as any drag does (the tab merges into that window's strip);
+    /// elsewhere the window stays where it was let go.
+    pub fn drag_moves_window<T: 'static>(
+        self,
+        mut moves: impl FnMut(&T) -> bool + 'static,
+    ) -> Self {
+        self.on_event(move |cx| {
+            if cx.phase != EventPhase::Target {
+                return;
+            }
+            if let InputEvent::Drag(event) = &cx.event
+                && event.phase == DragPhase::Start
+                && event.payload.downcast_ref::<T>().is_some_and(&mut moves)
+            {
+                cx.set_drag_moves_window();
+            }
+        })
+    }
     /// Released outside every window of the app (where its host can tell,
     /// macOS): a tab torn off its window, to open in a window of its own
     /// (`WindowOptions::under_pointer` puts the grab point under the pointer).

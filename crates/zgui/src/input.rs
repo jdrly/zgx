@@ -296,6 +296,8 @@ pub struct EventContext {
     drag_accepted: Option<NodeId>,
     /// What a starting drag carries to other apps (`set_drag_export`).
     drag_export: Option<Rc<[DragItem]>>,
+    /// A starting drag moves its window (`set_drag_moves_window`).
+    drag_moves_window: bool,
     key_code: Option<Rc<str>>,
     /// `take_pointer`'s taker: what the pointer was pressed on gives it up.
     take_pointer: Option<NodeId>,
@@ -321,6 +323,7 @@ impl EventContext {
             drag_request: None,
             drag_accepted: None,
             drag_export: None,
+            drag_moves_window: false,
             key_code: None,
             take_pointer: None,
             prevented_by: None,
@@ -350,6 +353,13 @@ impl EventContext {
     pub fn set_drag_export(&mut self, items: Vec<DragItem>) {
         if matches!(&self.event, InputEvent::Drag(event) if event.phase == DragPhase::Start) {
             self.drag_export = Some(items.into());
+        }
+    }
+    /// On a drag's Start, at its source: the drag moves its window rather
+    /// than showing a preview (`View::drag_moves_window`).
+    pub fn set_drag_moves_window(&mut self) {
+        if matches!(&self.event, InputEvent::Drag(event) if event.phase == DragPhase::Start) {
+            self.drag_moves_window = true;
         }
     }
     /// Accept the drag over this node, so dropping it here delivers the drop.

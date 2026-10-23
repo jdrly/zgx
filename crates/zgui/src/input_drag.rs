@@ -91,6 +91,9 @@ pub struct DragState {
     pub export: Option<Rc<[DragItem]>>,
     /// Over another window (`set_drag_away`).
     pub away: bool,
+    /// It moves its window, the grab point under the pointer, rather than
+    /// showing a preview (`View::drag_moves_window`): a window's only tab.
+    pub moves_window: bool,
 }
 /// How a window's drag ended, for its host (a preview shown in a window of
 /// its own slides back to its source when nothing took it).
@@ -127,6 +130,7 @@ pub(super) struct DragSession {
     preview_origin: Option<(f32, f32)>,
     export: Option<Rc<[DragItem]>>,
     away: bool,
+    moves_window: bool,
 }
 impl DragSession {
     fn event(&self, phase: DragPhase, accepted: bool) -> InputEvent {
@@ -165,6 +169,14 @@ impl InputDispatcher {
     pub fn is_dragging(&self) -> bool {
         self.state.borrow().drag.is_some()
     }
+    /// Whether a drag under way moves its window (`View::drag_moves_window`).
+    pub fn drag_moves_window(&self) -> bool {
+        self.state
+            .borrow()
+            .drag
+            .as_ref()
+            .is_some_and(|drag| drag.moves_window)
+    }
     /// Exclude a retained preview subtree from drag hit testing.
     pub fn set_drag_preview(&self, node: Option<NodeId>) {
         if let Some(drag) = &mut self.state.borrow_mut().drag {
@@ -189,6 +201,7 @@ impl InputDispatcher {
             preview_origin: drag.preview_origin,
             export: drag.export.clone(),
             away: drag.away,
+            moves_window: drag.moves_window,
         })
     }
     /// How the last drag ended, once.
@@ -365,6 +378,7 @@ impl InputDispatcher {
             preview_origin: None,
             export: None,
             away: false,
+            moves_window: false,
         };
         let pressed = {
             let mut state = self.state.borrow_mut();
@@ -380,10 +394,9 @@ impl InputDispatcher {
         }
         self.route(scene, source, InputEvent::PointerCancel);
         let started = self.route(scene, source, drag.event(DragPhase::Start, false));
-        if let Some(items) = started.drag_export
-            && let Some(active) = &mut self.state.borrow_mut().drag
-        {
-            active.export = Some(items);
+        if let Some(active) = &mut self.state.borrow_mut().drag {
+            active.export = started.drag_export;
+            active.moves_window = started.drag_moves_window;
         }
         self.update_drag(scene, x, y);
     }

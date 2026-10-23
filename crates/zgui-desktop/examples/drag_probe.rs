@@ -70,6 +70,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .on_drop(|tab: &Tab, _| println!("DROPPED {}", tab.0));
                 cx.render(column().w_full().h_full().p(10.).child(strip));
             });
+            // A window with one tab: dragging it moves the window.
+            cx.windows.open(
+                WindowOptions {
+                    bounds: Some(WindowBounds::new(840, 400).at(400, 900)),
+                    ..options("Solo", 0)
+                },
+                |cx| {
+                    let solo = tab("solo").drag_moves_window(|_: &Tab| true);
+                    cx.render(column().w_full().h_full().p(10.).child(solo));
+                },
+            );
             let chip = div()
                 .id("chip")
                 .w(120.)
@@ -152,12 +163,44 @@ mod macos {
     thread_local! {
         static PRESSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         static POSTING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        /// The synthetic pointer, bottom-up as AppKit's screens run.
+        static POINTER: std::cell::Cell<Option<NSPoint>> = const { std::cell::Cell::new(None) };
     }
     extern "C-unwind" fn pressed_buttons(
         _: *mut objc2::runtime::AnyObject,
         _: objc2::runtime::Sel,
     ) -> usize {
         PRESSED.with(|pressed| pressed.get())
+    }
+    extern "C-unwind" fn mouse_location(
+        _: *mut objc2::runtime::AnyObject,
+        _: objc2::runtime::Sel,
+    ) -> NSPoint {
+        POINTER
+            .with(|pointer| pointer.get())
+            .unwrap_or(NSPoint::new(0., 0.))
+    }
+    /// `+[NSEvent mouseLocation]` answers the probe's pointer while it moves
+    /// a window (a window following the pointer is placed from it).
+    fn track_pointer() {
+        let class = objc2::runtime::AnyClass::get(c"NSEvent").unwrap();
+        // SAFETY: a class method returning NSPoint, replaced in this process
+        // by one of the same signature.
+        unsafe {
+            let imp: objc2::runtime::Imp = std::mem::transmute(
+                mouse_location
+                    as extern "C-unwind" fn(
+                        *mut objc2::runtime::AnyObject,
+                        objc2::runtime::Sel,
+                    ) -> NSPoint,
+            );
+            objc2::ffi::class_replaceMethod(
+                class.metaclass() as *const _ as *mut _,
+                objc2::sel!(mouseLocation),
+                imp,
+                c"{CGPoint=dd}@:".as_ptr(),
+            );
+        }
     }
     /// `+[NSEvent pressedMouseButtons]` answers the probe's presses.
     fn hold_buttons() {
@@ -206,6 +249,112 @@ mod macos {
         )
         .unwrap();
         NSApplication::sharedApplication(mtm).postEvent_atStart(&event, false);
+    }
+    /// The window's content top-left, in global coordinates (top-down from
+    /// the primary screen's top).
+    fn content_top_left(window: &NSWindow) -> (f64, f64) {
+        let mtm = MainThreadMarker::new().unwrap();
+        let height = objc2_app_kit::NSScreen::screens(mtm)
+            .firstObject()
+            .map_or(0., |screen| screen.frame().size.height);
+        let frame = window.convertRectToScreen(window.contentView().unwrap().frame());
+        (
+            frame.origin.x,
+            height - (frame.origin.y + frame.size.height),
+        )
+    }
+    /// The window's content top-left where the window server has it (a drag
+    /// moving the window moves it there first; AppKit hears as it ends), as
+    /// a real pointer's events are placed.
+    fn server_top_left(window: &NSWindow) -> (f64, f64) {
+        use std::ffi::{c_char, c_void};
+        #[repr(C)]
+        #[derive(Default)]
+        struct Rect {
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+        }
+        unsafe extern "C" {
+            fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        }
+        // SAFETY: the window server's own calls, looked up by name, on a
+        // window of this process.
+        let bounds = unsafe {
+            let default = -2isize as *mut c_void;
+            let connection = dlsym(default, c"CGSMainConnectionID".as_ptr());
+            let bounds = dlsym(default, c"CGSGetWindowBounds".as_ptr());
+            if connection.is_null() || bounds.is_null() {
+                return content_top_left(window);
+            }
+            let connection: extern "C" fn() -> i32 = std::mem::transmute(connection);
+            let bounds: extern "C" fn(i32, u32, *mut Rect) -> i32 = std::mem::transmute(bounds);
+            let mut rect = Rect::default();
+            if bounds(connection(), window.windowNumber() as u32, &mut rect) != 0 {
+                return content_top_left(window);
+            }
+            rect
+        };
+        // Its frame's top-left, then the title bar down to the content.
+        let frame = window.frame();
+        let content = window.contentRectForFrameRect(frame);
+        let title = (frame.origin.y + frame.size.height) - (content.origin.y + content.size.height);
+        (bounds.x, bounds.y + title)
+    }
+    /// `drag`, from and to global points: each event goes to `window` where
+    /// it is then (a drag moving it moves it).
+    async fn drag_global(
+        window: &NSWindow,
+        from: (f64, f64),
+        to: (f64, f64),
+        steps: usize,
+        measure_from: usize,
+    ) -> (u64, usize) {
+        track_pointer();
+        let height = {
+            let mtm = MainThreadMarker::new().unwrap();
+            objc2_app_kit::NSScreen::screens(mtm)
+                .firstObject()
+                .map_or(0., |screen| screen.frame().size.height)
+        };
+        let local = |(x, y): (f64, f64)| {
+            POINTER.with(|pointer| pointer.set(Some(NSPoint::new(x, height - y))));
+            let (left, top) = server_top_left(window);
+            (x - left, y - top)
+        };
+        PRESSED.with(|pressed| pressed.set(1));
+        let (x, y) = local(from);
+        post(window, NSEventType::LeftMouseDown, x, y);
+        sleep(50).await;
+        let mut start = 0;
+        for step in 1..=steps {
+            if step == measure_from {
+                sleep(100).await;
+                POSTING.with(|posting| posting.set(0));
+                start = instructions();
+            }
+            let t = step as f64 / steps as f64;
+            let before = instructions();
+            let (x, y) = local((from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t));
+            post(window, NSEventType::LeftMouseDragged, x, y);
+            POSTING.with(|posting| posting.set(posting.get() + instructions() - before));
+            sleep(8).await;
+        }
+        let spent = instructions() - start - POSTING.with(|posting| posting.replace(0));
+        sleep(100).await;
+        let still = instructions();
+        for _ in measure_from..=steps {
+            sleep(8).await;
+        }
+        let spent = spent.saturating_sub(instructions() - still);
+        sleep(100).await;
+        let (x, y) = local(to);
+        post(window, NSEventType::LeftMouseUp, x, y);
+        sleep(50).await;
+        PRESSED.with(|pressed| pressed.set(0));
+        sleep(350).await;
+        (spent, steps + 1 - measure_from)
     }
     /// Drag from `(x, y)` in `window` to `(to_x, to_y)` in `steps` moves,
     /// then release; returns the instructions of the moves from `measure_from`.
@@ -300,6 +449,32 @@ mod macos {
                 .count()
         };
         println!("WINDOWS {windows}");
+        // The solo tab drags its window onto the other window's strip.
+        let solo = self::window("Solo").unwrap();
+        let start = content_top_left(&solo);
+        let from = (start.0 + 60., start.1 + 24.);
+        let to = {
+            let other = content_top_left(&other);
+            (other.0 + 200., other.1 + 40.)
+        };
+        let (spent, moves) = drag_global(&solo, from, to, 120, 40).await;
+        let end = content_top_left(&solo);
+        let server = server_top_left(&solo);
+        println!(
+            "WINDOW_DRAG pointer_in_window=({:.1}, {:.1}) appkit=({:.0}, {:.0}) server=({:.0}, {:.0})",
+            to.0 - end.0,
+            to.1 - end.1,
+            end.0,
+            end.1,
+            server.0,
+            server.1
+        );
+        println!(
+            "WINDOW_DRAG moves={moves} instructions_per_move={} moved=({:.0}, {:.0})",
+            spent / moves as u64,
+            end.0 - start.0,
+            end.1 - start.1
+        );
         println!("DONE");
     }
 }

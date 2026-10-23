@@ -1157,6 +1157,12 @@ struct Host {
     /// window moves, so a drag asks AppKit nothing as it moves.
     content_origin: Option<(f64, f64)>,
     window_number: Option<isize>,
+    /// Where the pointer held the window as a drag moving it began
+    /// (`View::drag_moves_window`), in its coordinates.
+    window_grab: Option<(f32, f32)>,
+    /// Where the window server has put its frame's top-left that AppKit
+    /// has yet to hear (`window_place::move_to`).
+    window_pending: Option<(f64, f64)>,
     /// The theme's `background` when it changes, for the renderer's clear
     /// colour, and the effect that watches it.
     theme_background: Rc<std::cell::Cell<Option<zgui::scene::Color>>>,
@@ -1353,6 +1359,8 @@ impl Host {
             native_drag: false,
             content_origin: None,
             window_number: None,
+            window_grab: None,
+            window_pending: None,
             theme_background: Rc::default(),
             applied_background: None,
             _background_effect: None,
@@ -2954,6 +2962,30 @@ impl Host {
             self.popups.show_preview(&window, drag, None);
         }
     }
+    /// A drag moving the window (`View::drag_moves_window`): the window
+    /// follows the pointer, the point it was held at staying under it.
+    fn move_with_drag(&mut self) {
+        let input = &self.context.ui.input;
+        if !input.drag_moves_window() {
+            return;
+        }
+        let Some(drag) = input.drag_state() else {
+            return;
+        };
+        let (Some(window), Some((left, top))) = (&self.window, self.content_origin) else {
+            return;
+        };
+        let (grab_x, grab_y) = *self.window_grab.get_or_insert((drag.x, drag.y));
+        // Its content's top-left goes to the pointer less the grab point.
+        let (x, y) =
+            crate::window_place::pointer().unwrap_or((left + drag.x as f64, top + drag.y as f64));
+        let to = (x - grab_x as f64, y - grab_y as f64);
+        if to == (left, top) {
+            return;
+        }
+        crate::window_place::move_to(window, to, &mut self.window_pending);
+        self.content_origin = Some(to);
+    }
     /// Its content's box in global coordinates.
     fn content_box(&self) -> Option<[f64; 4]> {
         let (left, top) = self.content_origin?;
@@ -3516,6 +3548,11 @@ impl WindowManager {
     /// desktop). Known again without asking while the pointer stays in the
     /// window it was last found in (`drag_over`).
     fn window_under(&self, x: f64, y: f64) -> Option<Over> {
+        self.window_under_past(x, y, None)
+    }
+    /// `window_under`, past window `moving` (whose drag moves it, so it is
+    /// always under the pointer): what is beneath it.
+    fn window_under_past(&self, x: f64, y: f64, moving: Option<u64>) -> Option<Over> {
         let inside = |[left, top, width, height]: [f64; 4]| {
             (left..left + width).contains(&x) && (top..top + height).contains(&y)
         };
@@ -3529,6 +3566,7 @@ impl WindowManager {
         let boxes: Vec<(u64, [f64; 4])> = self
             .hosts
             .iter()
+            .filter(|(token, _)| Some(**token) != moving)
             .filter_map(|(token, host)| Some((*token, host.content_box()?)))
             .filter(|(_, rect)| inside(*rect))
             .collect();
@@ -3537,7 +3575,10 @@ impl WindowManager {
         let over = match boxes.as_slice() {
             [] => None,
             _ => {
-                let number = crate::popup_window::window_at(x, y);
+                let number = match moving.and_then(|moving| self.hosts[&moving].window_number) {
+                    Some(moving) => crate::window_place::window_below(x, y, moving),
+                    None => crate::popup_window::window_at(x, y),
+                };
                 boxes.into_iter().find(|(token, _)| {
                     let own = self.hosts[token].window_number;
                     own.is_some() && own == number
@@ -3555,6 +3596,14 @@ impl WindowManager {
     fn drag_target(&self, token: u64) -> Option<(Option<Over>, zgui::input::DragState)> {
         let source = self.hosts.get(&token)?;
         let drag = source.context.ui.input.drag_state()?;
+        if drag.moves_window {
+            // The window follows the pointer: what is under the pointer is
+            // beneath the window.
+            let (left, top) = source.content_origin?;
+            let (x, y) = crate::window_place::pointer()
+                .unwrap_or((left + drag.x as f64, top + drag.y as f64));
+            return Some((self.window_under_past(x, y, Some(token)), drag));
+        }
         let (width, height) = source.context.viewport.with_untracked(|viewport| *viewport);
         // Inside its own window, that is in front (the drag began in it,
         // so it is key): no need to ask the window server.
@@ -3575,6 +3624,12 @@ impl WindowManager {
             .get(&token)
             .is_some_and(|host| host.context.ui.input.is_dragging() && !host.native_drag);
         if !dragging {
+            if let Some(host) = self.hosts.get_mut(&token)
+                && host.window_grab.take().is_some()
+                && let Some(window) = &host.window
+            {
+                crate::window_place::settle(window, &mut host.window_pending);
+            }
             if self.carrying == Some(token) {
                 self.carrying = None;
                 self.drag_over.set(None);
@@ -3583,6 +3638,9 @@ impl WindowManager {
                 }
             }
             return;
+        }
+        if let Some(source) = self.hosts.get_mut(&token) {
+            source.move_with_drag();
         }
         let Some((over, drag)) = self.drag_target(token) else {
             return;
@@ -3598,9 +3656,11 @@ impl WindowManager {
         self.carrying = (over != Some((token, drag.x, drag.y))).then_some(token);
         if let Some(source) = self.hosts.get_mut(&token) {
             let ui = &source.context.ui;
-            ui.input
-                .set_drag_away(&ui.scene, over.is_none_or(|(over, ..)| over != token));
-            if over.is_none() {
+            // A drag moving its window is always over it: its own
+            // destinations never hear it.
+            let away = drag.moves_window || over.is_none_or(|(over, ..)| over != token);
+            ui.input.set_drag_away(&ui.scene, away);
+            if over.is_none() && !drag.moves_window {
                 source.hand_off_drag(&drag);
             }
         }
@@ -3629,7 +3689,8 @@ impl WindowManager {
                 let ui = &host.context.ui;
                 (ui.input.drag_drop(&ui.scene, &drag.payload, x, y), false)
             }
-            None => (false, true),
+            // A window moved by its only tab stays where it was let go.
+            None => (false, !drag.moves_window),
         };
         if let Some(source) = self.hosts.get(&token) {
             let ui = &source.context.ui;

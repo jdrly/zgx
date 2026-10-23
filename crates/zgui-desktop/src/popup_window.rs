@@ -65,7 +65,7 @@ pub(crate) enum PopupInput {
 
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
-    PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
+    PopupHost, content_origin, enabled, popup_screens, server_move, warm, window_at, window_number,
 };
 
 #[cfg(windows)]
@@ -812,7 +812,7 @@ mod macos {
     /// window (a sixth of `setFrameOrigin:`'s cost). `CGSMoveWindow` is
     /// private API: looked up once, and false where it is missing or the
     /// `private-api` feature is off (App Store builds).
-    fn server_move(window: &NSWindow, origin: NSPoint) -> bool {
+    pub(crate) fn server_move(window: &NSWindow, origin: NSPoint) -> bool {
         #[cfg(feature = "private-api")]
         {
             use std::ffi::{c_char, c_void};
@@ -1035,9 +1035,14 @@ mod macos {
             let Some((parent, content)) = parent_of(window) else {
                 return Ok(());
             };
+            // A drag moving its window shows no preview: the window is it.
+            let unshown = drag
+                .filter(|drag| drag.moves_window)
+                .and_then(|drag| drag.preview);
             let wanted: Vec<(NodeId, Rect)> = scene
                 .popups()
                 .iter()
+                .filter(|root| Some(**root) != unshown)
                 .filter_map(|root| scene.popup_bounds(*root).map(|bounds| (*root, bounds)))
                 .collect();
             let mut index = 0;
