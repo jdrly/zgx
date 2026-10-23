@@ -103,14 +103,21 @@ def main():
         )
         print("ok: zgui content over the page takes clicks and keys; script runs in the page")
 
-        before = shot("before-menu")
+        # The menu shows in a window of its own: over the page, and past the
+        # window's right edge where the screen has room (else inside it).
+        x, y = win.to_screen(window, *at(860, 60))
+        strip = lambda: win.capture_rect(x, y, round(420 * scale), round(120 * scale))
+        before = strip()
         win.click(window, *at(1060, 24))
-        menu = box(870, 60, 1080, 180)
-        wait_for(lambda: differs(before, shot("menu"), menu) > 0.5, "the menu over the page")
+        menu = (0, 0, round(420 * scale), round(120 * scale))
+        wait_for(lambda: win.popups_of(proc.pid) and differs(before, strip(), menu) > 0.15,
+                 "the menu over the page")
+        if args.shots:
+            win.save_png(strip(), args.shots / "menu.png")
         print("ok: the popover draws above the page")
-        win.click(window, *at(920, 138))  # Zoom to 125%: zgui's, over the page
-        wait_for(lambda: differs(before, shot("menu-closed"), box(870, 60, 1000, 120)) < 0.6,
-                 "the menu to close (its click was zgui's)")
+        # Zoom to 125%, where the menu lies either way: zgui's, over the page.
+        win.click(window, *at(1070, 138))
+        wait_for(lambda: not win.popups_of(proc.pid), "the menu to close (its click was zgui's)")
         print("ok: a click on the popover over the page is zgui's")
 
         before = shot("before-scroll")

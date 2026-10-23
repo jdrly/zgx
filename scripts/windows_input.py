@@ -172,6 +172,17 @@ def windows_of(pid):
     return found
 
 
+def popups_of(pid):
+    """Shown popup windows (menus, popovers past the window) of process `pid`."""
+    buffer = ctypes.create_unicode_buffer(64)
+
+    def popup(hwnd):
+        user32.GetClassNameW(hwnd, buffer, 64)
+        return buffer.value == "ZguiPopup"
+
+    return [hwnd for hwnd in windows_of(pid) if popup(hwnd)]
+
+
 def wait_window(proc, timeout=15.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
