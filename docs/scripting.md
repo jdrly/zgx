@@ -205,7 +205,7 @@ Colors are `"#rgb"`, `"#rrggbb"`, `"#rrggbbaa"`, `rgb()`, `rgba()`, `hsl()`, a f
 
 Sizes are border-box, as in CSS with `box-sizing: border-box`: `w` and `h` include the border, padding and children sit inside it (each side of `border_sides` on its own), and a node sized by its content adds its border. `ui.column { w = 200, p = 8, border = 1 }` lays its children out 182 wide, 9 in from each edge. Only `border_over = true` (an inset stroke over the content) takes no room, so use it for a ring that must not move content; a transparent border still takes its width. The default focus ring of buttons and inputs is such a stroke (or recolours their own border); `focus = { border = 0 }` turns it off.
 
-`ui.overlay` stacks its children in one box, as CSS grid lays out items sharing one area: each is sized against the overlay and aligned in it on its own, `items` across (`"start" "center" "end" "stretch"`) and `justify` down (the same, plus `"between"` as start and `"around"`/`"evenly"` as centre). With neither set, children stretch to fill it, except along an axis they size themselves on; `items = "center", justify = "center"` centres an icon in a tile. The overlay is as large as its largest child, so as a pane (`grow = 1` in a row) it shows children that ask to fill it. `ui.scroll` and `ui.scroll_x` are 320 by 240 only when nothing else sizes them: a stretching parent stretches them across, `grow` grows them, `w`/`h` hold; their content fills their width (`scroll`) or height (`scroll_x`). `ui.input` and `ui.textarea` are 240 wide by default whatever their text (a long value scrolls inside, keeping the caret in view), widen in a stretching parent and shrink in a row too narrow for them; `shrink = 0` or a `w` holds them.
+`ui.overlay` stacks its children in one box, as CSS grid lays out items sharing one area: each is sized against the overlay and aligned in it on its own, `items` across (`"start" "center" "end" "stretch"`) and `justify` down (the same, plus `"between"` as start and `"around"`/`"evenly"` as centre). With neither set, children stretch to fill it, except along an axis they size themselves on; `items = "center", justify = "center"` centres an icon in a tile. The overlay is as large as its largest child, so as a pane (`grow = 1` in a row) it shows children that ask to fill it. `ui.scroll` and `ui.scroll_x` are 320 by 240 only when nothing else sizes them: a stretching parent stretches them across, `grow` grows them, `w`/`h` hold; their content fills their width (`scroll`) or height (`scroll_x`). `ui.input` and `ui.textarea` are 240 wide by default whatever their text (a long value scrolls inside, keeping the caret in view), widen in a stretching parent and shrink in a row too narrow for them, as every box does (`shrink = 1`, CSS's default, each no narrower than its content needs; an input scrolls its text, so it may shrink to nothing); `shrink = 0` holds one.
 
 An `absolute = true` node positions against its containing block: the nearest ancestor with `relative = true`, searched from its parent up but not past an `absolute` ancestor (which contains its own absolute descendants); with none, its parent. `left`, `top`, `right` and `bottom` count from that block's padding box, inside its border; percentages are of its size; both insets on an axis without a size stretch it between them; an axis without insets keeps it at its parent's content origin (plus `ml`/`mt`). `show`, `switch`, `each` and `presence` wrap their content in a node of their own, so mark the intended ancestor `relative` rather than relying on being its direct child. Transforms and scroll offsets never change the containing block: an absolute node moves with them, and still paints in its parent's place, under its clips.
 
@@ -213,6 +213,34 @@ An `absolute = true` node positions against its containing block: the nearest an
 ui.column { relative = true, w = 300, h = 200,
 	ui.column { p = 12, ui.div { absolute = true, right = 8, bottom = 8, w = 16, h = 16 } } }
 ```
+
+### Responsive layout
+
+A layout that changes with the room it has, as CSS's media and container queries change one, reads its container's size through a ref: `r.width` and `r.height` are followed, so a computed reading them runs again when layout resizes the element. The change lands in the frame the size changes: layout, the computed and layout again all run before it shows, as a browser settles its ResizeObserver callbacks before painting, so nothing flashes at the old layout.
+
+```lua
+local root = ui.ref()
+-- "wide", "medium" or "narrow", by the window's width.
+local layout = ui.computed(function()
+	local w = root.width or 1200
+	return if w >= 1000 then "wide" elseif w >= 680 then "medium" else "narrow"
+end)
+return ui.row {
+	ref = root,
+	w_full = true,
+	h_full = true,
+	ui.show(function()
+		return layout:get() == "wide"
+	end, ui.column { w = 220, shrink = 0, "Mailboxes" }),
+	ui.column {
+		grow = 1,
+		-- Wraps onto a second line rather than holding the pane wide.
+		ui.row { flex_wrap = true, gap = 8, ui.button { "Reply" }, ui.button { "Archive" } },
+	},
+}
+```
+
+Query a box whose size does not depend on what the query changes, such as the window's root row: a box sized by its content that hid content below a width would go back and forth (zgui stops after a few rounds). Within a layout, flex does the rest: children shrink to fit (`shrink = 1`) down to their content's narrowest, text wraps with `wrap = true`, rows with `flex_wrap = true`, and `min_w = 0` lets a truncated label go narrower still. The mail example (`examples/mail`) folds a three-pane window this way, into a drawer and then one pane at a time.
 
 ### Layout animation
 

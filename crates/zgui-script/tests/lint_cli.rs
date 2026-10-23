@@ -42,3 +42,26 @@ fn findings_exit_one_and_print_as_json() {
     assert_eq!(status, Some(1));
     assert!(out.contains("warning[untracked-get]"), "{out}");
 }
+
+#[test]
+fn a_container_query_through_a_ref_is_clean() {
+    // docs/scripting.md's responsive-layout recipe: a ref's size read in a
+    // computed and in a text function is followed, not an untracked read.
+    let recipe = r#"local root = ui.ref()
+local wide = ui.computed(function()
+	return (root.width or 1200) >= 1000
+end)
+return ui.row {
+	ref = root,
+	w_full = true,
+	ui.show(function()
+		return wide:get()
+	end, ui.column { w = 220, shrink = 0, "Mailboxes" }),
+	ui.text { function()
+		return if (root.width or 0) > 500 then "wide" else "narrow"
+	end },
+}
+"#;
+    let (status, out) = lint(recipe, false);
+    assert_eq!(status, Some(0), "{out}");
+}
