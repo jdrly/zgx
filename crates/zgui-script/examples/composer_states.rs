@@ -49,6 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let _ = host.reload();
         cx.tasks.spawn(host.watch(Duration::from_millis(250)));
+        // `ui.window.titlebar_area`: where the title bar leaves the script room.
+        host.window_chrome(
+            cx.window_info.titlebar_area.clone(),
+            cx.window_info.controls.clone(),
+        );
         cx.render(host.view());
     })
 }

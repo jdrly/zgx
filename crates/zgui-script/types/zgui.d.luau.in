@@ -735,6 +735,21 @@ export type WindowOptions = {
 	[number]: Node,
 }
 
+-- A rect in points, from the window's top left.
+export type WindowRect = { x: number, y: number, width: number, height: number }
+
+-- `ui.window`: called, it declares a window (`WindowOptions`). Its fields
+-- are the app's own window's title bar, as the web's Window Controls
+-- Overlay gives it: `titlebar_area`, where the app may draw in the strip an
+-- inset or hidden title bar leaves (nil for a standard title bar, in
+-- fullscreen, and where the platform does not say), and `controls`, the
+-- window's own buttons in it (nil where there are none). Both follow
+-- resizes, scale and fullscreen.
+export type WindowApi = ((opts: WindowOptions) -> ()) & {
+	titlebar_area: State<WindowRect?>,
+	controls: State<WindowRect?>,
+}
+
 ---------------------------------------------------------------------------
 -- Properties.
 
@@ -1546,7 +1561,7 @@ declare ui: {
 	-- options only looks it up.
 	term: (id: string, opts: TermOptions?) -> Term,
 	command: (opts: CommandOptions) -> (),
-	window: (opts: WindowOptions) -> (),
+	window: WindowApi,
 	checkbox: (props: CheckboxProps) -> Node,
 	input: (props: InputProps) -> Node,
 	textarea: (props: InputProps) -> Node,

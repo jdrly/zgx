@@ -9,7 +9,7 @@
 //! runtime (`Ui::with_runtime`), so their state is the app's.
 use crate::{
     node::{Node, expect_node, expect_state},
-    value::Value,
+    value::{State, Store, Value},
 };
 use mlua::{Lua, Table};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -80,11 +80,30 @@ impl Windows {
     }
 }
 
-/// Installs `ui.window`.
-pub(crate) fn install(lua: &Lua, ui: &Table, windows: Rc<Windows>) -> mlua::Result<()> {
-    ui.set(
-        "window",
-        lua.create_function(move |_, table: Table| {
+/// The shared keys holding the window's title bar area and buttons
+/// (`ScriptHost::window_chrome`), which `ui.window.titlebar_area` and
+/// `ui.window.controls` read.
+pub(crate) const TITLEBAR_AREA: &str = "zgui.window.titlebar_area";
+pub(crate) const CONTROLS: &str = "zgui.window.controls";
+
+/// Installs `ui.window`: called, it declares a window; its
+/// `titlebar_area` and `controls` are the app's own window's.
+pub(crate) fn install(
+    lua: &Lua,
+    ui: &Table,
+    windows: Rc<Windows>,
+    shared: &Store,
+) -> mlua::Result<()> {
+    let window = lua.create_table()?;
+    window.set(
+        "titlebar_area",
+        State(shared.state(TITLEBAR_AREA, Value::Nil)),
+    )?;
+    window.set("controls", State(shared.state(CONTROLS, Value::Nil)))?;
+    let meta = lua.create_table()?;
+    meta.set(
+        "__call",
+        lua.create_function(move |_, (_, table): (Table, Table)| {
             let id: String = table
                 .get::<Option<String>>("id")?
                 .ok_or_else(|| mlua::Error::runtime("ui.window needs an `id`"))?;
@@ -125,5 +144,7 @@ pub(crate) fn install(lua: &Lua, ui: &Table, windows: Rc<Windows>) -> mlua::Resu
             pending.push((window, node));
             Ok(())
         })?,
-    )
+    )?;
+    window.set_metatable(Some(meta))?;
+    ui.set("window", window)
 }

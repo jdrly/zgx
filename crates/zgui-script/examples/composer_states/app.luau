@@ -2718,8 +2718,20 @@ return ui.column {
 	end,
 	ui.row {
 		h = 44,
-		pl = 84,
-		pr = 12,
+		-- Clear of the window's own buttons: the free part of the title bar
+		-- (macOS's traffic lights at the left, Windows' buttons at the right);
+		-- the traffic lights' 84 points where the platform does not say.
+		pl = function()
+			local area = ui.window.titlebar_area:get()
+			return if area then area.x + 12 else 84
+		end,
+		pr = function()
+			local area, buttons = ui.window.titlebar_area:get(), ui.window.controls:get()
+			if area and buttons and buttons.x >= area.x + area.width then
+				return buttons.width + 12
+			end
+			return 12
+		end,
 		gap = 6,
 		items = "center",
 		window_drag = true,

@@ -77,3 +77,35 @@ fn a_declared_window_shares_the_apps_state_and_follows_reloads() {
         "kept across a reload"
     );
 }
+
+#[test]
+fn the_window_titlebar_area_and_controls_follow_what_the_host_says() {
+    let h = Harness::inline(
+        r##"return ui.text {
+            id = "area",
+            function()
+                local area = ui.window.titlebar_area:get()
+                local buttons = ui.window.controls:get()
+                if not area then return "none" end
+                return `{area.x} {area.width}x{area.height} buttons {if buttons then buttons.x else "none"}`
+            end,
+        }"##,
+    );
+    h.frames(1);
+    assert!(texts(&h.ui).contains(&"none".to_owned()));
+    let area = h.ui.signal(Some(zgui::scene::Rect::new(0., 0., 662., 32.)));
+    let controls =
+        h.ui.signal(Some(zgui::scene::Rect::new(662., 0., 138., 32.)));
+    h.host.window_chrome(area.clone(), controls.clone());
+    h.frames(1);
+    assert!(texts(&h.ui).contains(&"0 662x32 buttons 662".to_owned()));
+    // A resize, then fullscreen (no title bar).
+    area.set(Some(zgui::scene::Rect::new(0., 0., 1062., 32.)));
+    controls.set(Some(zgui::scene::Rect::new(1062., 0., 138., 32.)));
+    h.frames(1);
+    assert!(texts(&h.ui).contains(&"0 1062x32 buttons 1062".to_owned()));
+    area.set(None);
+    controls.set(None);
+    h.frames(1);
+    assert!(texts(&h.ui).contains(&"none".to_owned()));
+}

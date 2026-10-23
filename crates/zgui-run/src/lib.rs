@@ -229,6 +229,11 @@ pub fn run(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
     Application::new().window(options).run(move |cx| {
         let host = ScriptHost::new(&cx.ui.runtime, script.clone()).app_id(&config.app_id);
+        // `ui.window.titlebar_area`: where the title bar leaves the script room.
+        host.window_chrome(
+            cx.window_info.titlebar_area.clone(),
+            cx.window_info.controls.clone(),
+        );
         let _ = host.reload();
         cx.tasks.spawn(host.watch(Duration::from_millis(250)));
         // The script's commands are the menu bar; their keys work wherever

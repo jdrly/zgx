@@ -688,6 +688,9 @@ struct Inner {
     limits: Limits,
     stores: RefCell<HashMap<String, Rc<Store>>>,
     shared: Rc<Store>,
+    /// Keeps `ui.window.titlebar_area` and `controls` as the window's
+    /// (`window_chrome`).
+    chrome: RefCell<Option<zgui::reactive::Effect>>,
     elements: Rc<element::Elements>,
     engine: Rc<anime::Engine>,
     assets: Rc<lower::Assets>,
@@ -834,6 +837,7 @@ impl ScriptHost {
             },
             assets: Rc::default(),
             shared: Rc::new(Store::new(runtime)),
+            chrome: RefCell::default(),
             actions: Actions::default(),
             functions: Functions::default(),
             current: RefCell::default(),
@@ -1074,6 +1078,34 @@ impl ScriptHost {
     /// costs anything.
     pub fn shared(&self, key: &str, initial: impl Into<Value>) -> Shared {
         Shared(self.0.shared.state(key, initial.into()))
+    }
+    /// Keep `ui.window.titlebar_area` and `ui.window.controls` as the
+    /// window the view shows in has them: pass its
+    /// `WindowInfo::titlebar_area` and `controls`. Each is a rect in points
+    /// (`{ x, y, width, height }`), or nil where the window has none.
+    pub fn window_chrome(
+        &self,
+        titlebar_area: Signal<Option<zgui::scene::Rect>>,
+        controls: Signal<Option<zgui::scene::Rect>>,
+    ) {
+        fn rect(rect: Option<zgui::scene::Rect>) -> Value {
+            rect.map_or(Value::Nil, |r| {
+                let n = |v: f32| Value::Num(f64::from(v));
+                Value::Map(Rc::from([
+                    (Rc::from("height"), n(r.height)),
+                    (Rc::from("width"), n(r.width)),
+                    (Rc::from("x"), n(r.x)),
+                    (Rc::from("y"), n(r.y)),
+                ]))
+            })
+        }
+        let area = self.0.shared.state(windows::TITLEBAR_AREA, Value::Nil);
+        let buttons = self.0.shared.state(windows::CONTROLS, Value::Nil);
+        let effect = self.0.runtime.effect_now(move || {
+            area.set(rect(titlebar_area.get()));
+            buttons.set(rect(controls.get()));
+        });
+        *self.0.chrome.borrow_mut() = Some(effect);
     }
     /// The app commands scripts declare (`ui.command`), in declaration
     /// order, as of the last successful load: show them as menu items.
@@ -1921,7 +1953,7 @@ impl ScriptHost {
         term::install(&lua, &ui, self.0.terms.clone()).map_err(fail)?;
         node::install_web(&lua, &ui, self.0.webs.clone()).map_err(fail)?;
         command::install(&lua, &ui, self.0.commands.clone()).map_err(fail)?;
-        windows::install(&lua, &ui, self.0.windows.clone()).map_err(fail)?;
+        windows::install(&lua, &ui, self.0.windows.clone(), &self.0.shared).map_err(fail)?;
         let may = |capability: Capability| grants.allows(&capability);
         let fetch = may(Capability::Fetch).then(|| self.0.fetcher.clone());
         calls::install(&lua, &ui, self.0.async_actions.clone(), fetch).map_err(fail)?;

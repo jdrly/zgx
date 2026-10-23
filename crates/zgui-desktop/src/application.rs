@@ -1962,7 +1962,9 @@ impl Host {
         }
         window.request_redraw();
         self.context.dialogs.attach(Some(&window));
-        self.context.window_info.refresh(&window);
+        self.context
+            .window_info
+            .refresh(&window, self.options.titlebar);
         self.frame_paced = matches!(
             window.display_handle().map(|h| h.as_raw()),
             Ok(RawDisplayHandle::Wayland(_))
@@ -2069,7 +2071,10 @@ impl Host {
                     .last_request_error
                     .set(window.drag_window().err().map(|e| e.to_string()));
             }
-            WindowCommand::RefreshInfo => self.context.window_info.refresh(window),
+            WindowCommand::RefreshInfo => self
+                .context
+                .window_info
+                .refresh(window, self.options.titlebar),
             WindowCommand::Title(title) => window.set_title(&title),
             WindowCommand::Size(width, height) => {
                 let (width, height) = self
@@ -2274,7 +2279,9 @@ impl Host {
                 | WindowEvent::ScaleFactorChanged { .. }
         ) && let Some(window) = &self.window
         {
-            self.context.window_info.refresh(window);
+            self.context
+                .window_info
+                .refresh(window, self.options.titlebar);
             let window = window.clone();
             self.refresh_frame_interval(&window);
             let window = &window;

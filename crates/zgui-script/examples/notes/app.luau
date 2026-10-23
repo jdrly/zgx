@@ -58,6 +58,10 @@ local wash = "$notes.wash"
 local accent = "$accent"
 local clear = "#00000000"
 
+-- The platform's command key, and where its menus are.
+local mac = ui.shared("platform", ""):peek() == "macos"
+local cmd = if mac then "Cmd" else "Ctrl"
+
 if notes:peek() == nil then
 	notes:set {
 		{
@@ -71,8 +75,14 @@ if notes:peek() == nil then
 
 - [ ] Edit this note and watch the preview re-parse it in Luau
 - [ ] Use the `⋯` menu to pin, duplicate or delete a note
-- [ ] Press Cmd+N for a new note: the menu bar is AppKit's
-- [ ] Toggle the preview with Cmd+Shift+P and scroll it under the blurred header
+- [ ] Press ]]
+				.. cmd
+				.. "+N for a new note"
+				.. (if mac then ": the menu bar is AppKit's" else "")
+				.. "\n"
+				.. [[- [ ] Toggle the preview with ]]
+				.. cmd
+				.. [[+Shift+P and scroll it under the blurred header
 - [ ] Save `app.luau` while it runs: the interface reloads and keeps your notes
 
 > [!TIP]
@@ -736,7 +746,7 @@ local editor = ui.column {
 		ui.text {
 			function()
 				if find(selected:get()) == nil then
-					return "No note selected. Press Cmd+N to write one."
+					return "No note selected. Press " .. cmd .. "+N to write one."
 				end
 				local words = 0
 				for _ in string.gmatch(body:get(), "%S+") do

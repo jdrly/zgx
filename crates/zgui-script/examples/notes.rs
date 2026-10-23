@@ -69,6 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // The preview's state is shared, so the menu's check mark follows
             // the script's toolbar button too.
+            // The note text names the platform's keys and menus.
+            host.shared("platform", std::env::consts::OS);
             let preview = host.shared("preview", true);
             let windows = cx.windows.clone();
             let check = cx.ui.runtime.effect({
@@ -102,6 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Edits from the last 250 ms, before the window goes.
             let saving = host.clone();
             cx.on_closed(move || saving.save());
+            // `ui.window.titlebar_area`: where the title bar leaves the script room.
+            host.window_chrome(
+                cx.window_info.titlebar_area.clone(),
+                cx.window_info.controls.clone(),
+            );
             cx.render(host.view());
         })
 }

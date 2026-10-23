@@ -121,6 +121,33 @@ pub(crate) fn apply(
     }
 }
 
+/// The title bar's free area and the window's buttons in it, in points
+/// (`WindowInfo::titlebar_area`, `controls`): `None` for a standard title
+/// bar and in fullscreen.
+pub(crate) fn titlebar_area(
+    window: &winit::window::Window,
+    titlebar: Titlebar,
+) -> (Option<zgui::scene::Rect>, Option<zgui::scene::Rect>) {
+    if titlebar == Titlebar::Standard || window.fullscreen().is_some() {
+        return (None, None);
+    }
+    let size = window.inner_size().to_logical::<f32>(window.scale_factor());
+    #[cfg(windows)]
+    {
+        win::titlebar_area(size.width, titlebar)
+    }
+    // TODO(macos): the traffic lights' frame (`standardWindowButton`) in
+    // the 40-point strip `Inset` keeps, and the strip right of them.
+    // TODO(linux): the libadwaita buttons `Inset` draws, on the side and in
+    // the order the desktop asks (`linux_appearance`), and the strip
+    // beside them.
+    #[cfg(not(windows))]
+    {
+        let _ = size;
+        (None, None)
+    }
+}
+
 #[cfg(windows)]
 pub(crate) use win::{CaptionHost, fit_work_area, menu_theme};
 
@@ -208,6 +235,8 @@ mod win {
         /// The window has no frame (Inset, Hidden): its edges resize it.
         frameless: bool,
         buttons: bool,
+        /// The buttons show: not in fullscreen, where a window has none.
+        shown: Cell<bool>,
         /// The system's settings or colours changed (high contrast, the
         /// accent, animations) since the host last read them.
         settings_changed: Cell<bool>,
@@ -369,6 +398,24 @@ mod win {
                 }
             }
         }
+    }
+
+    /// The caption strip of a frameless window `width` points wide, and the
+    /// caption buttons `Inset` draws at its right (none for `Hidden`).
+    pub(super) fn titlebar_area(
+        width: f32,
+        titlebar: Titlebar,
+    ) -> (Option<zgui::scene::Rect>, Option<zgui::scene::Rect>) {
+        use zgui::scene::Rect;
+        let height = BUTTON_HEIGHT as f32;
+        if titlebar != Titlebar::Inset {
+            return (Some(Rect::new(0., 0., width, height)), None);
+        }
+        let buttons = (3. * BUTTON_WIDTH as f32).min(width);
+        (
+            Some(Rect::new(0., 0., width - buttons, height)),
+            Some(Rect::new(width - buttons, 0., buttons, height)),
+        )
     }
 
     /// Fit a new window to its monitor's work area (the screen less the
@@ -554,6 +601,7 @@ mod win {
         let caption = Rc::new(Caption {
             frameless,
             buttons: titlebar == Titlebar::Inset,
+            shown: Cell::new(true),
             settings_changed: Cell::new(false),
             hovered: Cell::new(None),
             pressed: Cell::new(None),
@@ -608,7 +656,7 @@ mod win {
             (client.right, client.bottom),
             scale(hwnd),
             maximized,
-            caption.buttons,
+            caption.buttons && caption.shown.get(),
         )
     }
 
@@ -773,6 +821,7 @@ mod win {
         maximized: zgui::reactive::Signal<bool>,
         active: zgui::reactive::Signal<bool>,
         dark: zgui::reactive::Signal<bool>,
+        fullscreen: zgui::reactive::Signal<bool>,
         view: Option<zgui::compose::ViewHandle>,
     }
     impl CaptionHost {
@@ -799,6 +848,7 @@ mod win {
                 maximized: ui.signal(false),
                 active: ui.signal(true),
                 dark: ui.signal(true),
+                fullscreen: ui.signal(false),
                 view: None,
             })
         }
@@ -817,6 +867,9 @@ mod win {
                 self.active.set(window.has_focus());
                 self.dark
                     .set(window.theme() != Some(winit::window::Theme::Light));
+                let fullscreen = window.fullscreen().is_some();
+                self.fullscreen.set(fullscreen);
+                self.caption.shown.set(!fullscreen);
             }
             self.hovered.set(self.caption.hovered.get());
             self.pressed.set(self.caption.pressed.get());
@@ -888,11 +941,15 @@ mod win {
                         }),
                     )
             };
+            let fullscreen = self.fullscreen.clone();
             row()
                 .absolute()
                 .top(0.)
                 .right(0.)
                 .pointer_events(false)
+                .reactive_style(move || {
+                    Styles::new().opacity(if fullscreen.get() { 0. } else { 1. })
+                })
                 .child(button(CaptionButton::Minimize))
                 .child(button(CaptionButton::Maximize))
                 .child(button(CaptionButton::Close))
@@ -941,6 +998,23 @@ mod win {
             // buttons reach the very corner.
             assert_eq!(hit((0, 600), size, 1., true, true), None);
             assert_eq!(hit((1599, 0), size, 1., true, true), Some(HTCLOSE));
+        }
+
+        #[test]
+        fn the_titlebar_area_is_the_caption_strip_less_the_buttons() {
+            use zgui::scene::Rect;
+            assert_eq!(
+                titlebar_area(800., Titlebar::Inset),
+                (
+                    Some(Rect::new(0., 0., 662., 32.)),
+                    Some(Rect::new(662., 0., 138., 32.))
+                )
+            );
+            // `Hidden` has no buttons: the whole strip is the app's.
+            assert_eq!(
+                titlebar_area(800., Titlebar::Hidden),
+                (Some(Rect::new(0., 0., 800., 32.)), None)
+            );
         }
 
         #[test]

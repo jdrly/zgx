@@ -71,6 +71,16 @@ pub struct WindowInfo {
     /// elsewhere): content inset from the window's edge keeps its corners
     /// concentric with it.
     pub corner_radius: Signal<f64>,
+    /// Where an app may draw in the title bar, in points: the strip a
+    /// `Titlebar::Inset` or `Hidden` window's content runs under, less the
+    /// window's own buttons (as the web's Window Controls Overlay gives
+    /// it). `None` for a standard title bar, in fullscreen, and where zgui
+    /// does not know it yet. It follows resizes, scale and fullscreen.
+    pub titlebar_area: Signal<Option<zgui::scene::Rect>>,
+    /// The window's own buttons in that strip, in points (Windows' caption
+    /// buttons at the top right, macOS's traffic lights at the top left),
+    /// or `None` where there are none.
+    pub controls: Signal<Option<zgui::scene::Rect>>,
 }
 impl WindowInfo {
     pub(crate) fn new(ui: &Ui, width: f64, height: f64) -> Self {
@@ -86,9 +96,11 @@ impl WindowInfo {
             capabilities: ui.signal(WindowCapabilities::default()),
             last_request_error: ui.signal(None),
             corner_radius: ui.signal(0.),
+            titlebar_area: ui.signal(None),
+            controls: ui.signal(None),
         }
     }
-    pub(crate) fn refresh(&self, window: &Window) {
+    pub(crate) fn refresh(&self, window: &Window, titlebar: crate::Titlebar) {
         let wayland = window
             .display_handle()
             .is_ok_and(|h| matches!(h.as_raw(), RawDisplayHandle::Wayland(_)));
@@ -121,6 +133,13 @@ impl WindowInfo {
         );
         self.bounds.set(WindowBounds::read(window));
         self.fullscreen.set(window.fullscreen().is_some());
+        let (area, controls) = crate::window_chrome::titlebar_area(window, titlebar);
+        if self.titlebar_area.with_untracked(|old| *old != area) {
+            self.titlebar_area.set(area);
+        }
+        if self.controls.with_untracked(|old| *old != controls) {
+            self.controls.set(controls);
+        }
         self.capabilities.set(WindowCapabilities {
             global_position: !wayland,
             placement: !wayland,

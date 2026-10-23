@@ -114,6 +114,33 @@ ui.window {
 return ui.button { on_click = ui.set(settings, true), "Settings…" }
 ```
 
+### The title bar
+
+```luau
+ui.window.titlebar_area: State<WindowRect?>
+ui.window.controls: State<WindowRect?>
+```
+
+Content under an inset or hidden title bar stays clear of the window's own buttons by reading where it may draw, as the web's Window Controls Overlay gives it. `ui.window.titlebar_area` is the strip the title bar leaves, less the window's buttons. `ui.window.controls` is the buttons. Each is `{ x, y, width, height }` in points from the window's top left, or nil for a standard title bar, in fullscreen, and where the platform does not say (macOS and Linux, for now). Both follow resizes, scale and fullscreen. `zgui run` keeps them; a Rust host passes its window's with `ScriptHost::window_chrome`.
+
+```lua
+return ui.row {
+	h = 44,
+	window_drag = true,
+	items = "center",
+	-- Clear of Windows' buttons at the right, or macOS's at the left.
+	pl = function()
+		local area = ui.window.titlebar_area:get()
+		return if area then area.x + 12 else 84
+	end,
+	pr = function()
+		local area, buttons = ui.window.titlebar_area:get(), ui.window.controls:get()
+		return if area and buttons and buttons.x >= area.x + area.width then buttons.width + 12 else 12
+	end,
+	ui.text { "Title" },
+}
+```
+
 ## Example
 
 ```lua
