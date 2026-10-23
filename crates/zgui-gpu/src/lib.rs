@@ -1136,8 +1136,12 @@ pub fn measure_text(
 ) -> (f32, f32) {
     text::ShapedText::new(fonts, text, size, width).size()
 }
-/// The adapter DXGI ranks first for low power, with a device opened on it
-/// alone (none when Direct3D 12 isn't the instance's backend). wgpu's
+/// The GPU an interface draws on: the integrated one of a machine with two,
+/// which keeps a laptop's discrete GPU asleep.
+const POWER: wgpu::PowerPreference = wgpu::PowerPreference::LowPower;
+/// The adapter DXGI ranks first for `POWER`, a GPU before software, with a
+/// device opened on it alone (none when Direct3D 12 isn't the instance's
+/// backend). wgpu's
 /// `request_adapter` opens a Direct3D 12 device on every adapter to rank them,
 /// and each driver keeps its memory after the device is released: 20 MiB for
 /// a second adapter (an indirect display's) on an NVIDIA machine.
@@ -1145,7 +1149,7 @@ pub fn measure_text(
 fn preferred_dx12_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
     // SAFETY: the hal instance is only read, and the adapter is exposed from it.
     let hal = unsafe { instance.as_hal::<wgpu::hal::api::Dx12>() }?;
-    let exposed = hal.expose_preferred_adapter(wgpu::PowerPreference::LowPower)?;
+    let exposed = hal.expose_preferred_adapter(POWER)?;
     Some(unsafe { instance.create_adapter_from_hal(exposed) })
 }
 /// Shared native GPU device, pipelines, and font database. Clone this cheaply for
@@ -1243,7 +1247,7 @@ impl GpuContext {
                 Some(adapter) => Ok(adapter),
                 None => {
                     pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::LowPower,
+                        power_preference: POWER,
                         compatible_surface: surface.as_ref(),
                         force_fallback_adapter: false,
                     }))

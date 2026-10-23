@@ -194,9 +194,10 @@ impl super::Instance {
     }
 
     /// zgui patch: the first adapter in DXGI's order for `power` that has
-    /// Direct3D 12. Unlike `enumerate_adapters`, it creates no device on
-    /// the adapters after it: each one a process ever opens keeps its
-    /// driver's memory (20 MiB or more) after the device is released.
+    /// Direct3D 12, a GPU before software (WARP) whatever that order.
+    /// Unlike `enumerate_adapters`, it creates no device on the adapters
+    /// after it: each one a process ever opens keeps its driver's memory
+    /// (20 MiB or more) after the device is released.
     pub fn expose_preferred_adapter(
         &self,
         power: wgt::PowerPreference,
@@ -206,8 +207,18 @@ impl super::Instance {
             wgt::PowerPreference::LowPower => Dxgi::DXGI_GPU_PREFERENCE_MINIMUM_POWER,
             wgt::PowerPreference::HighPerformance => Dxgi::DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
         };
-        auxil::dxgi::factory::enumerate_adapters_by(self.factory.clone(), Some(preference))
+        let (hardware, software): (Vec<_>, Vec<_>) =
+            auxil::dxgi::factory::enumerate_adapters_by(self.factory.clone(), Some(preference))
+                .into_iter()
+                .partition(|raw| {
+                    unsafe { raw.GetDesc1() }.is_ok_and(|desc| {
+                        !Dxgi::DXGI_ADAPTER_FLAG(desc.Flags as i32)
+                            .contains(Dxgi::DXGI_ADAPTER_FLAG_SOFTWARE)
+                    })
+                });
+        hardware
             .into_iter()
+            .chain(software)
             .find_map(|raw| self.expose(raw))
     }
 }
