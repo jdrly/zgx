@@ -120,7 +120,7 @@ pub(crate) fn apply(
 }
 
 #[cfg(windows)]
-pub(crate) use win::{CaptionHost, menu_theme};
+pub(crate) use win::{CaptionHost, fit_work_area, menu_theme};
 
 #[cfg(windows)]
 mod win {
@@ -367,6 +367,94 @@ mod win {
                 }
             }
         }
+    }
+
+    /// Fit a new window to its monitor's work area (the screen less the
+    /// taskbar): a size asked for in points can be more pixels than the
+    /// screen has at a high scale (1180 by 760 points is 1770 by 1140
+    /// pixels at 150%, past a 1080-pixel screen), and Windows, unlike macOS,
+    /// shows it so. It shrinks to fit, though not below `min` (logical), and
+    /// moves inside.
+    pub(crate) fn fit_work_area(window: &Window, min: Option<(f64, f64)>) {
+        use windows::Win32::{
+            Graphics::Gdi::{
+                GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+            },
+            UI::WindowsAndMessaging::{GetWindowRect, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos},
+        };
+        let Some(hwnd) = hwnd(window) else {
+            return;
+        };
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let mut rect = RECT::default();
+        // SAFETY: our own window; each call writes into a local.
+        unsafe {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if !GetMonitorInfoW(monitor, &mut info).as_bool()
+                || GetWindowRect(hwnd, &mut rect).is_err()
+            {
+                return;
+            }
+        }
+        let work = info.rcWork;
+        let scale = scale(hwnd);
+        let (min_w, min_h) = min.map_or((0, 0), |(w, h)| {
+            ((w * scale).ceil() as i32, (h * scale).ceil() as i32)
+        });
+        let fitted = fit(
+            (
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ),
+            (
+                work.left,
+                work.top,
+                work.right - work.left,
+                work.bottom - work.top,
+            ),
+            (min_w, min_h),
+        );
+        if fitted
+            != (
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            )
+        {
+            let (x, y, width, height) = fitted;
+            // SAFETY: our own window, still hidden.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+        }
+    }
+
+    /// Window rectangle `(x, y, width, height)` fitted inside `work`: no
+    /// larger than it (nor smaller than `min`), and moved inside it.
+    fn fit(
+        (x, y, width, height): (i32, i32, i32, i32),
+        (wx, wy, ww, wh): (i32, i32, i32, i32),
+        (min_w, min_h): (i32, i32),
+    ) -> (i32, i32, i32, i32) {
+        let width = width.min(ww).max(min_w);
+        let height = height.min(wh).max(min_h);
+        let x = x.min(wx + ww - width).max(wx);
+        let y = y.min(wy + wh - height).max(wy);
+        (x, y, width, height)
     }
 
     /// Windows' own menu for the window (Alt+Space, a right click on its
@@ -851,6 +939,31 @@ mod win {
             // buttons reach the very corner.
             assert_eq!(hit((0, 600), size, 1., true, true), None);
             assert_eq!(hit((1599, 0), size, 1., true, true), Some(HTCLOSE));
+        }
+
+        #[test]
+        fn a_window_larger_than_the_work_area_shrinks_and_moves_inside_it() {
+            let work = (0, 0, 1920, 1032);
+            // 1770 by 1140 at (208, 208): too tall, and off the right.
+            assert_eq!(
+                fit((208, 208, 1770, 1140), work, (0, 0)),
+                (150, 0, 1770, 1032)
+            );
+            // A window that fits stays as it is.
+            assert_eq!(
+                fit((100, 100, 800, 600), work, (0, 0)),
+                (100, 100, 800, 600)
+            );
+            // Never below the app's minimum, even past the work area.
+            assert_eq!(
+                fit((0, 0, 3000, 2000), work, (2000, 1200)),
+                (0, 0, 2000, 1200)
+            );
+            // A second monitor's work area, left of the primary.
+            assert_eq!(
+                fit((-1700, 50, 1600, 900), (-1600, 0, 1600, 860), (0, 0)),
+                (-1600, 0, 1600, 860)
+            );
         }
     }
 }

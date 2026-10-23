@@ -103,6 +103,10 @@ window's DPI. Embed one as a resource from the app's build script, for
 example with the `winresource` crate (`WindowsResource::new().set_icon("app.ico")`);
 without one, Windows' default shows.
 
+A new window that would not fit its monitor's work area (the screen less the
+taskbar) at that monitor's scale shrinks to fit, never below its minimum
+size, and moves inside it. A window given `bounds` keeps them.
+
 ## System settings
 
 The built-in themes take these from Windows, read at startup and again when

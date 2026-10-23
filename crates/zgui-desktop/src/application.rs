@@ -1809,6 +1809,11 @@ impl Host {
             };
         }
         self.context.window_info.corner_radius.set(radius);
+        // Windows shows a window past its screen; the app's own bounds stand.
+        #[cfg(windows)]
+        if sized.is_none() {
+            crate::window_chrome::fit_work_area(&window, self.options.min_size);
+        }
         #[cfg(windows)]
         {
             let proxy = self.proxy.clone();
