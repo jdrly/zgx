@@ -18,7 +18,7 @@ Elsewhere each one falls back to what the window alone can do: popups stay insid
 
 ## Popups past the window
 
-Popups need nothing new. An open menu, submenu, select, popover, context menu or tooltip is a popup root of its window's scene. It keeps the window's focus, keys and dismissal, and the host shows it in a window of its own, flipped and clamped to the screen its trigger is on ([application](application.md#popups-past-the-window)). Menus open as their trigger is pressed: drag to an item and release to choose it. A pop-up button's menu opens with the chosen item over the button (`View::open_over(|| id)`, Luau `open_over`). `.arrow(8.)` gives a popover an arrow pointing at its trigger from whichever side it opened on. Right to left, a menu lines up with its trigger's right edge and submenus open leftward. On macOS the theme's `menu.bg` and `popover.bg` are clear over AppKit's menu and popover materials ([styling](styling.md)).
+Popups need nothing new. An open menu, submenu, select, popover, context menu or tooltip is a popup root of its window's scene. It keeps the window's focus, keys and dismissal, and the host shows it in a window of its own, flipped and clamped to the screen its trigger is on ([application](application.md#popups-past-the-window)). Menus open as their trigger is pressed: drag to an item and release to choose it. A pop-up button's menu opens with the chosen item over the button (`View::open_over(|| id)`, Luau `open_over`). `.arrow(8.)` gives a popover an arrow pointing at its trigger from whichever side it opened on. Right to left, a menu lines up with its trigger's right edge and submenus open leftward. A popup open as its window moves goes with it. As the window minimizes, goes into or out of fullscreen, or leaves the Space being shown, the popup closes, as AppKit's menus and popovers do. On macOS the theme's `menu.bg` and `popover.bg` are clear over AppKit's menu and popover materials ([styling](styling.md)).
 
 ## Drags
 
@@ -26,7 +26,7 @@ A drag's preview is its own window, over every window and app. It is drawn once,
 
 - **Out to other apps.** `drag_export` says what a drag carries: text, links, files or images. As the drag leaves the app's windows, AppKit takes it over, and Finder, Mail or a browser can take it. `on_drag_end` hears whether one did.
 - **Between windows.** Over another of the app's windows, that window's destinations hear the drag (`DragEvent::visiting`), and a release drops there. The source's destinations hear nothing meanwhile.
-- **Tear-off.** Released outside every window, `on_drag_outside` hears it, with where the source was held (`grab_x`, `grab_y`). Open a window there with `WindowOptions::under_pointer`. A source that takes it this way has its preview go, rather than slide back.
+- **Tear-off.** Released outside every window, `on_drag_outside` hears it, with where the source was held (`grab_x`, `grab_y`). Open a window there with `WindowOptions::under_pointer`. A source that takes it this way has its preview go, rather than slide back. Torn off a fullscreen window, `tab_windows` opens the tab's window fullscreen too (`WindowOptions::fullscreen`, read from `WindowInfo::fullscreen`), in a Space of its own, as Safari does; a window opened beside a fullscreen one would land on another Space.
 - **A window's only tab.** `drag_moves_window` makes the drag move its window instead, with no preview. Dropped on another window's tab strip, it merges there; elsewhere the window stays where it was let go.
 
 ## Windows
@@ -160,5 +160,6 @@ Luau also has `on_drag_outside` and `drag_moves_window` ([events](reference/even
 | `popup_probe` | click to menu shown, press-drag-release, idle before and after, deactivation |
 | `drag_probe` | instructions per pointer move: within a window, over another window, moving a window by its tab; plus tear-off |
 | `window_probe` | the Window menu, the cascade, the autosave, and what ⌘` cycles |
+| `corners_probe` | a menu as its window moves (it follows), minimizes (it closes), on another display (it opens there), with a dozen windows in the Window menu; `--fullscreen` takes the screen into fullscreen and back |
 
 Each probe posts synthetic AppKit events to its own windows and never moves the user's pointer. None of them drags anything that carries an export out of a window: AppKit's drag session follows the real pointer and would drop on whatever app is under it. ⌘` is a system hotkey, so it can only be checked by hand.

@@ -1166,6 +1166,9 @@ struct Host {
     popups: crate::popup_window::PopupHost,
     /// Its drag is the platform's now (`native_drag`).
     native_drag: bool,
+    /// It was in fullscreen as its geometry last changed: popups close as
+    /// it goes in or out.
+    popups_fullscreen: bool,
     /// Its content's top-left in global coordinates, and its number with
     /// the window server (macOS), for drags between windows: kept as the
     /// window moves, so a drag asks AppKit nothing as it moves.
@@ -1373,6 +1376,7 @@ impl Host {
             native,
             popups,
             native_drag: false,
+            popups_fullscreen: false,
             content_origin: None,
             window_number: None,
             window_grab: None,
@@ -2598,7 +2602,12 @@ impl Host {
                 self.state.maximized,
                 || window.is_maximized(),
             );
-            if window.fullscreen().is_none() && !maximized {
+            // Into or out of fullscreen: its popups close, as AppKit's do.
+            let fullscreen = window.fullscreen().is_some();
+            if std::mem::replace(&mut self.popups_fullscreen, fullscreen) != fullscreen {
+                self.context.ui.dismiss_popups();
+            }
+            if !fullscreen && !maximized {
                 let bounds = crate::WindowBounds::read(window);
                 if bounds.size.0 > 0 && bounds.size.1 > 0 {
                     self.options.bounds = Some(bounds);
@@ -2612,6 +2621,10 @@ impl Host {
         match event {
             WindowEvent::CloseRequested => {}
             WindowEvent::Occluded(true) => {
+                // Minimized, or on a Space no longer shown: its menus and
+                // popovers close, as AppKit's do (they would show again
+                // with it, still open).
+                self.context.ui.dismiss_popups();
                 self.context.ui.cancel_interactions();
                 self.native_occluded = true;
                 self.context.ui.set_presented(false);

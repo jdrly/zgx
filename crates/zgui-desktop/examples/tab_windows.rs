@@ -66,6 +66,9 @@ fn tab_strip(
     windows: WindowFactory,
     // A tab hovering the strip lights it, to drop there.
     hovered: Signal<bool>,
+    // Whether its window is fullscreen: a tab torn off it opens fullscreen
+    // too, in a Space of its own, as Safari's do.
+    fullscreen: Signal<bool>,
 ) -> View {
     let (ids, accept, shown) = (tabs.clone(), tabs.clone(), active.clone());
     let lit = hovered.clone();
@@ -121,6 +124,7 @@ fn tab_strip(
                         (tabs.clone(), tabs.clone(), tabs.clone(), tabs.clone());
                     let remove_torn = remove.clone();
                     let windows = windows.clone();
+                    let fullscreen = fullscreen.clone();
                     div()
                         .h(STRIP - TAB_TOP)
                         .w(150.)
@@ -161,16 +165,20 @@ fn tab_strip(
                             // where it was grabbed.
                             let tab = drag.tab.clone();
                             let factory = windows.clone();
-                            windows.open(
-                                options(
+                            let options = match fullscreen.with_untracked(|on| *on) {
+                                true => WindowOptions {
+                                    fullscreen: true,
+                                    ..options(&tab.title, None)
+                                },
+                                false => options(
                                     &tab.title,
                                     Some((
                                         (STRIP_PAD + event.grab_x) as f64,
                                         (TAB_TOP + event.grab_y) as f64,
                                     )),
                                 ),
-                                move |cx| document(cx, factory, vec![tab]),
-                            );
+                            };
+                            windows.open(options, move |cx| document(cx, factory, vec![tab]));
                             remove_torn(&torn, drag.tab.id);
                         })
                 },
@@ -221,6 +229,7 @@ fn document(cx: &mut WindowContext, windows: WindowFactory, tabs: Vec<Tab>) {
                 cx.window.clone(),
                 windows,
                 cx.ui.signal(false),
+                cx.window_info.fullscreen.clone(),
             ))
             .child(
                 column()
