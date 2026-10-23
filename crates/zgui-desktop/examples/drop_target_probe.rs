@@ -4,7 +4,9 @@
 //! drags out of zgui onto it rather than onto anything of the user's. It
 //! prints `TARGET x y width height` (its screen rectangle) once it shows,
 //! and `ENTERED` / `LEFT` as a drag crosses it. Like Explorer and browsers,
-//! it shows the drag's image over itself (`IDropTargetHelper`).
+//! it shows the drag's image over itself (`IDropTargetHelper`), and like
+//! Explorer it describes the drop under that image ("Copy to …",
+//! `CFSTR_DROPDESCRIPTION`), printing `DESCRIBED` once it has.
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
     target::run()
@@ -17,7 +19,12 @@ fn main() {
 
 #[cfg(windows)]
 mod target {
-    use std::io::Write;
+    use std::{
+        cell::RefCell,
+        io::Write,
+        mem::ManuallyDrop,
+        time::{Duration, Instant},
+    };
     use windows::{
         Win32::{
             Foundation::{HWND, LPARAM, LRESULT, POINT, POINTL, RECT, WPARAM},
@@ -27,11 +34,11 @@ mod target {
             System::{
                 Com::{
                     CLSCTX_INPROC_SERVER, CoCreateInstance, DVASPECT_CONTENT, FORMATETC,
-                    IDataObject, TYMED_HGLOBAL,
+                    IDataObject, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
                 },
                 DataExchange::RegisterClipboardFormatW,
                 LibraryLoader::GetModuleHandleW,
-                Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+                Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
                 Ole::{
                     CF_HDROP, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY, IDropTarget,
                     IDropTarget_Impl, OleInitialize, RegisterDragDrop, ReleaseStgMedium,
@@ -42,12 +49,15 @@ mod target {
                 HiDpi::{
                     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
                 },
-                Shell::{CLSID_DragDropHelper, DragQueryFileW, HDROP, IDropTargetHelper},
+                Shell::{
+                    CLSID_DragDropHelper, DROPDESCRIPTION, DROPIMAGE_COPY, DragQueryFileW, HDROP,
+                    IDropTargetHelper,
+                },
                 WindowsAndMessaging::{
                     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-                    GetWindowRect, MSG, PostQuitMessage, RegisterClassExW, TranslateMessage,
-                    WINDOW_EX_STYLE, WM_DESTROY, WM_PAINT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
-                    WS_VISIBLE,
+                    GetWindowRect, MSG, PostQuitMessage, RegisterClassExW, SendMessageW,
+                    TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY, WM_PAINT, WM_USER, WNDCLASSEXW,
+                    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
                 },
             },
         },
@@ -59,6 +69,9 @@ mod target {
         hwnd: HWND,
         /// Shell's helper, showing the drag's image over the window.
         helper: Option<IDropTargetHelper>,
+        /// A drag described on entering (and when), its image not yet
+        /// redrawn.
+        describing: RefCell<Option<(IDataObject, Instant)>>,
     }
     fn point(at: &POINTL) -> POINT {
         POINT { x: at.x, y: at.y }
@@ -72,10 +85,16 @@ mod target {
             effect: *mut DROPEFFECT,
         ) -> windows::core::Result<()> {
             say("ENTERED");
+            let data = data.ok().ok();
+            // Described before the helper takes the data, and again once its
+            // image shows (`DragOver`).
+            *self.describing.borrow_mut() = data
+                .filter(|data| describe(data))
+                .map(|data| (data.clone(), Instant::now()));
             // SAFETY: OLE's out parameter; the helper with its own data.
             unsafe {
                 *effect = DROPEFFECT_COPY;
-                if let (Some(helper), Ok(data)) = (&self.helper, data.ok()) {
+                if let (Some(helper), Some(data)) = (&self.helper, data) {
                     let _ = helper.DragEnter(self.hwnd, data, &point(at), DROPEFFECT_COPY);
                 }
             }
@@ -94,10 +113,25 @@ mod target {
                     let _ = helper.DragOver(&point(at), DROPEFFECT_COPY);
                 }
             }
+            // Once the image shows, the description again, and the image
+            // told to redraw with it: so Shell shows it, as for Explorer.
+            let shown = self
+                .describing
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, since)| since.elapsed() >= Duration::from_millis(100));
+            if shown
+                && let Some((data, _)) = self.describing.borrow_mut().take()
+                && describe(&data)
+                && redraw_image(&data)
+            {
+                say("DESCRIBED");
+            }
             Ok(())
         }
         fn DragLeave(&self) -> windows::core::Result<()> {
             say("LEFT");
+            self.describing.borrow_mut().take();
             if let Some(helper) = &self.helper {
                 // SAFETY: the helper.
                 let _ = unsafe { helper.DragLeave() };
@@ -127,6 +161,60 @@ mod target {
             // SAFETY: OLE's out parameter.
             unsafe { *effect = DROPEFFECT_COPY };
             Ok(())
+        }
+    }
+
+    /// Describe the drop as Explorer does ("Copy to %1", its insert the
+    /// window), in the data object, where Shell's drag image shows it.
+    fn describe(data: &IDataObject) -> bool {
+        let wide = |text: &str| {
+            let mut field = [0u16; 260];
+            for (unit, char) in field.iter_mut().zip(text.encode_utf16()) {
+                *unit = char;
+            }
+            field
+        };
+        // Packed: built whole, its fields never borrowed.
+        let description = DROPDESCRIPTION {
+            r#type: DROPIMAGE_COPY,
+            szMessage: wide("Copy to %1"),
+            szInsert: wide("the drop target probe"),
+        };
+        // SAFETY: a block holding the description, handed to the data object
+        // (`fRelease`), and a format registered by a static name.
+        unsafe {
+            let Ok(handle) = GlobalAlloc(GMEM_MOVEABLE, size_of::<DROPDESCRIPTION>()) else {
+                return false;
+            };
+            let at = GlobalLock(handle);
+            if at.is_null() {
+                return false;
+            }
+            at.cast::<DROPDESCRIPTION>().write(description);
+            let _ = GlobalUnlock(handle);
+            let medium = STGMEDIUM {
+                tymed: TYMED_HGLOBAL.0 as u32,
+                u: STGMEDIUM_0 { hGlobal: handle },
+                pUnkForRelease: ManuallyDrop::new(None),
+            };
+            let format_id = RegisterClipboardFormatW(w!("DropDescription")) as u16;
+            data.SetData(&format(format_id), &medium, true).is_ok()
+        }
+    }
+
+    /// Tell Shell's drag image window (`DragWindow`, in the data object) to
+    /// redraw (`DDWM_UPDATEWINDOW`); false without one.
+    fn redraw_image(data: &IDataObject) -> bool {
+        // SAFETY: registers (or finds) a format by a static name; sends to
+        // the window Shell names, which is its drag image's.
+        unsafe {
+            let window = read(data, RegisterClipboardFormatW(w!("DragWindow")) as u16)
+                .and_then(|bytes| Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?)));
+            let Some(window) = window else {
+                return false;
+            };
+            SendMessageW(HWND(window as usize as *mut _), WM_USER + 3, None, None);
+            true
         }
     }
 
@@ -252,7 +340,12 @@ mod target {
                 None,
             )?;
             let helper = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok();
-            let target: IDropTarget = Target { hwnd, helper }.into();
+            let target: IDropTarget = Target {
+                hwnd,
+                helper,
+                describing: RefCell::new(None),
+            }
+            .into();
             RegisterDragDrop(hwnd, &target)?;
             let mut rect = RECT::default();
             GetWindowRect(hwnd, &mut rect)?;

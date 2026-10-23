@@ -41,7 +41,8 @@ use windows::{
         UI::{
             HiDpi::GetDpiForWindow,
             Shell::{
-                CLSID_DragDropHelper, DROPFILES, IDragSourceHelper, SHCreateDataObject, SHDRAGIMAGE,
+                CLSID_DragDropHelper, DROPFILES, DSH_ALLOWDROPDESCRIPTIONTEXT, IDragSourceHelper,
+                IDragSourceHelper2, SHCreateDataObject, SHDRAGIMAGE,
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, GetCursorPos, GetWindowThreadProcessId,
@@ -50,7 +51,7 @@ use windows::{
             },
         },
     },
-    core::{BOOL, HRESULT, PCWSTR, implement, w},
+    core::{BOOL, HRESULT, Interface, PCWSTR, implement, w},
 };
 
 /// The message that begins the drag waiting in `PENDING`.
@@ -352,7 +353,14 @@ fn set_image(data: &IDataObject, image: &DragImage) {
     // taken it, else it is ours to delete.
     let taken = unsafe {
         CoCreateInstance::<_, IDragSourceHelper>(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER)
-            .and_then(|helper| helper.InitializeFromBitmap(&drag_image, data))
+            .and_then(|helper| {
+                // A target that describes the drop ("Copy to Documents",
+                // Explorer's) has it shown under the image.
+                if let Ok(helper) = helper.cast::<IDragSourceHelper2>() {
+                    let _ = helper.SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT.0 as u32);
+                }
+                helper.InitializeFromBitmap(&drag_image, data)
+            })
             .is_ok()
     };
     if !taken {

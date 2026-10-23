@@ -174,7 +174,10 @@ the items as Windows apps read them (text as `CF_UNICODETEXT`, files as
 `CF_HDROP`, a URL as `UniformResourceLocatorW` and as text, an image as
 `PNG`), and the preview's last frame as the drag image, which Windows draws
 and moves (`IDragSourceHelper`) over targets that show drag images, as
-Explorer and browsers do. The source hears `on_drag_end` accepted when an app
+Explorer and browsers do. A target that describes the drop ("Copy to
+Documents", Explorer's) has its description shown under the image, in
+Windows' label: the source allows it (`DSH_ALLOWDROPDESCRIPTIONTEXT`). The
+source hears `on_drag_end` accepted when an app
 takes it. Back over the app's windows the drag is zgui's again: let go there,
 zgui's destinations take it and Windows drops nothing. Escape, or letting go
 where nothing takes it, slides the preview back to its source.
@@ -435,7 +438,9 @@ python scripts/windows_window_smoke.py target/debug/examples
 - `windows_drag_smoke.py` (`drag_probe` and `drop_target_probe`, a
   test-owned OLE drop target in another process placed against the probe):
   the chip dragged out onto the target, which receives its text while the
-  source hears it accepted; the probe animating at the display's rate through
+  source hears it accepted; the target's description of the drop shown under
+  the drag image (the white of Windows' label, absent when the source does
+  not allow descriptions); the probe animating at the display's rate through
   `DoDragDrop`'s loop; dragged out and back, let go in its own window,
   Windows dropping nothing; Escape over the target cancelling, and the
   preview sliding back to the chip in its own window; a tab dropped onto the

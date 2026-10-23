@@ -12,7 +12,10 @@ Checks that:
   accepted (`DRAG_END accepted=true`);
 - dragged out and back into its own window and let go there, the drag stays
   zgui's: Windows drops nothing, and the source hears it not accepted;
-- Escape over the target cancels: nothing is dropped, not accepted.
+- Escape over the target cancels: nothing is dropped, not accepted;
+- the target's description of the drop (`CFSTR_DROPDESCRIPTION`, "Copy to
+  …", as Explorer gives) shows under the drag's image: Windows draws it, in
+  a white label, only for a source that allows it.
 
 It takes the pointer and keyboard while it runs.
 
@@ -35,6 +38,7 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.WindowFromPoint.restype = wintypes.HWND
 user32.WindowFromPoint.argtypes = [wintypes.POINT]
 user32.GetAncestor.restype = wintypes.HWND
+user32.FindWindowW.restype = wintypes.HWND
 
 
 def reader(proc):
@@ -60,7 +64,9 @@ def drag(window, start, path, release_on=None, hold=None):
     (screen pixels), then let go if the window under the pointer is
     `release_on`'s (else Escape cancels first). Returns whether it let go
     over `release_on`. `hold`: a list to put the span the drag rested at
-    the end of its path in (perf_counter seconds), for a second."""
+    the end of its path in (perf_counter seconds), for a second, and how
+    many white pixels Windows' drag image window then showed (a drop
+    description's label)."""
     win.move(window, *start)
     time.sleep(0.15)
     win._send(button(win.MOUSEEVENTF_LEFTDOWN))
@@ -79,8 +85,16 @@ def drag(window, start, path, release_on=None, hold=None):
         pathlib.Path("target/windows-drag").mkdir(parents=True, exist_ok=True)
         win.save_png(win.capture_rect(point.x - 150, point.y - 60, 300, 120),
                      pathlib.Path("target/windows-drag/drag-image.png"))
+        white = 0
+        image = user32.FindWindowW("SysDragImage", None)
+        if image:
+            rect = wintypes.RECT()
+            user32.GetWindowRect(image, ctypes.byref(rect))
+            _, _, data = win.capture_rect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+            white = sum(1 for i in range(0, len(data), 4) if min(data[i:i + 3]) >= 245)
         time.sleep(0.5)
         hold.append((began, time.perf_counter()))
+        hold.append(white)
     point = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(point))
     under = window_at(point.x, point.y)
@@ -198,6 +212,9 @@ def main():
         assert "text=Some(\"Some text\")" in dropped, dropped
         wait_for(lambda: "DRAG_END accepted=true" in source_lines, "the source to hear it accepted")
         print(f"ok: dragged out onto another app's window, which took the text ({dropped})")
+        assert "DESCRIBED" in target_lines, "the target did not describe the drop"
+        assert held[1] > 300 * scale * scale, f"no drop description under the drag image ({held[1]} white pixels)"
+        print(f"ok: the target's drop description shows under the drag image ({held[1]} white label pixels)")
 
         # Out and back in, let go in its own window: zgui's, not Windows'.
         front()
