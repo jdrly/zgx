@@ -134,8 +134,35 @@ impl View {
             }
         })
     }
-    /// Hear the drag end: `accepted` when a destination (here, or in
-    /// another app) took it.
+    /// Released outside every window of the app (where its host can tell,
+    /// macOS): a tab torn off its window, to open in a window of its own
+    /// (`WindowOptions::under_pointer` puts the grab point under the pointer).
+    /// `on_drag_end` hears it too, not accepted; the preview goes rather
+    /// than sliding back.
+    pub fn on_drag_outside<T: 'static>(
+        self,
+        mut callback: impl FnMut(&T, &crate::input::DragEvent) + 'static,
+    ) -> Self {
+        self.on_event(move |cx| {
+            if cx.phase != EventPhase::Target {
+                return;
+            }
+            let InputEvent::Drag(event) = &cx.event else {
+                return;
+            };
+            if event.phase != DragPhase::End || !event.outside {
+                return;
+            }
+            let event = event.clone();
+            if let Some(value) = event.payload.downcast_ref::<T>() {
+                // Taken: its preview goes, rather than sliding back.
+                cx.prevent_default();
+                callback(value, &event);
+            }
+        })
+    }
+    /// Hear the drag end: `accepted` when a destination (in any of the
+    /// app's windows, or another app) took it.
     pub fn on_drag_end<T: 'static>(self, mut callback: impl FnMut(&T, bool) + 'static) -> Self {
         self.on_event(move |cx| {
             if cx.phase != EventPhase::Target {

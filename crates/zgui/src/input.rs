@@ -463,6 +463,8 @@ struct State {
     drag_orphans: Vec<Callback>,
     /// The source of a drag being finished (its drop and end delivering).
     drag_ending: Option<NodeId>,
+    /// A drag from another window over this one (`drag_over`).
+    visit: Option<drag::Visit>,
     /// How the last drag ended, until its host takes it (`take_drag_ended`).
     drag_ended: Option<drag::DragEnded>,
     /// The physical key of the key event being dispatched (`set_key_code`).

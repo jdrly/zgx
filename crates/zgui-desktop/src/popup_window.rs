@@ -71,14 +71,19 @@ pub(crate) enum PopupInput {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{PopupHost, content_origin, enabled, popup_screens, warm};
+pub(crate) use macos::{
+    PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
+};
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(crate) use other::{PopupHost, content_origin, enabled, popup_screens, warm};
+pub(crate) use other::{
+    PopupHost, content_origin, enabled, popup_screens, warm, window_at, window_number,
+};
 
 #[cfg(target_os = "linux")]
 pub(crate) use x11::{
     PopupHost, content_origin, enabled, make, pointer, popup_screens, route, wanted, warm,
+    window_at, window_number,
 };
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -131,7 +136,17 @@ mod other {
     pub(crate) fn enabled() -> bool {
         false
     }
+    // todo: drags between windows need each window's place on screen and
+    // the window under a point (Windows: `GetWindowRect`, `WindowFromPoint`;
+    // X11: `XTranslateCoordinates`, the stacking order). Without them a
+    // drag stays in its window.
     pub(crate) fn content_origin(_: &winit::window::Window) -> Option<(f64, f64)> {
+        None
+    }
+    pub(crate) fn window_number(_: &winit::window::Window) -> Option<isize> {
+        None
+    }
+    pub(crate) fn window_at(_: f64, _: f64) -> Option<isize> {
         None
     }
     pub(crate) fn warm(_: &zgui_gpu::GpuContext, _: f32) {}
@@ -579,7 +594,10 @@ mod macos {
             self.material = None;
             self.rect = None;
             self.revision = None;
-            self.preview = None;
+            if self.preview.take().is_some() {
+                let number = self.window.windowNumber();
+                PREVIEWS.with(|previews| previews.borrow_mut().retain(|other| *other != number));
+            }
             self.window.setAlphaValue(1.);
             self.window.setIgnoresMouseEvents(false);
             if let Some(renderer) = &mut self.renderer {
@@ -600,6 +618,9 @@ mod macos {
         /// Windows showing popups, by window number, and their hosts.
         static PARENTS: RefCell<Vec<(isize, Sink)>> =
             const { RefCell::new(Vec::new()) };
+        /// Panels showing drag previews, by window number: the pointer is
+        /// over what is under them (`window_at`).
+        static PREVIEWS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
     }
     /// Close a window's popups as it is pressed outside its content (its
     /// title bar), as AppKit closes menus and transient popovers; presses in
@@ -928,6 +949,27 @@ mod macos {
             flip_height(MainThreadMarker::from(&*parent)) - (frame.origin.y + frame.size.height),
         ))
     }
+    pub(crate) fn window_number(window: &winit::window::Window) -> Option<isize> {
+        parent_of(window).map(|(parent, _)| parent.windowNumber())
+    }
+    /// The front-most window at global point `(x, y)` (any app's), past
+    /// drag previews.
+    pub(crate) fn window_at(x: f64, y: f64) -> Option<isize> {
+        let mtm = MainThreadMarker::new()?;
+        let point = NSPoint::new(x, flip_height(mtm) - y);
+        let mut below = 0;
+        loop {
+            let number =
+                NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(point, below, mtm);
+            if number <= 0 {
+                return None;
+            }
+            if !PREVIEWS.with(|previews| previews.borrow().contains(&number)) {
+                return Some(number);
+            }
+            below = number;
+        }
+    }
     /// The backing scale of the screen holding `rect`'s centre (the
     /// parent's coordinates): a popup draws at the scale it shows at.
     fn scale_at(parent: &NSWindow, content: &NSView, rect: Rect) -> Option<f32> {
@@ -1013,7 +1055,9 @@ mod macos {
                 // A drag nothing took: its preview slides back to its
                 // source, as AppKit's drag images do. A taken one goes.
                 let back = ended
-                    .filter(|ended| ended.preview == Some(root) && !ended.accepted)
+                    .filter(|ended| {
+                        ended.preview == Some(root) && !ended.accepted && !ended.outside
+                    })
                     .filter(|ended| scene.contains(ended.source))
                     .zip(panel.preview.zip(panel.rect));
                 match back {
@@ -1125,6 +1169,8 @@ mod macos {
                         // as AppKit's drag images.
                         panel.window.setIgnoresMouseEvents(true);
                         panel.window.setLevel(DRAGGING_LEVEL);
+                        let number = panel.window.windowNumber();
+                        PREVIEWS.with(|previews| previews.borrow_mut().push(number));
                         *ivars.parent.borrow_mut() = None;
                     } else {
                         // SAFETY: both are live windows of this process.
@@ -1467,6 +1513,12 @@ mod x11 {
     // windows of their own need `PopupHost::follow`. Until then drags stay
     // in their window and previews in its scene (`Ui::set_popup_previews`).
     pub(crate) fn content_origin(_: &Window) -> Option<(f64, f64)> {
+        None
+    }
+    pub(crate) fn window_number(_: &Window) -> Option<isize> {
+        None
+    }
+    pub(crate) fn window_at(_: f64, _: f64) -> Option<isize> {
         None
     }
     /// Whether a popup found no window ready (`make` one).

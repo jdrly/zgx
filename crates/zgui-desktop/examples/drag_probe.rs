@@ -1,11 +1,13 @@
 //! Measures drags (macOS) by synthetic AppKit events posted to this
-//! process alone (the user's pointer is never moved): a chip dragged along
-//! its window, printing the retired instructions each pointer move costs,
-//! and released where nothing takes it, its preview sliding back.
+//! process alone (the user's pointer is never moved), printing the retired
+//! instructions each pointer move costs: a chip dragged along its window and
+//! released where nothing takes it (its preview sliding back), a tab dragged
+//! onto another window's strip, then a tab torn off (released outside both
+//! windows, it opens in a window of its own).
 //!
-//! It never drags out of the window: AppKit's session follows the real
-//! pointer, and with no real button down it drops at once on whatever app
-//! is under it (Finder makes a text clipping).
+//! Nothing that carries an export leaves the windows: AppKit's session
+//! follows the real pointer, and with no real button down it drops at once
+//! on whatever app is under it (Finder makes a text clipping).
 //!
 //! winit hears moves outside a window only while a mouse button is down,
 //! which it asks the hardware (`NSEvent.pressedMouseButtons`): the probe
@@ -13,16 +15,57 @@
 use zgui::compose::prelude::*;
 use zgui_desktop::{Application, WindowBounds, WindowOptions};
 
+/// A tab: it carries nothing to other apps, so it can be torn off.
+#[derive(Clone)]
+struct Tab(&'static str);
+
+fn tab(name: &'static str) -> View {
+    div()
+        .id(name)
+        .w(120.)
+        .h(28.)
+        .rounded(8.)
+        .bg(rgba(0x80808040))
+        .items_center()
+        .justify_center()
+        .child(text(name))
+        .on_drag(move || Tab(name))
+        .drag_preview(|tab: &Tab| {
+            div()
+                .w(120.)
+                .h(28.)
+                .rounded(8.)
+                .bg(rgb(0x808080))
+                .items_center()
+                .justify_center()
+                .child(zgui::compose::text(tab.0))
+        })
+        .on_drag_end(|tab: &Tab, accepted| println!("TAB_END {} accepted={accepted}", tab.0))
+        .on_drag_outside(|tab: &Tab, _| println!("TORN {}", tab.0))
+}
+
+fn options(title: &str, x: i32) -> WindowOptions {
+    WindowOptions {
+        title: title.into(),
+        width: 420.,
+        height: 200.,
+        bounds: Some(WindowBounds::new(840, 400).at(x, 300)),
+        ..Default::default()
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     Application::new()
-        .window(WindowOptions {
-            title: "Drag".into(),
-            width: 420.,
-            height: 200.,
-            bounds: Some(WindowBounds::new(840, 400).at(400, 300)),
-            ..Default::default()
-        })
+        .window(options("Drag", 400))
         .run(move |cx| {
+            cx.windows.open(options("Other", 1400), |cx| {
+                let strip = div()
+                    .w_full()
+                    .h(60.)
+                    .bg(rgba(0x3d7ef720))
+                    .on_drop(|tab: &Tab, _| println!("DROPPED {}", tab.0));
+                cx.render(column().w_full().h_full().p(10.).child(strip));
+            });
             let chip = div()
                 .id("chip")
                 .w(120.)
@@ -45,7 +88,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .drag_export(|text: &String| vec![zgui::input::DragItem::Text(text.clone())])
                 .on_drag_end(|_: &String, accepted| println!("DRAG_END accepted={accepted}"));
-            cx.render(column().w_full().h_full().p(10.).child(chip));
+            cx.render(
+                column()
+                    .w_full()
+                    .h_full()
+                    .p(10.)
+                    .gap(10.)
+                    .child(chip)
+                    .child(tab("tab")),
+            );
             #[cfg(target_os = "macos")]
             cx.tasks.spawn(async move {
                 macos::run().await;
@@ -179,10 +230,20 @@ mod macos {
         sleep(350).await;
         (spent, steps + 1 - measure_from)
     }
+    /// The left of `other`'s content less `window`'s, in points.
+    fn offset(window: &NSWindow, other: &NSWindow) -> (f64, f64) {
+        let a = window.convertRectToScreen(window.contentView().unwrap().frame());
+        let b = other.convertRectToScreen(other.contentView().unwrap().frame());
+        (
+            b.origin.x - a.origin.x,
+            (a.origin.y + a.size.height) - (b.origin.y + b.size.height),
+        )
+    }
     pub async fn run() {
         sleep(3000).await;
         hold_buttons();
         let window = window("Drag").unwrap();
+        let other = self::window("Other").unwrap();
         // Hover first, as a real pointer does.
         post(&window, NSEventType::MouseMoved, 60., 24.);
         sleep(200).await;
@@ -193,6 +254,28 @@ mod macos {
                 spent / moves as u64
             );
         }
+        // The tab (its centre 72 points down) onto the other window's strip:
+        // measured once it is over that window.
+        let (dx, dy) = offset(&window, &other);
+        for _ in 0..3 {
+            let (spent, moves) = drag(&window, (60., 62.), (dx + 200., dy + 40.), 120, 90).await;
+            println!(
+                "CROSS_WINDOW moves={moves} instructions_per_move={}",
+                spent / moves as u64
+            );
+        }
+        // Torn off: released below both windows.
+        drag(&window, (60., 62.), (200., 400.), 60, 59).await;
+        sleep(600).await;
+        let windows = {
+            let mtm = MainThreadMarker::new().unwrap();
+            NSApplication::sharedApplication(mtm)
+                .windows()
+                .iter()
+                .filter(|window| window.isVisible())
+                .count()
+        };
+        println!("WINDOWS {windows}");
         println!("DONE");
     }
 }

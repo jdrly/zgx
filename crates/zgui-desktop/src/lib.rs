@@ -43,6 +43,7 @@ mod url;
 mod wayland_data;
 mod window_chrome;
 mod window_info;
+mod window_place;
 #[cfg(target_os = "linux")]
 mod x11_nudge;
 #[cfg(target_os = "linux")]

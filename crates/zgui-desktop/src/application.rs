@@ -56,6 +56,10 @@ pub struct WindowOptions {
     /// A frosted desktop behind the window (macOS; Windows 11 as Acrylic or
     /// Mica): the window is then transparent, whatever `transparent` says.
     pub glass: Option<crate::Glass>,
+    /// Open with this point of the content (logical) under the pointer
+    /// (macOS): a tab torn off its window (`View::on_drag_outside`) opens
+    /// where it was dropped, the tab under the pointer.
+    pub under_pointer: Option<(f64, f64)>,
 }
 impl WindowOptions {
     /// Whether the window is transparent where zgui paints nothing.
@@ -79,6 +83,7 @@ impl Default for WindowOptions {
             max_frame_rate: None,
             titlebar: crate::Titlebar::Standard,
             glass: None,
+            under_pointer: None,
         }
     }
 }
@@ -705,6 +710,8 @@ impl Application {
             native_menu,
             hosts: HashMap::from([(token, root)]),
             native: HashMap::new(),
+            drag_over: Cell::new(None),
+            carrying: None,
             #[cfg(target_os = "linux")]
             last_focused: None,
             factory,
@@ -1084,6 +1091,11 @@ struct Host {
     popups: crate::popup_window::PopupHost,
     /// Its drag is the platform's now (`native_drag`).
     native_drag: bool,
+    /// Its content's top-left in global coordinates, and its number with
+    /// the window server (macOS), for drags between windows: kept as the
+    /// window moves, so a drag asks AppKit nothing as it moves.
+    content_origin: Option<(f64, f64)>,
+    window_number: Option<isize>,
     /// The theme's `background` when it changes, for the renderer's clear
     /// colour, and the effect that watches it.
     theme_background: Rc<std::cell::Cell<Option<zgui::scene::Color>>>,
@@ -1278,6 +1290,8 @@ impl Host {
             native,
             popups,
             native_drag: false,
+            content_origin: None,
+            window_number: None,
             theme_background: Rc::default(),
             applied_background: None,
             _background_effect: None,
@@ -1880,6 +1894,9 @@ impl Host {
             content_never_moves_window();
             mouse_down::watch();
         }
+        if let Some(point) = self.options.under_pointer.take() {
+            crate::window_place::under_pointer(&window, point);
+        }
         let sized = self.options.bounds;
         let radius =
             crate::window_chrome::apply(&window, self.options.titlebar, self.options.glass);
@@ -2039,6 +2056,8 @@ impl Host {
         self.context
             .ui
             .set_popup_screens(crate::popup_window::popup_screens(&window));
+        self.content_origin = crate::popup_window::content_origin(&window);
+        self.window_number = crate::popup_window::window_number(&window);
         self.frame_paced = matches!(
             window.display_handle().map(|h| h.as_raw()),
             Ok(RawDisplayHandle::Wayland(_))
@@ -2360,6 +2379,7 @@ impl Host {
             self.context
                 .ui
                 .set_popup_screens(crate::popup_window::popup_screens(window));
+            self.content_origin = crate::popup_window::content_origin(window);
             let window = window.clone();
             self.refresh_frame_interval(&window);
             let window = &window;
@@ -2828,33 +2848,39 @@ impl Host {
         Ok(())
     }
     /// The window's drag moved: a preview in a window of its own moves with
-    /// the pointer, drawn once; leaving the window carrying what other apps
-    /// take (`View::drag_export`), the drag becomes the platform's.
+    /// the pointer, drawn once.
     fn drag_moved(&mut self) {
-        let (Some(drag), Some(window)) = (self.context.ui.input.drag_state(), self.window.clone())
-        else {
+        let (Some(drag), Some(window)) = (self.context.ui.input.drag_state(), &self.window) else {
+            return;
+        };
+        if !self.native_drag {
+            self.popups.follow(window, &drag);
+        }
+    }
+    /// Its drag left the app's windows: carrying what other apps take
+    /// (`View::drag_export`), it becomes the platform's.
+    fn hand_off_drag(&mut self, drag: &zgui::input::DragState) {
+        let (Some(items), Some(window)) = (&drag.export, self.window.clone()) else {
             return;
         };
         if self.native_drag {
             return;
         }
-        self.popups.follow(&window, &drag);
-        let Some(items) = &drag.export else {
-            return;
-        };
-        let (width, height) = self.context.viewport.with_untracked(|viewport| *viewport);
-        if (0. ..width).contains(&drag.x) && (0. ..height).contains(&drag.y) {
-            return;
-        }
-        let image = self.popups.preview_image(&drag);
+        let image = self.popups.preview_image(drag);
         let (proxy, token) = (self.proxy.clone(), self.context.window.token);
         if crate::native_drag::begin(&window, items, image, move |drag| {
             let _ = proxy.send_event(Event::NativeDrag(token, drag));
         }) {
             zgui_gpu::present_log::log(|| "native drag begin".into());
             self.native_drag = true;
-            self.popups.show_preview(&window, &drag, None);
+            self.popups.show_preview(&window, drag, None);
         }
+    }
+    /// Its content's box in global coordinates.
+    fn content_box(&self) -> Option<[f64; 4]> {
+        let (left, top) = self.content_origin?;
+        let (width, height) = self.context.viewport.with_untracked(|viewport| *viewport);
+        Some([left, top, width as f64, height as f64])
     }
     /// The platform's drag moved or ended, at a global point: the window's
     /// pointer, which the platform reports to its session meanwhile. Back
@@ -2887,7 +2913,7 @@ impl Host {
         if let Some(drag) = self.context.ui.input.drag_state() {
             if taken {
                 let ui = &self.context.ui;
-                ui.input.end_drag_elsewhere(&ui.scene, true);
+                ui.input.end_drag_elsewhere(&ui.scene, true, false);
             } else {
                 self.popups.show_preview(&window, &drag, Some(at));
             }
@@ -3378,6 +3404,13 @@ struct WindowManager {
     native_menu: Option<crate::app_menu::NativeMenu>,
     hosts: HashMap<u64, Host>,
     native: HashMap<WindowId, u64>,
+    /// The window a drag was last found over and its content's box in global
+    /// coordinates, and when: while the pointer stays in it, it still is,
+    /// asked of the window server again after `DRAG_OVER_FOR` (another
+    /// app's window may have come over it).
+    drag_over: Cell<Option<(u64, [f64; 4], std::time::Instant)>>,
+    /// The window whose drag others are hearing (`carry_drag`).
+    carrying: Option<u64>,
     /// The window last focused: the one another launch raises (Linux).
     #[cfg(target_os = "linux")]
     last_focused: Option<u64>,
@@ -3386,7 +3419,199 @@ struct WindowManager {
     error: Option<String>,
     timers: zgui::timer::Hosted,
 }
+/// The app's window a drag is over, and the pointer in its coordinates.
+type Over = (u64, f32, f32);
+/// How long the window a drag is over stays known while the pointer stays
+/// in it (`WindowManager::drag_over`).
+const DRAG_OVER_FOR: std::time::Duration = std::time::Duration::from_millis(100);
 impl WindowManager {
+    /// The app's window at global point `(x, y)` and the point in its
+    /// coordinates; `None` over none of them (another app's window, the
+    /// desktop). Known again without asking while the pointer stays in the
+    /// window it was last found in (`drag_over`).
+    fn window_under(&self, x: f64, y: f64) -> Option<Over> {
+        let inside = |[left, top, width, height]: [f64; 4]| {
+            (left..left + width).contains(&x) && (top..top + height).contains(&y)
+        };
+        let at = |token: u64, rect: [f64; 4]| (token, (x - rect[0]) as f32, (y - rect[1]) as f32);
+        if let Some((token, rect, when)) = self.drag_over.get()
+            && inside(rect)
+            && when.elapsed() < DRAG_OVER_FOR
+        {
+            return Some(at(token, rect));
+        }
+        let boxes: Vec<(u64, [f64; 4])> = self
+            .hosts
+            .iter()
+            .filter_map(|(token, host)| Some((*token, host.content_box()?)))
+            .filter(|(_, rect)| inside(*rect))
+            .collect();
+        // Which is in front there (another app's window may be) is the
+        // window server's to say.
+        let over = match boxes.as_slice() {
+            [] => None,
+            _ => {
+                let number = crate::popup_window::window_at(x, y);
+                boxes.into_iter().find(|(token, _)| {
+                    let own = self.hosts[token].window_number;
+                    own.is_some() && own == number
+                })
+            }
+        };
+        self.drag_over
+            .set(over.map(|(token, rect)| (token, rect, std::time::Instant::now())));
+        over.map(|(token, rect)| at(token, rect))
+    }
+    /// Where window `token`'s drag is: its state, and the app's window under
+    /// its pointer (`None`: over none of them). `None` without a drag, or
+    /// where windows cannot tell where others are (drags then stay in their
+    /// window).
+    fn drag_target(&self, token: u64) -> Option<(Option<Over>, zgui::input::DragState)> {
+        let source = self.hosts.get(&token)?;
+        let drag = source.context.ui.input.drag_state()?;
+        let (width, height) = source.context.viewport.with_untracked(|viewport| *viewport);
+        // Inside its own window, that is in front (the drag began in it,
+        // so it is key): no need to ask the window server.
+        if (0. ..width).contains(&drag.x) && (0. ..height).contains(&drag.y) {
+            return Some((Some((token, drag.x, drag.y)), drag));
+        }
+        let (left, top) = source.content_origin?;
+        let over = self.window_under(left + drag.x as f64, top + drag.y as f64);
+        Some((over, drag))
+    }
+    /// After window `token`'s input: carry its drag to the app's window under
+    /// the pointer, whose destinations hear it (and none in the source
+    /// meanwhile); out of every window, carrying what other apps take, it
+    /// becomes the platform's. Once it ends, others hear it go.
+    fn carry_drag(&mut self, token: u64) {
+        let dragging = self
+            .hosts
+            .get(&token)
+            .is_some_and(|host| host.context.ui.input.is_dragging() && !host.native_drag);
+        if !dragging {
+            if self.carrying == Some(token) {
+                self.carrying = None;
+                self.drag_over.set(None);
+                for host in self.hosts.values() {
+                    host.context.ui.input.drag_out(&host.context.ui.scene);
+                }
+            }
+            return;
+        }
+        let Some((over, drag)) = self.drag_target(token) else {
+            return;
+        };
+        let over_other = over.filter(|(over, ..)| *over != token);
+        if self.carrying.is_some() || over_other.is_some() {
+            for (other, host) in &self.hosts {
+                if over_other.is_none_or(|(over, ..)| over != *other) {
+                    host.context.ui.input.drag_out(&host.context.ui.scene);
+                }
+            }
+        }
+        self.carrying = (over != Some((token, drag.x, drag.y))).then_some(token);
+        if let Some(source) = self.hosts.get_mut(&token) {
+            let ui = &source.context.ui;
+            ui.input
+                .set_drag_away(&ui.scene, over.is_none_or(|(over, ..)| over != token));
+            if over.is_none() {
+                source.hand_off_drag(&drag);
+            }
+        }
+        if let Some((other, x, y)) = over_other
+            && let Some(host) = self.hosts.get(&other)
+        {
+            let ui = &host.context.ui;
+            ui.input.drag_over(&ui.scene, &drag.payload, x, y);
+        }
+    }
+    /// Window `token`'s drag is released: over another of the app's
+    /// windows, it drops there; over none, it is torn off (`outside`).
+    fn drop_elsewhere(&mut self, token: u64) {
+        if self.hosts.get(&token).is_none_or(|host| host.native_drag) {
+            return;
+        }
+        let Some((over, drag)) = self.drag_target(token) else {
+            return;
+        };
+        let (accepted, outside) = match over {
+            Some((over, ..)) if over == token => return,
+            Some((over, x, y)) => {
+                let Some(host) = self.hosts.get(&over) else {
+                    return;
+                };
+                let ui = &host.context.ui;
+                (ui.input.drag_drop(&ui.scene, &drag.payload, x, y), false)
+            }
+            None => (false, true),
+        };
+        if let Some(source) = self.hosts.get(&token) {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, accepted, outside);
+        }
+    }
+    /// The platform's drag of window `token` moved or ended, at a global
+    /// point. Over another of the app's windows, that window's destinations
+    /// hear it, and a release drops there; else the source's host takes it
+    /// (`Host::native_drag_event`).
+    fn native_drag(
+        &mut self,
+        token: u64,
+        event: crate::native_drag::NativeDrag,
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::native_drag::NativeDrag;
+        let (x, y, ended) = match event {
+            NativeDrag::Moved { x, y } => (x, y, None),
+            NativeDrag::Ended { x, y, accepted } => (x, y, Some(accepted)),
+        };
+        let Some(drag) = self
+            .hosts
+            .get(&token)
+            .and_then(|host| host.context.ui.input.drag_state())
+        else {
+            return Ok(());
+        };
+        let over = self.window_under(x, y).filter(|(over, ..)| *over != token);
+        for (other, host) in &self.hosts {
+            if over.is_none_or(|(over, ..)| over != *other) {
+                host.context.ui.input.drag_out(&host.context.ui.scene);
+            }
+        }
+        if let Some(source) = self.hosts.get(&token) {
+            let ui = &source.context.ui;
+            ui.input.set_drag_away(&ui.scene, over.is_some());
+        }
+        let Some((other, ox, oy)) = over else {
+            return match self.hosts.get_mut(&token) {
+                Some(source) => source.native_drag_event(event),
+                None => Ok(()),
+            };
+        };
+        let dropped = match ended {
+            None => {
+                if let Some(host) = self.hosts.get(&other) {
+                    let ui = &host.context.ui;
+                    ui.input.drag_over(&ui.scene, &drag.payload, ox, oy);
+                }
+                false
+            }
+            Some(taken) => {
+                !taken
+                    && self.hosts.get(&other).is_some_and(|host| {
+                        let ui = &host.context.ui;
+                        ui.input.drag_drop(&ui.scene, &drag.payload, ox, oy)
+                    })
+            }
+        };
+        let Some(source) = self.hosts.get_mut(&token) else {
+            return Ok(());
+        };
+        if dropped {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, true, false);
+        }
+        source.native_drag_event(event)
+    }
     /// Raise the window in front (the last focused, else any) for another
     /// launch of the app, with its `token`: on Wayland the compositor
     /// activates it (`xdg_activation_v1`); on X11 the window manager does,
@@ -3775,9 +4000,11 @@ impl ApplicationHandler<Event> for WindowManager {
                 }
             }
             Event::NativeDrag(token, drag) => {
-                if let Some(host) = self.hosts.get_mut(&token)
-                    && !host.context.window.is_closed()
-                    && let Err(error) = host.native_drag_event(drag)
+                if self
+                    .hosts
+                    .get(&token)
+                    .is_some_and(|host| !host.context.window.is_closed())
+                    && let Err(error) = self.native_drag(token, drag)
                 {
                     self.fail(event_loop, error);
                 }
@@ -3861,10 +4088,28 @@ impl ApplicationHandler<Event> for WindowManager {
         if matches!(event, WindowEvent::Focused(true)) {
             self.last_focused = Some(token);
         }
+        // A drag released over another of the app's windows drops there.
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        );
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            self.drop_elsewhere(token);
+        }
         if let Some(host) = self.hosts.get_mut(&token)
             && let Err(e) = host.window_event(event)
         {
             self.fail(event_loop, e);
+        }
+        if pointer {
+            self.carry_drag(token);
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -4614,6 +4859,8 @@ mod tests {
             native_menu: None,
             hosts: HashMap::new(),
             native: HashMap::new(),
+            drag_over: Cell::new(None),
+            carrying: None,
             #[cfg(target_os = "linux")]
             last_focused: None,
             factory,
