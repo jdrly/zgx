@@ -94,3 +94,86 @@ fn selection_paints_under_text_and_repaints_only_where_it_changes() {
         "clearing restores the text"
     );
 }
+
+#[test]
+fn bidi_and_emoji_select_by_logical_order_and_whole_clusters() {
+    let gpu = GpuRenderer::new(320, 160).unwrap();
+    let mut ui = Ui::new(320., 160.);
+    gpu.install_text(&mut ui.scene.borrow_mut());
+    ui.refresh_text_geometry();
+    let line = "abc אבגד efg 👩\u{200d}💻!";
+    ui.mount(
+        column()
+            .size(320., 160.)
+            .p(10.)
+            .text_size(16.)
+            .selectable(true)
+            .child(text(line).id("line")),
+    );
+    ui.prepare_frame();
+    let node = {
+        let scene = ui.scene.borrow();
+        let mut stack = vec![scene.root()];
+        let mut found = None;
+        while let Some(n) = stack.pop() {
+            if matches!(scene.kind(n), zgui::scene::NodeKind::Text { .. }) {
+                found = Some(n);
+            }
+            stack.extend(scene.children(n).iter().copied());
+        }
+        found.unwrap()
+    };
+    let bounds = ui.scene.borrow().bounds(node);
+    let pointer = |ui: &mut Ui, event| {
+        ui.dispatch_with_modifiers(event, Modifiers::default());
+    };
+    let y = bounds.y + bounds.height / 2.;
+    pointer(
+        &mut ui,
+        InputEvent::PointerDown {
+            x: bounds.x + 1.,
+            y,
+            button: PointerButton::Primary,
+        },
+    );
+    pointer(
+        &mut ui,
+        InputEvent::PointerMove {
+            x: bounds.x + bounds.width + 20.,
+            y,
+        },
+    );
+    pointer(
+        &mut ui,
+        InputEvent::PointerUp {
+            x: bounds.x + bounds.width + 20.,
+            y,
+            button: PointerButton::Primary,
+        },
+    );
+    assert_eq!(ui.selected_text(), line, "the whole line, in logical order");
+    // From the start into the right-to-left word: a logical prefix, drawn
+    // as more than one piece (the run's visual order differs).
+    let hebrew = line.find('א').unwrap();
+    let point = |offset| zgui::selection::TextPoint { node, offset };
+    assert!(ui.select_text(point(0), point(hebrew + 'א'.len_utf8() * 2)));
+    assert_eq!(ui.selected_text(), "abc אב");
+    let rects = ui.scene.borrow().text_highlight(node).unwrap().rects.len();
+    assert!(rects >= 2, "disjoint pieces: {rects}");
+    // Into the emoji: no half of its cluster is ever selected.
+    let emoji = line.find('👩').unwrap();
+    assert!(ui.select_text(point(emoji), point(line.len())));
+    ui.prepare_frame();
+    pointer(
+        &mut ui,
+        InputEvent::KeyDown {
+            key: zgui::input::Key::ArrowLeft,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        },
+    );
+    assert_eq!(ui.selected_text(), "👩\u{200d}💻");
+}

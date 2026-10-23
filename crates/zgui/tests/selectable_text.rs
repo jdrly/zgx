@@ -643,3 +643,180 @@ fn a_control_click_on_macos_opens_the_menu_and_keeps_the_selection() {
     assert_eq!(ui.selected_text(), "Keep");
     assert!(view.find("selection-copy").is_some(), "the menu opened");
 }
+
+fn shift(key: Key, word: bool, line: bool) -> InputEvent {
+    let mac = cfg!(target_os = "macos");
+    InputEvent::KeyDown {
+        key,
+        modifiers: Modifiers {
+            shift: true,
+            alt: mac && word,
+            control: !mac && word,
+            meta: mac && line,
+        },
+        repeat: false,
+    }
+}
+
+#[test]
+fn shift_keys_extend_the_selection_across_text_nodes() {
+    let mut ui = Ui::new(400., 300.);
+    document(
+        &mut ui,
+        vec![text("alpha beta"), text("gamma delta"), text("a👩‍💻b")],
+    );
+    // A press leaves a caret at "al|pha"; Shift-keys extend from it.
+    press(&mut ui, 12., 10., false);
+    release(&mut ui, 12., 10.);
+    for _ in 0..3 {
+        assert!(
+            ui.dispatch(shift(Key::ArrowRight, false, false))
+                .default_prevented
+        );
+    }
+    assert_eq!(ui.selected_text(), "pha");
+    ui.dispatch(shift(Key::ArrowRight, true, false));
+    assert_eq!(ui.selected_text(), "pha beta");
+    // Past the node's end, a word step lands at the next text's first word.
+    ui.dispatch(shift(Key::ArrowRight, true, false));
+    assert_eq!(ui.selected_text(), "pha beta\ngamma");
+    ui.dispatch(shift(Key::ArrowLeft, false, false));
+    assert_eq!(ui.selected_text(), "pha beta\ngamm");
+    // To the line's end, then a line down: into the next text at the caret's x.
+    let edge = if cfg!(target_os = "macos") {
+        shift(Key::ArrowRight, false, true)
+    } else {
+        shift(Key::End, false, false)
+    };
+    ui.dispatch(edge);
+    assert_eq!(ui.selected_text(), "pha beta\ngamma delta");
+    ui.dispatch(shift(Key::ArrowDown, false, false));
+    assert_eq!(ui.selected_text(), "pha beta\ngamma delta\na👩‍💻b");
+    // Back over the emoji: a whole grapheme cluster at a time.
+    ui.dispatch(shift(Key::ArrowLeft, false, false));
+    ui.dispatch(shift(Key::ArrowLeft, false, false));
+    assert_eq!(ui.selected_text(), "pha beta\ngamma delta\na");
+    // To the region's start, before the anchor.
+    let start = if cfg!(target_os = "macos") {
+        shift(Key::ArrowUp, false, true)
+    } else {
+        InputEvent::KeyDown {
+            key: Key::Home,
+            modifiers: Modifiers {
+                shift: true,
+                control: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        }
+    };
+    ui.dispatch(start);
+    assert_eq!(ui.selected_text(), "al");
+    // Without a selection, Shift-arrows are left to the app.
+    ui.clear_text_selection();
+    assert!(
+        !ui.dispatch(shift(Key::ArrowRight, false, false))
+            .default_prevented
+    );
+}
+
+#[test]
+fn a_triple_press_on_a_wrapped_paragraph_selects_all_its_lines() {
+    let mut ui = Ui::new(400., 300.);
+    ui.mount(
+        column()
+            .w(66.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(text("one two three four").w_full().text_wrap(true)),
+    );
+    ui.prepare_frame();
+    // The second visual line ("three").
+    for _ in 0..3 {
+        press(&mut ui, 6., 30., false);
+        release(&mut ui, 6., 30.);
+    }
+    assert_eq!(ui.selected_text(), "one two three four");
+}
+
+#[test]
+fn a_selection_across_a_scroll_viewport_takes_what_it_scrolled_away() {
+    let mut ui = Ui::new(400., 300.);
+    let offset = ui.signal(0.);
+    ui.mount(
+        column()
+            .w(300.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(text("Above"))
+            .child(
+                scroll(offset.clone())
+                    .w(300.)
+                    .h(40.)
+                    .child(column().children((0..5).map(|i| text(format!("Row {i}"))))),
+            )
+            .child(text("Below")),
+    );
+    ui.prepare_frame();
+    offset.set(40.);
+    ui.prepare_frame();
+    // Rows 0 and 1 are scrolled out of view, rows 4 below it: all between.
+    drag(&mut ui, (0., 10.), (60., 70.));
+    assert_eq!(
+        ui.selected_text(),
+        "Above\nRow 0\nRow 1\nRow 2\nRow 3\nRow 4\nBelow"
+    );
+    // From inside the viewport out past its bottom, onto the text there.
+    drag(&mut ui, (0., 30.), (12., 70.));
+    assert_eq!(ui.selected_text(), "Row 2\nRow 3\nRow 4\nBe");
+}
+
+#[test]
+fn text_in_a_popover_selects_and_its_press_does_not_end_it() {
+    let mut ui = Ui::new(400., 300.);
+    let open = ui.signal(true);
+    let view = ui.mount(
+        column().w(300.).text_size(10.).line_height(20.).child(
+            popover("Details", open.clone(), button().child(text("Open")))
+                .w(200.)
+                .selectable(true)
+                .child(text("Popover text").id("inside")),
+        ),
+    );
+    ui.prepare_frame();
+    let inside = view.find("inside").unwrap();
+    let b = ui.scene.borrow().bounds(inside);
+    drag(&mut ui, (b.x, b.y + 10.), (b.x + 42., b.y + 10.));
+    assert_eq!(ui.selected_text(), "Popover");
+    assert!(open.get(), "selecting in it keeps it open");
+}
+
+#[test]
+fn extending_past_a_scroll_viewport_with_the_keyboard_scrolls_it() {
+    let mut ui = Ui::new(400., 300.);
+    let offset = ui.signal(0.);
+    ui.mount(
+        scroll(offset.clone())
+            .w(300.)
+            .h(40.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(column().children((0..6).map(|i| text(format!("Row {i}"))))),
+    );
+    ui.prepare_frame();
+    press(&mut ui, 0., 10., false);
+    release(&mut ui, 0., 10.);
+    for _ in 0..3 {
+        ui.dispatch(shift(Key::ArrowDown, false, false));
+        ui.prepare_frame();
+    }
+    assert_eq!(ui.selected_text(), "Row 0\nRow 1\nRow 2");
+    assert!(
+        offset.get() >= 40.,
+        "scrolled to the focus: {}",
+        offset.get()
+    );
+}

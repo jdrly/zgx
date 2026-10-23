@@ -503,13 +503,23 @@ impl Ui {
     /// below is entered at its start or end; text clipped by a scroll
     /// viewport is hit at its visible edge.
     fn point_at(&self, root: NodeId, x: f32, y: f32) -> Option<Hit> {
+        self.point_near(root, x, y, true)
+    }
+    /// `point_at`, over all the region's laid-out text when not `visible`
+    /// only (the keyboard's steps reach text scrolled out of view).
+    fn point_near(&self, root: NodeId, x: f32, y: f32, visible: bool) -> Option<Hit> {
+        let only_visible = visible;
         let scene = self.scene.borrow();
         let mut best: Option<(TextLeaf, (f32, f32))> = None;
         scene.selectable_text(
             root,
             |id| self.is_editor(id),
             |leaf| {
-                let Some(visible) = leaf.visible else {
+                let Some(visible) = (if only_visible {
+                    leaf.visible
+                } else {
+                    Some(leaf.bounds)
+                }) else {
                     return;
                 };
                 let distance = |at: f32, start: f32, extent: f32| {
@@ -532,7 +542,11 @@ impl Ui {
             },
         );
         let (leaf, _) = best?;
-        let (bounds, visible) = (leaf.bounds, leaf.visible.unwrap());
+        let bounds = leaf.bounds;
+        let visible = match only_visible {
+            true => leaf.visible.unwrap(),
+            false => bounds,
+        };
         let layout = self.selection_layout(&scene, leaf.id)?;
         let text: Arc<str> = text_of(&scene, leaf.id)?;
         let end = text.len();
@@ -1177,6 +1191,159 @@ impl Ui {
             self.refresh_selection(true);
         }
     }
+    /// Move the selection's focus by `step` from the keyboard, keeping its
+    /// anchor, as Shift with an arrow, Home or End does on a web page: by a
+    /// grapheme, a word, to the visual line's edge, a line up or down, or to
+    /// the region's start or end, from one text node into the next. Returns
+    /// whether it moved (there was a selection to extend).
+    fn extend_selection(&self, step: Step) -> bool {
+        let (root, anchor, focus) = {
+            let state = self.selection_state().borrow();
+            let (Some(root), Some(anchor), Some(focus)) = (state.root, state.anchor, state.focus)
+            else {
+                return false;
+            };
+            (root, anchor, focus)
+        };
+        let next = {
+            let scene = self.scene.borrow();
+            if !scene.contains(root) || !scene.contains(focus.node) {
+                return false;
+            }
+            let mut leaves = Vec::new();
+            scene.selectable_text(root, |id| self.is_editor(id), |leaf| leaves.push(leaf));
+            let Some(at) = leaves.iter().position(|leaf| leaf.id == focus.node) else {
+                return false;
+            };
+            let text = |index: usize| text_of(&scene, leaves[index].id).unwrap_or_default();
+            let point = |index: usize, offset: usize| TextPoint {
+                node: leaves[index].id,
+                offset,
+            };
+            let own = text(at);
+            let offset = boundary(&own, focus.offset);
+            match step {
+                Step::Character(forward) | Step::Word(forward) => {
+                    let word = matches!(step, Step::Word(_));
+                    let within = if forward {
+                        next_boundary(&own, offset, word)
+                    } else {
+                        previous_boundary(&own, offset, word)
+                    };
+                    // Past a node's edge: into the next text, as over a line
+                    // break between blocks.
+                    match within {
+                        Some(offset) => point(at, offset),
+                        None if forward && at + 1 < leaves.len() => {
+                            let next = text(at + 1);
+                            match word {
+                                true => point(at + 1, next_boundary(&next, 0, true).unwrap_or(0)),
+                                false => point(at + 1, 0),
+                            }
+                        }
+                        None if !forward && at > 0 => {
+                            let before = text(at - 1);
+                            let end = before.len();
+                            match word {
+                                true => point(
+                                    at - 1,
+                                    previous_boundary(&before, end, true).unwrap_or(end),
+                                ),
+                                false => point(at - 1, end),
+                            }
+                        }
+                        None => point(at, offset),
+                    }
+                }
+                Step::Document(forward) => match forward {
+                    true => point(leaves.len() - 1, text(leaves.len() - 1).len()),
+                    false => point(0, 0),
+                },
+                Step::LineEdge(forward) | Step::Line(forward) => {
+                    let Some(layout) = self.selection_layout(&scene, focus.node) else {
+                        return false;
+                    };
+                    let position = crate::text_layout::TextPosition {
+                        byte_offset: offset,
+                        affinity: crate::text_layout::TextAffinity::After,
+                    };
+                    if matches!(step, Step::LineEdge(_)) {
+                        point(at, layout.visual_line_edge(position, forward).byte_offset)
+                    } else {
+                        // The point a line above or below, where the caret is:
+                        // it may be in another text node.
+                        let caret = layout.caret_position(position);
+                        let bounds = scene.bounds(focus.node);
+                        let x = bounds.x + caret.x;
+                        let y = bounds.y
+                            + caret.y
+                            + if forward {
+                                caret.height * 1.5
+                            } else {
+                                -caret.height * 0.5
+                            };
+                        drop(scene);
+                        let hit = self.point_near(root, x, y, false).map(|hit| hit.point);
+                        let Some(hit) = hit else {
+                            return false;
+                        };
+                        hit
+                    }
+                }
+            }
+        };
+        self.selection_state().borrow_mut().active_root = Some(root);
+        self.set_selection(Some(root), Some(anchor), Some(next));
+        self.reveal_selection_focus();
+        true
+    }
+    /// Scroll the innermost viewport holding the focus until the focus's
+    /// line shows, as a page does when Shift-keys extend past its edge.
+    fn reveal_selection_focus(&self) {
+        let Some(focus) = self.selection_state().borrow().focus else {
+            return;
+        };
+        let delta = {
+            let scene = self.scene.borrow();
+            if !scene.contains(focus.node) {
+                return;
+            }
+            let Some(layout) = self.selection_layout(&scene, focus.node) else {
+                return;
+            };
+            let caret = layout.caret_position(crate::text_layout::TextPosition {
+                byte_offset: focus.offset,
+                affinity: crate::text_layout::TextAffinity::After,
+            });
+            let bounds = scene.bounds(focus.node);
+            let (top, bottom) = (bounds.y + caret.y, bounds.y + caret.y + caret.height);
+            let Some(visible) = scene
+                .ancestors(focus.node)
+                .find(|id| scene.is_scroll_content(*id))
+                .and_then(|content| scene.parent(content))
+                .and_then(|viewport| scene.visible_bounds(viewport))
+            else {
+                return;
+            };
+            if top < visible.y {
+                top - visible.y
+            } else if bottom > visible.y + visible.height {
+                bottom - visible.y - visible.height
+            } else {
+                return;
+            }
+        };
+        self.input.dispatch_to(
+            &self.scene,
+            focus.node,
+            InputEvent::Scroll {
+                x: 0.,
+                y: 0.,
+                delta_x: 0.,
+                delta_y: delta,
+            },
+        );
+    }
     /// What the selection makes of an event the document has dispatched:
     /// select-all and the end of a selection on a press elsewhere.
     pub(crate) fn selection_after_dispatch(
@@ -1186,6 +1353,14 @@ impl Ui {
     ) {
         match event {
             SelectionEvent::None => {}
+            SelectionEvent::Extend(step) => {
+                if !result.default_prevented
+                    && self.focused_editor().is_none()
+                    && self.extend_selection(step)
+                {
+                    result.default_prevented = true;
+                }
+            }
             SelectionEvent::SelectAll => {
                 if result.default_prevented
                     || self.selection_state().borrow().roots.is_empty()
@@ -1286,6 +1461,17 @@ pub(crate) enum SelectionEvent {
     None,
     SelectAll,
     Press,
+    /// Shift with an arrow, Home or End: move the focus.
+    Extend(Step),
+}
+/// How far a Shift-key moves the focus, and which way (`true`: forward).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    Character(bool),
+    Word(bool),
+    LineEdge(bool),
+    Line(bool),
+    Document(bool),
 }
 /// A primary press that macOS takes as a secondary one (a control-click).
 fn context_click(modifiers: Modifiers) -> bool {
@@ -1310,6 +1496,39 @@ impl SelectionEvent {
                 button: PointerButton::Primary,
                 ..
             } if !context_click(modifiers) => Self::Press,
+            InputEvent::KeyDown { key, modifiers, .. } if modifiers.shift => {
+                let mac = cfg!(target_os = "macos");
+                let step = match key {
+                    Key::ArrowLeft | Key::ArrowRight => {
+                        let forward = *key == Key::ArrowRight;
+                        if mac && modifiers.meta {
+                            Step::LineEdge(forward)
+                        } else if modifiers.word_navigation() {
+                            Step::Word(forward)
+                        } else {
+                            Step::Character(forward)
+                        }
+                    }
+                    Key::ArrowUp | Key::ArrowDown => {
+                        let forward = *key == Key::ArrowDown;
+                        if mac && modifiers.meta {
+                            Step::Document(forward)
+                        } else {
+                            Step::Line(forward)
+                        }
+                    }
+                    Key::Home | Key::End => {
+                        let forward = *key == Key::End;
+                        if modifiers.primary_shortcut() {
+                            Step::Document(forward)
+                        } else {
+                            Step::LineEdge(forward)
+                        }
+                    }
+                    _ => return Self::None,
+                };
+                Self::Extend(step)
+            }
             _ => Self::None,
         }
     }
@@ -1457,6 +1676,30 @@ fn html_run(out: &mut String, text: &str, font: &FontStyle, underline: bool, str
     }
     for (_, tag) in tags.iter().rev().filter(|(on, _)| *on) {
         out.push_str(&format!("</{tag}>"));
+    }
+}
+
+/// The next grapheme boundary (or word end) after `offset` in `text`.
+fn next_boundary(text: &str, offset: usize, word: bool) -> Option<usize> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let rest = &text[offset..];
+    if word {
+        rest.unicode_word_indices()
+            .next()
+            .map(|(i, w)| offset + i + w.len())
+    } else {
+        rest.graphemes(true).next().map(|g| offset + g.len())
+    }
+}
+
+/// The grapheme boundary (or word start) before `offset` in `text`.
+fn previous_boundary(text: &str, offset: usize, word: bool) -> Option<usize> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let before = &text[..offset];
+    if word {
+        before.unicode_word_indices().map(|(i, _)| i).next_back()
+    } else {
+        before.grapheme_indices(true).map(|(i, _)| i).next_back()
     }
 }
 

@@ -108,7 +108,13 @@ paragraph (the text between hard line breaks), and dragging after either
 extends in whole words or paragraphs. Shift extends from the anchor.
 ⌘A / Ctrl+A selects the region last pressed in, unless focus is in an editor;
 ⌘C / Ctrl+C copies it as plain text. The pointer shows an I-beam over the
-region's text. `.selectable(false)` keeps a part out (CSS `user-select:
+region's text. Shift with the arrows extends the focus from the keyboard, from
+one text node into the next: by a grapheme, by a word with Option (macOS) or
+Control, to the visual line's edge with ⌘ (macOS) or Home/End, a line up or
+down at the caret's x, and to the region's start or end with ⌘↑/⌘↓ (macOS) or
+Control+Home/End; the innermost scroll viewport follows the focus. Without a
+selection, or with an editor focused, those keys are left to the app.
+`.selectable(false)` keeps a part out (CSS `user-select:
 none`); an inner `.selectable(true)` is part of the outer region.
 
 Links and buttons inside still click; a drag that starts on one moves past
