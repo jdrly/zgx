@@ -2,9 +2,13 @@
 //! Loading them opens and parses each installed file (about 370 files, 10 ms
 //! and 100 M instructions on macOS), and the first text in each new style
 //! read every face's weight axis from its file as well. Both are kept in a
-//! cache file, used while every font directory and file is unchanged (their
-//! modification times and sizes, as fontconfig checks its cache). Linux,
-//! where fontdb takes its directories from fontconfig, loads as before.
+//! cache file, used while every font directory is unchanged (their
+//! modification times and sizes, as fontconfig checks its cache): adding,
+//! removing or renaming a font changes its directory. The font files
+//! themselves (about 370 stats, a fifth of the cache's cost) are checked
+//! after launch, off the main thread: one changed in place drops the cache
+//! for the next launch. Linux, where fontdb takes its directories from
+//! fontconfig, loads as before.
 use cosmic_text::{
     FontSystem,
     fontdb::{self, Language, Source, Stretch, Style, Weight},
@@ -15,7 +19,7 @@ use std::{
 };
 
 /// Bump when fontdb or cosmic-text change what they read from a font file.
-const FORMAT: &[u8] = b"zgui system fonts 1\n";
+const FORMAT: &[u8] = b"zgui system fonts 2\n";
 
 pub(crate) fn system_fonts() -> FontSystem {
     let mut fonts = cached_system_fonts();
@@ -88,7 +92,8 @@ fn cached_system_fonts() -> FontSystem {
     let Some(cache) = cache_file() else {
         return FontSystem::new();
     };
-    if let Some(fonts) = std::fs::read(&cache).ok().and_then(|bytes| decode(&bytes)) {
+    if let Some((fonts, files)) = std::fs::read(&cache).ok().and_then(|bytes| decode(&bytes)) {
+        check_later(cache, files);
         return fonts;
     }
     let mut fonts = FontSystem::new();
@@ -105,6 +110,27 @@ fn cached_system_fonts() -> FontSystem {
         }
     }
     fonts
+}
+
+/// Font files with the modification time and size each had when cached.
+type Stamps = Vec<(PathBuf, (u64, u64))>;
+
+/// Once the app has started, whether a font file changed in place since the
+/// cache was written: if one did, the next launch loads the fonts again.
+fn check_later(cache: PathBuf, files: Stamps) {
+    let _ = std::thread::Builder::new()
+        .name("zgui font cache check".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if stale(&files) {
+                let _ = std::fs::remove_file(cache);
+            }
+        });
+}
+
+/// Whether any of `files` is no longer as stamped.
+fn stale(files: &[(PathBuf, (u64, u64))]) -> bool {
+    files.iter().any(|(path, at)| stamp(path) != *at)
 }
 
 fn cache_file() -> Option<PathBuf> {
@@ -155,8 +181,8 @@ fn font_roots() -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 /// Every path whose change could change the loaded faces: the font
-/// directories, each directory below them, and each font file.
-fn watched(fonts: &FontSystem) -> Option<Vec<PathBuf>> {
+/// directories and each directory below them, then each font file.
+fn watched(fonts: &FontSystem) -> Option<(Vec<PathBuf>, Vec<PathBuf>)> {
     let (roots, mut paths) = font_roots();
     let mut seen = std::collections::HashSet::new();
     let mut pending = roots;
@@ -172,15 +198,18 @@ fn watched(fonts: &FontSystem) -> Option<Vec<PathBuf>> {
         }
         paths.push(dir);
     }
+    let mut files = Vec::new();
     for face in fonts.db().faces() {
         let Source::File(path) = &face.source else {
             return None;
         };
-        paths.push(path.clone());
+        files.push(path.clone());
     }
-    paths.sort();
-    paths.dedup();
-    Some(paths)
+    for list in [&mut paths, &mut files] {
+        list.sort();
+        list.dedup();
+    }
+    Some((paths, files))
 }
 
 /// A path's modification time and size, or zeros where it does not exist.
@@ -195,14 +224,16 @@ fn stamp(path: &Path) -> (u64, u64) {
 }
 
 fn encode(fonts: &mut FontSystem) -> Option<Vec<u8>> {
-    let paths = watched(fonts)?;
+    let (dirs, files) = watched(fonts)?;
     let mut out = Writer(FORMAT.to_vec());
-    out.u32(paths.len() as u32);
-    for path in &paths {
-        out.str(path.to_str()?);
-        let (modified, len) = stamp(path);
-        out.u64(modified);
-        out.u64(len);
+    for paths in [&dirs, &files] {
+        out.u32(paths.len() as u32);
+        for path in paths {
+            out.str(path.to_str()?);
+            let (modified, len) = stamp(path);
+            out.u64(modified);
+            out.u64(len);
+        }
     }
     let ids: Vec<_> = fonts.db().faces().map(|face| face.id).collect();
     out.u32(ids.len() as u32);
@@ -237,7 +268,9 @@ fn encode(fonts: &mut FontSystem) -> Option<Vec<u8>> {
     Some(out.0)
 }
 
-fn decode(bytes: &[u8]) -> Option<FontSystem> {
+/// The cached fonts, if every font directory is as it was, with the font
+/// files' stamps to check later (`check_later`).
+fn decode(bytes: &[u8]) -> Option<(FontSystem, Stamps)> {
     let mut input = Reader(bytes.strip_prefix(FORMAT)?);
     for _ in 0..input.u32()? {
         let path = input.str()?;
@@ -245,6 +278,9 @@ fn decode(bytes: &[u8]) -> Option<FontSystem> {
             return None;
         }
     }
+    let files = (0..input.u32()?)
+        .map(|_| Some((PathBuf::from(input.str()?), (input.u64()?, input.u64()?))))
+        .collect::<Option<Vec<_>>>()?;
     let mut db = fontdb::Database::new();
     let mut axes = Vec::new();
     for _ in 0..input.u32()? {
@@ -297,7 +333,7 @@ fn decode(bytes: &[u8]) -> Option<FontSystem> {
     for (id, axis) in axes {
         fonts.set_weight_axis(id, axis);
     }
-    Some(fonts)
+    Some((fonts, files))
 }
 
 fn stretch(number: u16) -> Option<Stretch> {
@@ -401,7 +437,12 @@ mod tests {
         let Some(bytes) = encode(&mut loaded) else {
             return; // No system fonts cache on this platform.
         };
-        let mut cached = decode(&bytes).expect("an unchanged system decodes");
+        let (mut cached, files) = decode(&bytes).expect("an unchanged system decodes");
+        assert!(!stale(&files), "an unchanged font file is not stale");
+        if let Some(first) = files.first() {
+            let touched = [(first.0.clone(), (first.1.0 ^ 1, first.1.1))];
+            assert!(stale(&touched), "a font file changed in place is");
+        }
         let faces = |fonts: &FontSystem| -> Vec<_> {
             fonts
                 .db()
@@ -433,11 +474,15 @@ mod tests {
             decode(&bytes[..bytes.len() - 1]).is_none(),
             "a truncated cache is not used"
         );
-        // The first watched path's modification time, as if it changed.
-        let mut changed = bytes.clone();
-        let first = FORMAT.len() + 4;
-        let len = u32::from_le_bytes(changed[first..first + 4].try_into().unwrap()) as usize;
-        changed[first + 4 + len] ^= 1;
-        assert!(decode(&changed).is_none(), "a changed directory reloads");
+        // The first font directory's modification time, as if it changed
+        // (Linux watches none: fontconfig has its own cache).
+        let dirs = u32::from_le_bytes(bytes[FORMAT.len()..][..4].try_into().unwrap());
+        if dirs > 0 {
+            let mut changed = bytes.clone();
+            let first = FORMAT.len() + 4;
+            let len = u32::from_le_bytes(changed[first..first + 4].try_into().unwrap()) as usize;
+            changed[first + 4 + len] ^= 1;
+            assert!(decode(&changed).is_none(), "a changed directory reloads");
+        }
     }
 }
