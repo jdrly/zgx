@@ -525,15 +525,63 @@ mod compositor_clock {
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
     use windows::Win32::{
-        Foundation::{HANDLE, HWND},
+        Foundation::{CloseHandle, HANDLE, HWND},
         Graphics::Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
         System::{
             LibraryLoader::{GetProcAddress, LoadLibraryW},
             Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
-            Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST},
+            Threading::{
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, GetCurrentThread,
+                INFINITE, SetThreadPriority, SetWaitableTimer, THREAD_PRIORITY_HIGHEST,
+                TIMER_ALL_ACCESS, WaitForSingleObject,
+            },
         },
     };
     use winit::window::Window;
+
+    /// The clock thread's sleeps, on one high-resolution waitable timer.
+    /// `std::thread::sleep` makes a timer for every sleep: on an animating
+    /// window's thread, two kernel objects and an allocation a refresh.
+    struct Timer(Option<HANDLE>);
+    impl Timer {
+        fn new() -> Self {
+            // SAFETY: creates an unnamed timer this value owns; fails before
+            // Windows 10 1803, where sleeps fall back to the standard library.
+            let handle = unsafe {
+                CreateWaitableTimerExW(
+                    None,
+                    None,
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                    TIMER_ALL_ACCESS.0,
+                )
+            };
+            Self(handle.ok())
+        }
+        fn sleep(&self, duration: Duration) {
+            let Some(timer) = self.0 else {
+                std::thread::sleep(duration);
+                return;
+            };
+            // Relative due times are negative, in 100 ns units.
+            let due = -((duration.as_nanos() / 100).min(i64::MAX as u128) as i64).max(1);
+            // SAFETY: arms the timer this value owns, once, then waits on it.
+            unsafe {
+                if SetWaitableTimer(timer, &due, 0, None, None, false).is_ok() {
+                    WaitForSingleObject(timer, INFINITE);
+                } else {
+                    std::thread::sleep(duration);
+                }
+            }
+        }
+    }
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            if let Some(timer) = self.0 {
+                // SAFETY: closes the handle this value owns.
+                let _ = unsafe { CloseHandle(timer) };
+            }
+        }
+    }
 
     /// One window's subscription, reachable from the clock's thread.
     struct Subscriber {
@@ -614,7 +662,7 @@ mod compositor_clock {
     }
 
     /// Blocks until the compositor's next frame.
-    fn wait_for_tick() {
+    fn wait_for_tick(timer: &Timer) {
         if let Some(wait) = compositor_clock() {
             // SAFETY: no handles to wait on besides the clock.
             unsafe { wait(0, std::ptr::null(), 100) };
@@ -631,7 +679,7 @@ mod compositor_clock {
                 let ahead = period - (now - vblank).rem_euclid(period);
                 Duration::from_nanos((ahead as u128 * 1_000_000_000 / frequency as u128) as u64)
             });
-            std::thread::sleep(wait);
+            timer.sleep(wait);
         }
     }
 
@@ -639,6 +687,9 @@ mod compositor_clock {
         // Delivery is a message post; a prompt wake keeps it at the tick.
         // SAFETY: changes this thread's own priority.
         let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
+        let timer = Timer::new();
+        // Refilled each refresh, so delivery allocates nothing.
+        let mut subscribers = Vec::new();
         loop {
             {
                 let mut guard = clock();
@@ -646,7 +697,7 @@ mod compositor_clock {
                     guard = WAKE.wait(guard).unwrap_or_else(PoisonError::into_inner);
                 }
             }
-            wait_for_tick();
+            wait_for_tick(&timer);
             let Some((vblank, period)) = timing() else {
                 continue;
             };
@@ -670,7 +721,7 @@ mod compositor_clock {
             // the next, half a refresh sooner than from the tick.
             let middle = phase + ticked * period + period / 2;
             if middle > now {
-                std::thread::sleep(Duration::from_nanos(nanos(middle - now)));
+                timer.sleep(Duration::from_nanos(nanos(middle - now)));
             }
             let now = qpc().0;
             let ahead = (phase + (ticked + 1) * period - now).max(0);
@@ -681,11 +732,11 @@ mod compositor_clock {
                 interval,
             };
             let rate = 1. / interval.as_secs_f64();
-            let subscribers = clock()
-                .as_ref()
-                .map(|c| c.subscribers.clone())
-                .unwrap_or_default();
-            for subscriber in subscribers {
+            subscribers.clear();
+            if let Some(clock) = clock().as_ref() {
+                subscribers.extend(clock.subscribers.iter().cloned());
+            }
+            for subscriber in subscribers.drain(..) {
                 if !subscriber.active.load(Ordering::Acquire) {
                     continue;
                 }
@@ -766,6 +817,35 @@ mod compositor_clock {
             self.subscriber.active.store(false, Ordering::Release);
             if let Some(clock) = clock().as_mut() {
                 clock.subscribers.retain(|s| s.id != self.subscriber.id);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The clock's sleeps last what they are given, each on the one
+        /// high-resolution timer, re-armed.
+        #[test]
+        fn the_clock_timer_sleeps_as_long_as_asked_and_no_more() {
+            let timer = Timer::new();
+            assert!(
+                timer.0.is_some(),
+                "high-resolution timers: Windows 10 1803+"
+            );
+            for millis in [1, 2, 5, 8] {
+                let asked = Duration::from_millis(millis);
+                let started = Instant::now();
+                timer.sleep(asked);
+                let slept = started.elapsed();
+                assert!(slept >= asked, "{slept:?} for {asked:?}");
+                // Generous for a loaded CI runner; a coarse 15.6 ms tick
+                // would show at 1 ms.
+                assert!(
+                    slept < asked + Duration::from_millis(12),
+                    "{slept:?} for {asked:?}"
+                );
             }
         }
     }
