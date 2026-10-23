@@ -121,6 +121,27 @@ fn virtual_lists_mount_only_visible_rows() {
 }
 
 #[test]
+fn lists_and_scrolls_are_named_by_their_label() {
+    let mut h = Harness::inline(
+        r##"return ui.column {
+            ui.list { id = "list", role = "listbox", label = "Messages", count = 3, w = 200, h = 100,
+                row = function(i) return ui.text("row " .. i) end },
+            ui.scroll { id = "view", label = "Message body", w = 200, h = 100, ui.text("body") },
+        }"##,
+    );
+    for (id, label, role) in [
+        ("list", "Messages", zgui::semantics::Role::ListBox),
+        ("view", "Message body", zgui::semantics::Role::ScrollView),
+    ] {
+        let node = h.find(id).unwrap();
+        let semantics = h.ui.semantics.borrow();
+        let node = semantics.get(node).unwrap();
+        assert_eq!((node.label.as_str(), node.role), (label, role));
+    }
+    assert_eq!(h.host.error().get(), None);
+}
+
+#[test]
 fn script_scrolls_fade_only_where_content_runs_past() {
     let mut h = Harness::inline(
         r##"local off = ui.state("off", 0)

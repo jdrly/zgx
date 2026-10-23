@@ -2131,7 +2131,13 @@ fn fill_from(
             "label"
                 if matches!(
                     node.kind,
-                    Kind::Column | Kind::Row | Kind::Div | Kind::Overlay | Kind::Button
+                    Kind::Column
+                        | Kind::Row
+                        | Kind::Div
+                        | Kind::Overlay
+                        | Kind::Button
+                        | Kind::Scroll { .. }
+                        | Kind::List { .. }
                 ) =>
             {
                 node.label = Some(lua.unpack::<String>(value)?.into());

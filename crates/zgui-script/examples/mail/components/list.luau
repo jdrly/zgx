@@ -198,6 +198,8 @@ return function(): Node
 		},
 		ui.list {
 			id = "messages",
+			role = "listbox",
+			label = "Messages",
 			count = function()
 				return #shown:get()
 			end,

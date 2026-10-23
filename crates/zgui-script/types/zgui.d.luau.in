@@ -1351,6 +1351,8 @@ export type SliderProps = Merge<Props, {
 }>
 -- A virtualized list: only visible rows are built.
 export type ListProps = Merge<Props, {
+	-- The name assistive technology reads for it: "Messages".
+	label: string?,
 	-- The row count (with `heights`, their length).
 	count: Reactive<number>?,
 	-- An interactive scrollbar over the trailing edge (none by default).

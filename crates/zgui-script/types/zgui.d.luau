@@ -4576,6 +4576,8 @@ export type ListProps = {
 	-- rather than at the pointer.
 	context_menu_below: boolean?,
 	[number]: never,
+	-- The name assistive technology reads for it: "Messages".
+	label: string?,
 	-- The row count (with `heights`, their length).
 	count: Reactive<number>?,
 	-- An interactive scrollbar over the trailing edge (none by default).
