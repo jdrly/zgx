@@ -181,6 +181,16 @@ permission (camera, microphone, location, notifications, clipboard reads).
 `scripts/windows_webview_smoke.py` checks the page against zgui content
 around and over it.
 
+## Touch and pen
+
+Windows gives a window touch and pen as pointer messages, not a mouse's, and
+zgui takes them as its pointer. A pen is a mouse. A finger presses where it
+lands; lifted there it clicks, and held there first (0.6 s) it right-clicks,
+as Windows' press-and-hold does. Moved, it pans the scroll views under it
+(coasting on after a flick) and presses nothing, or, where nothing scrolls
+that way, drags what it pressed: a slider, a selection. Two fingers pan
+together; pinching does nothing yet.
+
 ## Activation
 
 `Application::application_id` makes the app one instance an ID and session:
@@ -208,12 +218,13 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
 python scripts/windows_platform_smoke.py target/debug/examples
 python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --both
+python scripts/windows_touch_smoke.py target/debug/examples
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -242,6 +253,9 @@ python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --
   changes the page, the menu popover draws above the page and takes its
   clicks, the wheel scrolls the page, and after a resize the page still fills
   its node.
+- `windows_touch_smoke.py`: synthetic touch and pen (no touchscreen needed):
+  a tap clicks, a finger drags a slider, pans a list and flings it, a held
+  finger opens a context menu, and a pen's stroke drags rather than pans.
 - `windows_settings_smoke.py`: the window menu (Alt+Space) is dark in dark
   mode and light in light mode, and a scrollbar hides at rest, shows while
   the user scrolls and hides after with "Always show scrollbars" off, and

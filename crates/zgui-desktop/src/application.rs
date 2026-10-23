@@ -1038,6 +1038,10 @@ struct Host {
     damage_check: Option<u64>,
     /// Wheel and trackpad motion waiting for display refreshes.
     scroll: crate::scroll_resample::ScrollResampler,
+    /// Fingers and pens on the screen, as the pointer.
+    touch: crate::touch::Touches,
+    /// What had focus before a finger pressed, for a pan to give it back.
+    touch_focus: Option<zgui::scene::NodeId>,
     /// Where the trackpad's scroll gesture is: what its phases report
     /// (`InputEvent::ScrollGesture`, for elastic scrolling).
     trackpad: Trackpad,
@@ -1151,6 +1155,8 @@ impl Host {
             primary: None,
             cursor: (0., 0.),
             scroll: Default::default(),
+            touch: Default::default(),
+            touch_focus: None,
             trackpad: Trackpad::Idle,
             pending_file_drops: Default::default(),
             modifiers: Modifiers::default(),
@@ -1216,6 +1222,35 @@ impl Host {
     }
     fn dispatch(&mut self, event: InputEvent) -> Result<(), zgui::widgets::LayoutFeedbackError> {
         self.dispatch_prevented(event).map(|_| ())
+    }
+    /// Carry out what a touch asked (`touch::Step`).
+    fn touch_steps(
+        &mut self,
+        steps: Vec<crate::touch::Step>,
+    ) -> Result<(), zgui::widgets::LayoutFeedbackError> {
+        for step in steps {
+            match step {
+                crate::touch::Step::Dispatch(event) => self.dispatch(event)?,
+                crate::touch::Step::Unpress => {
+                    self.dispatch(InputEvent::PointerCancel)?;
+                    let ui = &self.context.ui;
+                    if ui.input.focused() != self.touch_focus {
+                        ui.input.focus(&ui.scene, self.touch_focus);
+                    }
+                }
+                crate::touch::Step::TryPan { x, y, dx, dy } => {
+                    let panned = self.dispatch_prevented(InputEvent::Scroll {
+                        x,
+                        y,
+                        delta_x: dx,
+                        delta_y: dy,
+                    })?;
+                    let next = self.touch.decided(panned);
+                    self.touch_steps(next)?;
+                }
+            }
+        }
+        Ok(())
     }
     fn dispatch_prevented(
         &mut self,
@@ -2339,6 +2374,22 @@ impl Host {
                     self.window_gesture(gesture)?;
                 }
             }
+            WindowEvent::Touch(touch) => {
+                let p = touch.location.to_logical::<f32>(self.scale_factor);
+                self.cursor = (p.x, p.y);
+                let pen = crate::touch::is_pen(touch.id);
+                if touch.phase == winit::event::TouchPhase::Started && self.touch.idle() {
+                    self.touch_focus = self.context.ui.input.focused();
+                }
+                let steps = self.touch.touch(
+                    touch.id,
+                    touch.phase,
+                    (p.x, p.y),
+                    pen,
+                    std::time::Instant::now(),
+                );
+                self.touch_steps(steps)?;
+            }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 // A trackpad gesture's phase: its start goes before its
                 // motion, its end after all of it.
@@ -2557,6 +2608,20 @@ impl Host {
                 })?;
             }
         }
+        // A fling coasts a step each refresh, and stops at the end of what
+        // it scrolls.
+        if self.touch.flinging()
+            && (self.frame_arrived || !self.frames_presented())
+            && let Some((x, y, delta_x, delta_y)) = self.touch.coast(std::time::Instant::now())
+            && !self.dispatch_prevented(InputEvent::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            })?
+        {
+            self.touch.stop();
+        }
         if let StartupTrim::At(at) = self.startup_trim
             && std::time::Instant::now() >= at
         {
@@ -2693,7 +2758,7 @@ impl Host {
     /// Start, stop or schedule this window's frame source to match demand.
     fn sync_frames(&mut self) {
         let now = std::time::Instant::now();
-        let scrolling = self.scroll.active(now);
+        let scrolling = self.scroll.active(now) || self.touch.flinging();
         let wanted = (self.frames.wants_frame() || scrolling) && self.frames_presented();
         if !wanted {
             self.frame_heartbeat = None;

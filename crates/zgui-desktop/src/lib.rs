@@ -76,6 +76,7 @@ mod linux_appearance;
 mod scoped_task;
 mod scroll_resample;
 mod system_colors;
+mod touch;
 pub use scoped_task::ScopedTask;
 
 #[cfg(doctest)]
