@@ -1,8 +1,9 @@
 //! The platform's own colours and settings, which the themes take over their
 //! built-in values (`Themes::set_system_tokens`): the text selection's, so a
 //! selection looks as the system draws one and follows the user's accent,
-//! and on Windows high contrast and animations turned off. An app theme or
-//! `theme_scope` that sets these tokens keeps its own.
+//! and on Windows high contrast, animations turned off and the text size. An
+//! app theme or `theme_scope` that sets these tokens keeps its own; the text
+//! size scales the font tokens of every theme.
 // Linux reads no system values yet.
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(unused_imports))]
 use zgui::{
@@ -190,4 +191,16 @@ fn windows_motion() -> Vec<(TokenId, TokenInput)> {
 /// change (the user may have picked another accent meanwhile).
 pub(crate) fn sync(ui: &zgui::widgets::Ui) {
     ui.theme().set_system_tokens(tokens());
+    #[cfg(windows)]
+    ui.theme().set_system_text_scale(windows_text_scale());
+}
+
+/// Windows' "Text size" (Settings, Accessibility): 1 to 2.25, scaling text
+/// alone, as WinUI's text follows it.
+#[cfg(windows)]
+fn windows_text_scale() -> f32 {
+    use windows::UI::ViewManagement::UISettings;
+    UISettings::new()
+        .and_then(|settings| settings.TextScaleFactor())
+        .map_or(1., |scale| scale as f32)
 }
