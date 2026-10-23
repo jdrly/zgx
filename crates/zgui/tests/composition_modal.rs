@@ -145,6 +145,46 @@ fn escape_in_a_text_field_closes_its_dialog_unless_it_cancels_a_composition() {
 }
 
 #[test]
+fn tab_cycles_a_dialogs_controls_and_never_stops_on_the_dialog() {
+    let mut ui = Ui::new(400., 300.);
+    let open = ui.signal(false);
+    let view = ui.mount(
+        column().child(button().w(50.).h(30.).id("trigger")).child(
+            modal("Confirm", open.clone())
+                .w(200.)
+                .h(100.)
+                .child(button().w(60.).h(30.).id("first"))
+                .child(button().w(60.).h(30.).id("second")),
+        ),
+    );
+    ui.prepare_frame();
+    open.set(true);
+    ui.prepare_frame();
+    let (first, second) = (view.find("first"), view.find("second"));
+    let tab = |ui: &mut Ui, shift: bool| {
+        ui.dispatch(InputEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+            repeat: false,
+        });
+    };
+    assert_eq!(ui.input.focused(), first);
+    tab(&mut ui, false);
+    assert_eq!(ui.input.focused(), second);
+    tab(&mut ui, false);
+    assert_eq!(
+        ui.input.focused(),
+        first,
+        "past the last control, the first"
+    );
+    tab(&mut ui, true);
+    assert_eq!(ui.input.focused(), second, "and back");
+}
+
+#[test]
 fn nested_escape_closes_only_top_and_parent_close_unwinds_children() {
     let mut ui = Ui::new(400., 300.);
     let outer = ui.signal(false);

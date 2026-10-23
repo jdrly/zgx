@@ -91,6 +91,12 @@ pub(crate) fn activate(
     ui.semantics.borrow_mut().set(panel, semantics);
     let mut options = ui.input.options(panel).unwrap_or_default();
     options.focusable = focusable;
+    // Focus lands on the panel only as it opens with nothing in it to take
+    // focus: Tab moves among its controls, never to the panel itself, as
+    // in a native dialog.
+    if focusable {
+        options.tab_index = -1;
+    }
     ui.input.set_options(panel, options);
     // Blank panel space is a hit boundary, separate from the backdrop.
     ui.on_event(panel, true, |_| {});
@@ -264,7 +270,8 @@ pub(crate) fn activate(
                             .input
                             .options(candidate)
                             .is_some_and(|options| options.focusable)
-                        && ui.input.focus(&ui.scene, Some(candidate))
+                        && (ui.input.focused() == Some(candidate)
+                            || ui.input.focus(&ui.scene, Some(candidate)))
                     {
                         break;
                     }

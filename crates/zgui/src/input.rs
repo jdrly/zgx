@@ -1505,7 +1505,16 @@ impl InputDispatcher {
         .filter(|id| *id != focused)
     }
     fn next_focus(&self, scene: &Scene, reverse: bool) -> Option<NodeId> {
-        let mut ordered = self.focusables(scene, scene.root());
+        // Within a modal scope Tab cycles its controls alone: past its last
+        // it comes round to its first, rather than leaving it.
+        let from = self
+            .state
+            .borrow()
+            .scopes
+            .last()
+            .filter(|scope| !scope.porous && scene.contains(scope.root))
+            .map_or(scene.root(), |scope| scope.root);
+        let mut ordered = self.focusables(scene, from);
         // A focus group is one stop: the member that has focus, else its
         // current, else its first.
         if !self.state.borrow().groups.is_empty() {
