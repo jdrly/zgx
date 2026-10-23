@@ -135,6 +135,72 @@ commit), so a compositor that places the input method's popup from it can
 follow the scroll. A caret scrolled out of the window's top is given as at
 its top edge.
 
+## Popups on Wayland: what it would take
+
+On X11 popups show in windows of their own (see the X11 popups PR, #179); on
+Wayland they stay inside their window. The protocol's answer is `xdg_popup`,
+and here is what building it would take, assessed before building.
+
+**The protocol.** A popup is a `wl_surface` with an `xdg_surface` and its
+`xdg_popup` role, made by `xdg_surface.get_popup(parent xdg_surface,
+positioner)`. The `xdg_positioner` says its size, the anchor rectangle on the
+parent (the trigger), the edge and gravity, and how the compositor may adjust
+it (`constraint_adjustment`: flip, slide, resize). The compositor places it
+and reports where in `xdg_popup.configure` (relative to the parent), which
+the client acks before its first commit; `reposition` (version 3) moves an
+open one when its anchor moves. `xdg_popup.grab(seat, serial)` makes it the
+seat's grab: the compositor dismisses it (`popup_done`) on a press outside
+the client's popups, and keyboard focus goes to the popup. A client cannot
+learn screen bounds; flipping at the screen's edge is the compositor's.
+
+**The blocker: the parent's `xdg_surface`.** winit 0.30.13 exposes the
+window's `xdg_toplevel` (`WindowExtWayland::xdg_toplevel`), not its
+`xdg_surface`. The protocol has no way from one to the other, and a second
+`xdg_surface` on the window's `wl_surface` is a protocol error
+(`already_constructed`). Its sctk window has the `xdg_surface`
+(`XdgSurface::xdg_surface`), behind a private field.
+
+**Options.**
+
+- *Patch winit* (recommended): vendor winit 0.30.13 as wgpu-hal,
+  cosmic-text and the accesskit adapters are, adding one method,
+  `WindowExtWayland::xdg_surface`, beside `xdg_toplevel` (ten lines; a patch
+  to offer upstream). The popup is then zgui's own, on the connection the
+  data-device worker already keeps on winit's display (`wayland_data.rs`,
+  which owns the seats, their pointers and the latest input serial): a
+  `wl_surface` and `xdg_popup` (sctk 0.19's `Popup`, or wayland-protocols
+  directly), a wgpu surface from its raw handles, its pointer events from
+  the worker's `wl_pointer`, routed by surface to the parent's host as X11's
+  are, fractional scale per surface (`wp_fractional_scale_v1` and the
+  viewporter, as the window has).
+- *Subsurfaces* (no patch): a `wl_subsurface` of the window's surface past
+  its edges. Mutter, KWin and wlroots draw it, but nothing keeps it on the
+  screen (the client knows no screens), it gets no grab or `popup_done`, and
+  it moves only with its parent. Not what users of GTK or Chromium popups
+  see; rejected.
+- *A winit fork with popups of its own*: winit's popup API is unsettled
+  upstream (its 0.31 rework); carrying it would cost more than the one
+  method above.
+
+**What changes in zgui.** The compositor, not zgui, has the last word on
+where a popup goes: the core places it as now (with no screens to keep it
+in, as on Wayland today), the host gives the positioner the anchor and the
+placement's edge and gravity, and the configured rectangle comes back to the
+core so drawing and hit testing follow it (a `Ui` hook for a popup's
+placement; on X11 and macOS it is the core's own). The grab moves keyboard
+focus to the popup surface, so either the worker's `wl_keyboard` routes keys
+to the parent's host too (with winit's keymap), or menus start without the
+grab and close as their window loses focus or takes a press, as X11's do
+without one, the grab following once keys route.
+
+**Size.** The winit patch; about 500 lines in a `wayland` module of
+`popup_window.rs` (positioner, configure and ack, surfaces and renderer,
+input routing, `popup_done`); the core's placement hook; a probe under a
+headless sway, driving it with `scripts/wayland_pointer.py`'s virtual
+pointer and checking the protocol in the client's `WAYLAND_DEBUG` log.
+Risks: frame pacing for a surface winit does not own (its frame
+callbacks are the worker's), and compositors' differing `constraint_adjustment`.
+
 ## Web views
 
 `zgui::web_view` has no Linux implementation: a web view shows its labelled
