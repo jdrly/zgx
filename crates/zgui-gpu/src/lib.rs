@@ -6,6 +6,8 @@ use rustc_hash::FxHashMap;
 use std::{cell::RefCell, fmt, rc::Rc, sync::Arc};
 use zgui::scene::{Color, NodeId, NodeKind, Rect, Scene};
 
+#[cfg(windows)]
+mod dxgi;
 mod effects;
 mod font_cache;
 #[cfg(target_os = "macos")]
@@ -1117,25 +1119,45 @@ impl GpuContext {
     fn create(window: Option<Arc<winit::window::Window>>) -> Result<Self, GpuError> {
         // Avoid initializing secondary graphics stacks merely to enumerate
         // adapters. On Linux this can create an unused EGL driver and worker
-        // pool even when Vulkan is selected; macOS uses Metal.
-        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        descriptor.backends = wgpu::Backends::PRIMARY;
-        // zgui draws nothing indirect; the validation would compile a compute
-        // shader while creating the device, a few milliseconds of startup.
-        descriptor
-            .flags
-            .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
-        let instance = wgpu::Instance::new(descriptor.with_env());
-        let surface = window
-            .map(|window| instance.create_surface(window))
-            .transpose()
-            .map_err(|e| GpuError(e.to_string()))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-        }))
-        .map_err(|e| GpuError(e.to_string()))?;
+        // pool even when Vulkan is selected; macOS uses Metal. Windows uses
+        // Direct3D 12 alone: it presents through DXGI's flip model, which the
+        // compositor schedules, and leaves no Vulkan driver loaded beside it
+        // (on NVIDIA, three quarters of the idle CPU and 18 MiB of working
+        // set). Vulkan stands in only where Direct3D 12 has no adapter.
+        let attempts: &[wgpu::Backends] = if cfg!(windows) {
+            &[wgpu::Backends::DX12, wgpu::Backends::VULKAN]
+        } else {
+            &[wgpu::Backends::PRIMARY]
+        };
+        let mut found = Err(GpuError("no graphics backend".into()));
+        for &backends in attempts {
+            let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+            descriptor.backends = backends;
+            // zgui draws nothing indirect; the validation would compile a compute
+            // shader while creating the device, a few milliseconds of startup.
+            descriptor
+                .flags
+                .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+            let instance = wgpu::Instance::new(descriptor.with_env());
+            let surface = window
+                .clone()
+                .map(|window| instance.create_surface(window))
+                .transpose()
+                .map_err(|e| GpuError(e.to_string()))?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    compatible_surface: surface.as_ref(),
+                    force_fallback_adapter: false,
+                }));
+            found = adapter
+                .map(|adapter| (instance, adapter))
+                .map_err(|e| GpuError(e.to_string()));
+            if found.is_ok() {
+                break;
+            }
+        }
+        let (instance, adapter) = found?;
         let info = adapter.get_info();
         // CPU-written vertex buffers avoid a GPU copy per frame; only worth it
         // where CPU and GPU share memory.
@@ -1244,6 +1266,9 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     info: wgpu::AdapterInfo,
     surface: Option<wgpu::Surface<'static>>,
+    /// DXGI's account of shown presents (`ZGUI_PRESENT_LOG`).
+    #[cfg(windows)]
+    dxgi_stats: dxgi::PresentStats,
     config: Option<wgpu::SurfaceConfiguration>,
     width: u32,
     height: u32,
@@ -1451,7 +1476,11 @@ impl GpuRenderer {
             // Two drawables: measured no frame-rate or CPU cost against three
             // on Apple silicon, and one fewer window-sized buffer (~13 MB at
             // 5K) while animating. Resizing keeps a third (`widen_drawables`).
-            if cfg!(target_os = "macos") {
+            // Windows: DXGI then keeps two buffers and lets one frame wait
+            // for the compositor; at the default two, frames paced by a timer
+            // filled the queue (three behind the one shown, four refreshes
+            // from render to screen) and acquire blocked the UI thread.
+            if cfg!(any(target_os = "macos", windows)) {
                 c.desired_maximum_frame_latency = 1;
             }
             // The retained target already holds sRGB-encoded bytes, which the
@@ -1546,6 +1575,8 @@ impl GpuRenderer {
         });
         Ok(Self {
             context: context.clone(),
+            #[cfg(windows)]
+            dxgi_stats: Default::default(),
             scene_identity: None,
             pruned_revision: None,
             pending: RefCell::new(None),
@@ -5518,6 +5549,10 @@ impl GpuRenderer {
         }
         before_present();
         frame.present();
+        #[cfg(windows)]
+        if let Some(surface) = &self.surface {
+            self.dxgi_stats.presented(surface);
+        }
         // Transactional presents block on scheduling; keep them to resizes.
         #[cfg(target_os = "macos")]
         self.set_transaction_present(false);

@@ -97,8 +97,8 @@ enum Event {
     /// A sleep on another thread is now the earliest timer: see `zgui::timer::host`.
     Timers,
     Redraw(u64),
-    /// A native display refresh (macOS; other platforms use timers).
-    #[cfg(target_os = "macos")]
+    /// A native display refresh (macOS and Windows; other platforms use timers).
+    #[cfg(any(target_os = "macos", windows))]
     Frame(u64, Frame),
     Open,
     Accessibility(accesskit_winit::Event),
@@ -944,7 +944,7 @@ struct Host {
     input_until: Option<std::time::Instant>,
     present_ready: bool,
     frames: FrameClock,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     display_link: Option<crate::frame_source::DisplayLink>,
     /// When the display link last delivered a refresh, aligning `frame_timer`
     /// to its grid: until `VSYNC_RESYNC` later the timer paces frames and the
@@ -1129,7 +1129,7 @@ impl Host {
             gpu_stats: crate::gpu_stats::GpuStatsLog::from_env(),
             damage_check: std::env::var_os("ZGUI_DAMAGE_CHECK").map(|_| 0),
             frames,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             display_link: None,
             #[cfg(target_os = "macos")]
             vsync_synced: None,
@@ -1981,9 +1981,12 @@ impl Host {
         self.present_ready = false;
         #[cfg(target_os = "macos")]
         {
-            self.display_link = None;
             self.vsync_synced = None;
             self.vsync_paced = false;
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.display_link = None;
         }
         self.frame_deadline = None;
         self.frame_heartbeat = None;
@@ -2380,7 +2383,12 @@ impl Host {
                 .display_link
                 .as_ref()
                 .is_some_and(|link| link.running());
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let paced = self
+            .display_link
+            .as_ref()
+            .is_some_and(|link| link.running());
+        #[cfg(not(any(target_os = "macos", windows)))]
         let paced = false;
         // Scene damage accumulates until the refresh paints it in one frame.
         if !paced || self.frame_arrived || self.force {
@@ -2406,7 +2414,7 @@ impl Host {
     }
     /// Deliver one display refresh. Hidden windows keep their requests pending.
     fn deliver_frame(&mut self, frame: Frame) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(link) = &self.display_link {
             link.consumed();
         }
@@ -2545,6 +2553,37 @@ impl Host {
                 }
             }
             return;
+        }
+        // Windows: frames start as the compositor ticks (see
+        // `frame_source::compositor_clock`), the timer only a watchdog.
+        #[cfg(windows)]
+        {
+            if wanted
+                && self.display_link.is_none()
+                && let Some(window) = &self.window
+            {
+                // Created on first demand, so windows that never animate hold none.
+                let proxy = self.proxy.clone();
+                let token = self.context.window.token;
+                self.display_link = crate::frame_source::DisplayLink::new(window, move |frame| {
+                    let _ = proxy.send_event(Event::Frame(token, frame));
+                });
+            }
+            if let Some(link) = &mut self.display_link {
+                let refresh = 1. / self.frame_interval.as_secs_f64();
+                // Scrolling always runs at the display's full rate.
+                let rate = self
+                    .frames
+                    .demanded_rate(refresh)
+                    .filter(|rate| !scrolling && *rate < refresh - 0.5);
+                link.set_preferred_rate(rate);
+                link.set_running(wanted);
+                if wanted {
+                    let heartbeat = *self.frame_heartbeat.get_or_insert(now);
+                    self.frame_deadline = Some(heartbeat + crate::frame_source::WATCHDOG);
+                }
+                return;
+            }
         }
         if !wanted {
             return;
@@ -2953,6 +2992,19 @@ impl ApplicationHandler<Event> for WindowManager {
                     host.vsync_synced = Some(std::time::Instant::now());
                     // `about_to_wait` runs next in this same loop pass, stepping
                     // the woken animations and painting once.
+                    host.deliver_frame(frame);
+                }
+            }
+            #[cfg(windows)]
+            Event::Frame(token, frame) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                {
+                    // The watchdog timer, should the clock stall, continues
+                    // its grid.
+                    host.frame_timer =
+                        crate::frame_source::FrameTimer::aligned(frame.time, frame.index + 1);
+                    host.frame_interval = frame.interval;
                     host.deliver_frame(frame);
                 }
             }

@@ -336,6 +336,91 @@ def cpu_seconds(pid):
         kernel32.CloseHandle(handle)
 
 
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+
+
+for name, res, args in [
+    ("CreateToolhelp32Snapshot", H, [wintypes.DWORD, wintypes.DWORD]),
+    ("Thread32First", wintypes.BOOL, [H, ctypes.POINTER(THREADENTRY32)]),
+    ("Thread32Next", wintypes.BOOL, [H, ctypes.POINTER(THREADENTRY32)]),
+    ("OpenThread", H, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]),
+    ("QueryThreadCycleTime", wintypes.BOOL, [H, ctypes.POINTER(ctypes.c_uint64)]),
+    ("GetThreadDescription", ctypes.HRESULT, [H, ctypes.POINTER(wintypes.LPWSTR)]),
+    ("LocalFree", H, [H]),
+]:
+    function = getattr(kernel32, name)
+    function.restype, function.argtypes = res, args
+
+
+psapi = ctypes.WinDLL("psapi", use_last_error=True)
+ntdll = ctypes.WinDLL("ntdll")
+
+
+class MODULEINFO(ctypes.Structure):
+    _fields_ = [("lpBaseOfDll", ctypes.c_void_p), ("SizeOfImage", wintypes.DWORD), ("EntryPoint", ctypes.c_void_p)]
+
+
+psapi.EnumProcessModulesEx.argtypes = [H, ctypes.POINTER(H), wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+                                       wintypes.DWORD]
+psapi.GetModuleBaseNameW.argtypes = [H, H, wintypes.LPWSTR, wintypes.DWORD]
+psapi.GetModuleInformation.argtypes = [H, H, ctypes.POINTER(MODULEINFO), wintypes.DWORD]
+ntdll.NtQueryInformationThread.argtypes = [H, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG, ctypes.c_void_p]
+
+
+def modules(pid):
+    """[(base, end, name)] of process `pid`'s loaded modules."""
+    process = kernel32.OpenProcess(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ
+    if not process:
+        return []
+    handles = (H * 1024)()
+    needed = wintypes.DWORD()
+    psapi.EnumProcessModulesEx(process, handles, ctypes.sizeof(handles), ctypes.byref(needed), 3)
+    found = []
+    for module in handles[:needed.value // ctypes.sizeof(H)]:
+        info, name = MODULEINFO(), ctypes.create_unicode_buffer(260)
+        psapi.GetModuleInformation(process, module, ctypes.byref(info), ctypes.sizeof(info))
+        psapi.GetModuleBaseNameW(process, module, name, 260)
+        found.append((info.lpBaseOfDll or 0, (info.lpBaseOfDll or 0) + info.SizeOfImage, name.value))
+    kernel32.CloseHandle(process)
+    return found
+
+
+def thread_cycles(pid):
+    """{(thread id, name): cycles so far} for each thread of process `pid`; an
+    unnamed thread is named by the module its start address is in."""
+    loaded = modules(pid)
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x4, 0)  # TH32CS_SNAPTHREAD
+    entry = THREADENTRY32()
+    entry.dwSize = ctypes.sizeof(entry)
+    found = {}
+    ok = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+    while ok:
+        if entry.th32OwnerProcessID == pid:
+            handle = kernel32.OpenThread(0x0040, False, entry.th32ThreadID)  # QUERY_INFORMATION
+            if handle:
+                count = ctypes.c_uint64()
+                kernel32.QueryThreadCycleTime(handle, ctypes.byref(count))
+                text = wintypes.LPWSTR()
+                name = ""
+                if kernel32.GetThreadDescription(handle, ctypes.byref(text)) >= 0 and text:
+                    name = text.value
+                    kernel32.LocalFree(ctypes.cast(text, H))
+                start = ctypes.c_void_p()
+                # ThreadQuerySetWin32StartAddress
+                ntdll.NtQueryInformationThread(handle, 9, ctypes.byref(start), ctypes.sizeof(start), None)
+                where = next((f"{module}+{start.value - base:#x}" for base, end, module in loaded
+                              if start.value and base <= start.value < end), "?")
+                name = f"{name} [{where}]" if name else where
+                kernel32.CloseHandle(handle)
+                found[(entry.th32ThreadID, name)] = count.value
+        ok = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+    kernel32.CloseHandle(snapshot)
+    return found
+
+
 def cycles(pid):
     """CPU cycles process `pid` has used: finer than `cpu_seconds`, whose clock
     advances in scheduler ticks."""
@@ -348,3 +433,25 @@ def cycles(pid):
         return count.value
     finally:
         kernel32.CloseHandle(handle)
+
+
+class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+    _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivateUsage", ctypes.c_size_t)]
+
+
+psapi.GetProcessMemoryInfo.argtypes = [H, ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX), wintypes.DWORD]
+
+
+def memory(pid):
+    """(private bytes, working set bytes) of process `pid`."""
+    handle = kernel32.OpenProcess(0x1000, False, pid)
+    counters = PROCESS_MEMORY_COUNTERS_EX()
+    counters.cb = ctypes.sizeof(counters)
+    psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+    kernel32.CloseHandle(handle)
+    return counters.PrivateUsage, counters.WorkingSetSize

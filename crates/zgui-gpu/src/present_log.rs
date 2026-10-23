@@ -1,7 +1,8 @@
 //! `ZGUI_PRESENT_LOG=1`: a line on stderr for each presentation event (the
 //! surface a frame used, layer hand-offs, trims, focus), stamped with the
 //! host clock (`CLOCK_UPTIME_RAW`, as ScreenCaptureKit and Core Media stamp
-//! frames), to line a screen recording's frames up with what happened.
+//! frames; on Windows the performance counter, as DXGI and DWM stamp them),
+//! to line a screen recording's frames up with what happened.
 use std::sync::OnceLock;
 
 pub(crate) fn enabled() -> bool {
@@ -19,7 +20,11 @@ pub fn now_ns() -> u64 {
         // CLOCK_UPTIME_RAW.
         unsafe { clock_gettime_nsec_np(8) }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        crate::dxgi::now_ns()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         0
     }

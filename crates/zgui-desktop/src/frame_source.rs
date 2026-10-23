@@ -1,7 +1,8 @@
 //! Native display refresh sources for [`zgui::frame::FrameClock`].
 //!
 //! macOS uses a `CVDisplayLink` per display (see `display_link`), which
-//! windows follow as they move between displays. Wayland paces through compositor frame
+//! windows follow as they move between displays. Windows waits on the
+//! compositor's clock (see `compositor_clock`). Wayland paces through compositor frame
 //! callbacks (driven from the host's redraw requests). Everything else, and
 //! any platform whose native source is unavailable, uses [`FrameTimer`]:
 //! event-loop deadlines on a fixed grid at the display's reported refresh rate.
@@ -11,7 +12,7 @@ use zgui::frame::Frame;
 pub(crate) const DEFAULT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 /// A native source that stops ticking while frames are wanted is backed up by
 /// the timer after this long, so animations degrade instead of freezing.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 pub(crate) const WATCHDOG: Duration = Duration::from_millis(250);
 
 pub(crate) fn interval_for(refresh_hz: Option<f64>) -> Duration {
@@ -32,7 +33,7 @@ impl FrameTimer {
         Self { epoch, first: 0 }
     }
     /// Ticks continuing a native source's: refresh `first` starts at `epoch`.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn aligned(epoch: Instant, first: u64) -> Self {
         Self { epoch, first }
     }
@@ -64,6 +65,8 @@ impl FrameTimer {
 #[cfg(target_os = "macos")]
 pub(crate) const VSYNC_RESYNC: Duration = Duration::from_secs(1);
 
+#[cfg(windows)]
+pub(crate) use compositor_clock::DisplayLink;
 #[cfg(target_os = "macos")]
 pub(crate) use display_link::DisplayLink;
 
@@ -242,7 +245,7 @@ mod display_link {
             }
             let max_rate = subscriber.max_rate.load(Ordering::Relaxed);
             if max_rate > 0 {
-                let divisor = ((refresh * 1000. / max_rate as f64) - 1e-6).ceil().max(1.) as u64;
+                let divisor = zgui::frame::divisor(refresh, max_rate as f64 / 1000.);
                 if !index.is_multiple_of(divisor) {
                     continue;
                 }
@@ -474,6 +477,263 @@ mod display_link {
                 msg_send![&*description?, objectForKey: &*key];
             let id: u32 = msg_send![&*number?, unsignedIntValue];
             Some(id)
+        }
+    }
+}
+
+#[cfg(windows)]
+mod compositor_clock {
+    //! Compositor-clock pacing on Windows.
+    //!
+    //! Frames on a timer of their own drift against the display's refreshes,
+    //! and with DXGI's queue a frame ahead the drift is hidden by blocking:
+    //! the UI thread spent most of each animated refresh waiting in acquire,
+    //! so a key typed meanwhile showed about three refreshes later (47 ms at
+    //! 60 Hz, against 12 ms at rest). Frames started as the compositor ticks
+    //! find a free buffer, render and present at once, and leave the thread
+    //! free for input in between.
+    //!
+    //! One thread waits on the compositor's clock (`DCompositionWaitFor
+    //! CompositorClock`, Windows 11; on Windows 10 `DwmFlush`, the next
+    //! composition) while any window wants frames, and parks otherwise.
+    //! Windows subscribe with a thread-safe delivery function, as on macOS.
+    use super::*;
+    use std::sync::{
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    };
+    use windows::Win32::{
+        Foundation::{HANDLE, HWND},
+        Graphics::Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
+        System::{
+            LibraryLoader::{GetProcAddress, LoadLibraryW},
+            Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+            Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST},
+        },
+    };
+    use winit::window::Window;
+
+    /// One window's subscription, reachable from the clock's thread.
+    struct Subscriber {
+        id: u64,
+        /// Delivering: the window wants refreshes.
+        active: AtomicBool,
+        /// A delivered refresh has not been consumed yet; later ones coalesce.
+        pending: AtomicBool,
+        /// Deliver at most this often (millihertz; 0 for every refresh).
+        max_rate: AtomicU64,
+        deliver: Box<dyn Fn(Frame) + Send + Sync>,
+    }
+    #[derive(Default)]
+    struct Clock {
+        subscribers: Vec<Arc<Subscriber>>,
+        next_id: u64,
+        started: bool,
+    }
+    static CLOCK: Mutex<Option<Clock>> = Mutex::new(None);
+    /// Wakes the parked thread when a subscriber starts.
+    static WAKE: Condvar = Condvar::new();
+    fn clock() -> MutexGuard<'static, Option<Clock>> {
+        CLOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn wants_frames(clock: &Option<Clock>) -> bool {
+        clock.as_ref().is_some_and(|c| {
+            c.subscribers
+                .iter()
+                .any(|s| s.active.load(Ordering::Acquire))
+        })
+    }
+
+    type WaitForCompositorClock = unsafe extern "system" fn(u32, *const HANDLE, u32) -> u32;
+    /// `DCompositionWaitForCompositorClock`, looked up at run time: Windows 10
+    /// has no compositor clock, and a static import would stop the program
+    /// loading there.
+    fn compositor_clock() -> Option<WaitForCompositorClock> {
+        static WAIT: OnceLock<Option<usize>> = OnceLock::new();
+        let address = *WAIT.get_or_init(|| {
+            // SAFETY: loads a system library by name and looks up an export;
+            // the library stays loaded for the process.
+            unsafe {
+                let library = LoadLibraryW(windows::core::w!("dcomp.dll")).ok()?;
+                GetProcAddress(
+                    library,
+                    windows::core::s!("DCompositionWaitForCompositorClock"),
+                )
+                .map(|f| f as usize)
+            }
+        });
+        // SAFETY: the export has this signature (dcomp.h).
+        address.map(|f| unsafe { std::mem::transmute::<usize, WaitForCompositorClock>(f) })
+    }
+
+    /// The compositor's last refresh and the refresh period, in
+    /// performance-counter ticks. (Its refresh count is no count of the
+    /// display's refreshes: some displays compose only on demand, and it
+    /// counts compositions there.)
+    fn timing() -> Option<(i64, i64)> {
+        let mut info = DWM_TIMING_INFO {
+            cbSize: size_of::<DWM_TIMING_INFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: fills `info`, whose size it is given; a null window asks
+        // for the compositor's own timing.
+        unsafe { DwmGetCompositionTimingInfo(HWND::default(), &mut info) }.ok()?;
+        let period = info.qpcRefreshPeriod as i64;
+        (period > 0).then_some((info.qpcVBlank as i64, period))
+    }
+    fn qpc() -> (i64, i64) {
+        let (mut now, mut frequency) = (0, 0);
+        // SAFETY: each writes one integer into a local.
+        unsafe {
+            let _ = QueryPerformanceCounter(&mut now);
+            let _ = QueryPerformanceFrequency(&mut frequency);
+        }
+        (now, frequency.max(1))
+    }
+
+    /// Blocks until the compositor's next frame.
+    fn wait_for_tick() {
+        if let Some(wait) = compositor_clock() {
+            // SAFETY: no handles to wait on besides the clock.
+            unsafe { wait(0, std::ptr::null(), 100) };
+            return;
+        }
+        let started = Instant::now();
+        // SAFETY: no arguments; blocks until the next composition.
+        let flushed = unsafe { DwmFlush() }.is_ok();
+        // With nothing to compose, DwmFlush can return at once: wait for the
+        // next refresh by the clock instead, rather than spin.
+        if !flushed || started.elapsed() < Duration::from_millis(1) {
+            let wait = timing().map_or(DEFAULT_INTERVAL, |(vblank, period)| {
+                let (now, frequency) = qpc();
+                let ahead = period - (now - vblank).rem_euclid(period);
+                Duration::from_nanos((ahead as u128 * 1_000_000_000 / frequency as u128) as u64)
+            });
+            std::thread::sleep(wait);
+        }
+    }
+
+    fn run() {
+        // Delivery is a message post; a prompt wake keeps it at the tick.
+        // SAFETY: changes this thread's own priority.
+        let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
+        loop {
+            {
+                let mut guard = clock();
+                while !wants_frames(&guard) {
+                    guard = WAKE.wait(guard).unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+            wait_for_tick();
+            let Some((vblank, period)) = timing() else {
+                continue;
+            };
+            // The tick is a refresh starting, on the grid of refreshes from
+            // the last one the compositor reported: the nearest, since the
+            // clock wakes a little either side of it (rounding down instead
+            // let indices skip or repeat, and a 30 Hz cap counting every
+            // other index then kept every fourth refresh). The frame shows
+            // at the next. Its index counts the grid's refreshes since the
+            // counter started.
+            let (now, frequency) = qpc();
+            let phase = vblank.rem_euclid(period);
+            let ticked = ((now - phase) as f64 / period as f64).round() as i64;
+            let index = (ticked + 1) as u64;
+            let ahead = (phase + (ticked + 1) * period - now).max(0);
+            let nanos = |ticks: i64| (ticks as u128 * 1_000_000_000 / frequency as u128) as u64;
+            let interval = Duration::from_nanos(nanos(period));
+            let frame = Frame {
+                index,
+                time: Instant::now() + Duration::from_nanos(nanos(ahead)),
+                interval,
+            };
+            let rate = 1. / interval.as_secs_f64();
+            let subscribers = clock()
+                .as_ref()
+                .map(|c| c.subscribers.clone())
+                .unwrap_or_default();
+            for subscriber in subscribers {
+                if !subscriber.active.load(Ordering::Acquire) {
+                    continue;
+                }
+                let max_rate = subscriber.max_rate.load(Ordering::Relaxed);
+                if max_rate > 0 {
+                    let divisor = zgui::frame::divisor(rate, max_rate as f64 / 1000.);
+                    if !index.is_multiple_of(divisor) {
+                        continue;
+                    }
+                }
+                if !subscriber.pending.swap(true, Ordering::AcqRel) {
+                    (subscriber.deliver)(frame);
+                }
+            }
+        }
+    }
+
+    /// A window's subscription to the compositor's refreshes.
+    pub(crate) struct DisplayLink {
+        subscriber: Arc<Subscriber>,
+    }
+    impl DisplayLink {
+        /// `deliver` runs on the clock's thread, at most once per consumed
+        /// refresh; hosts forward it to the UI thread.
+        pub(crate) fn new(
+            _window: &Window,
+            deliver: impl Fn(Frame) + Send + Sync + 'static,
+        ) -> Option<Self> {
+            let mut guard = clock();
+            let clock = guard.get_or_insert_with(Clock::default);
+            if !clock.started {
+                std::thread::Builder::new()
+                    .name("zgui-compositor-clock".into())
+                    .spawn(run)
+                    .ok()?;
+                clock.started = true;
+            }
+            clock.next_id += 1;
+            let subscriber = Arc::new(Subscriber {
+                id: clock.next_id,
+                active: AtomicBool::new(false),
+                pending: AtomicBool::new(false),
+                max_rate: AtomicU64::new(0),
+                deliver: Box::new(deliver),
+            });
+            clock.subscribers.push(subscriber.clone());
+            Some(Self { subscriber })
+        }
+        pub(crate) fn running(&self) -> bool {
+            self.subscriber.active.load(Ordering::Acquire)
+        }
+        pub(crate) fn set_running(&mut self, running: bool) {
+            if self.subscriber.active.swap(running, Ordering::AcqRel) != running {
+                self.subscriber.pending.store(false, Ordering::Release);
+                if running {
+                    // Under the lock, so the thread cannot miss it between
+                    // checking and parking.
+                    let _guard = clock();
+                    WAKE.notify_all();
+                }
+            }
+        }
+        /// The UI thread took the last delivered refresh; deliver the next.
+        pub(crate) fn consumed(&self) {
+            self.subscriber.pending.store(false, Ordering::Release);
+        }
+        /// Deliver at most `hz` refreshes (whole-refresh spacing); `None`
+        /// for every refresh.
+        pub(crate) fn set_preferred_rate(&mut self, hz: Option<f64>) {
+            let rate = hz
+                .filter(|hz| hz.is_finite() && *hz > 0.)
+                .map_or(0, |hz| (hz * 1000.) as u64);
+            self.subscriber.max_rate.store(rate, Ordering::Relaxed);
+        }
+    }
+    impl Drop for DisplayLink {
+        fn drop(&mut self) {
+            self.subscriber.active.store(false, Ordering::Release);
+            if let Some(clock) = clock().as_mut() {
+                clock.subscribers.retain(|s| s.id != self.subscriber.id);
+            }
         }
     }
 }

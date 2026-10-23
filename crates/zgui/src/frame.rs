@@ -158,11 +158,14 @@ impl FrameClock {
 
 /// Whole refreshes per frame so a request never exceeds `rate`. A 50 Hz cap on
 /// a 120 Hz display ticks every third refresh (40 Hz) rather than unevenly.
-fn divisor(refresh: f64, rate: f64) -> u64 {
+/// Displays run a little off their nominal rate (60.0002 Hz, measured on
+/// Windows), so a rate within 0.1% of a whole division takes it: a 30 Hz
+/// cap there is every other refresh, not every third.
+pub fn divisor(refresh: f64, rate: f64) -> u64 {
     if !refresh.is_finite() || refresh <= rate {
         return 1;
     }
-    ((refresh / rate) - 1e-6).ceil().clamp(1., 1e6) as u64
+    ((refresh / rate) - 1e-3).ceil().clamp(1., 1e6) as u64
 }
 
 fn valid_rate(hz: Option<f64>) -> Option<f64> {

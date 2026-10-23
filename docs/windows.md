@@ -14,6 +14,32 @@ pickers and message boxes. Both file pickers and prompts receive their owning
 native window. Application menus use `cx.app_menu_bar()` and Control shortcuts.
 No additional Windows-only dependency is needed.
 
+## Presentation
+
+wgpu runs on Direct3D 12 alone; Vulkan stands in only where Direct3D 12 has
+no adapter (`WGPU_BACKEND` still overrides). Swap chains use DXGI's flip model
+with one frame of latency. While a window animates, frames start as the
+compositor's clock ticks (`DCompositionWaitForCompositorClock` on Windows 11,
+`DwmFlush` on Windows 10), on one thread that parks while nothing animates; a
+window at rest wakes for nothing. Measured on an RTX 4090 at 60 Hz:
+
+| | before | now |
+| --- | --- | --- |
+| Gallery at rest | 10.6 M cycles/s, Vulkan and D3D12 drivers loaded | 2.7 M cycles/s (the driver's own threads) |
+| Keystroke to composed screen, at rest | 12–14 ms median | 12–14 ms median |
+| Keystroke to composed screen, animating | 47 ms median | 27 ms median |
+| Animation at the display's rate | 57.7–60 fps, timer drifting against refreshes | every refresh, 0 repeated |
+
+`ZGUI_PRESENT_LOG=1` logs each shown present as DXGI reports it. The probes
+measure the same things on any machine:
+
+```powershell
+cargo build --release -p zgui-desktop --example gallery --example input_latency --example animation_workload
+python scripts/windows_idle_probe.py target/release/examples/gallery.exe
+python scripts/windows_latency_probe.py target/release/examples/input_latency.exe --click 100,44 --region 24,24,520,40 --env ZGUI_ANIMATE=1
+python scripts/windows_pacing_probe.py target/release/examples/animation_workload.exe
+```
+
 ## Limitations
 
 - `Application::application_id` opts into OS activation callbacks, which are not

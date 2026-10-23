@@ -108,7 +108,7 @@ async fn smoke_test(
 
     // Rates are whole divisions of the display rate. Allow for scheduling jitter
     // on shared CI machines, but never for exceeding a cap.
-    let divided = |cap: f64| display / (display / cap - 1e-6).ceil();
+    let divided = |cap: f64| display / zgui::frame::divisor(display, cap) as f64;
     let mut failures = Vec::new();
     if uncapped < display * 0.7 || uncapped > display * 1.05 {
         failures.push(format!(
