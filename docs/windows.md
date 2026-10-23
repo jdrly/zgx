@@ -159,11 +159,12 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
 python scripts/windows_platform_smoke.py target/debug/examples
+python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --both
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -192,6 +193,11 @@ python scripts/windows_platform_smoke.py target/debug/examples
   changes the page, the menu popover draws above the page and takes its
   clicks, the wheel scrolls the page, and after a resize the page still fills
   its node.
+- `windows_settings_smoke.py`: the window menu (Alt+Space) is dark in dark
+  mode and light in light mode, and a scrollbar hides at rest, shows while
+  the user scrolls and hides after with "Always show scrollbars" off, and
+  shows at rest with it on. `--both` runs each setting both ways (the user's
+  own restored after).
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range
