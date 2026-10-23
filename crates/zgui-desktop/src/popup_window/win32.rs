@@ -48,22 +48,26 @@ use windows::{
         UI::{
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
-                GetCapture, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+                EnableWindow, GetCapture, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT,
+                TrackMouseEvent,
             },
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                GWLP_HWNDPARENT, GWLP_USERDATA, GetClientRect, GetCursorPos, GetWindowLongPtrW,
-                HTCLIENT, HWND_TOP, IDC_ARROW, LoadCursorW, MA_NOACTIVATE, RegisterClassExW,
-                SPI_SETWORKAREA, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
-                SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetWindowLongPtrW,
-                SetWindowPos, ShowWindow, WINDOWPOS, WM_ACTIVATEAPP, WM_DISPLAYCHANGE,
-                WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+                CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GA_ROOT,
+                GW_HWNDNEXT, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClientRect,
+                GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+                HTCLIENT, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IDC_ARROW, IsWindowVisible,
+                KillTimer, LoadCursorW, MA_NOACTIVATE, RegisterClassExW, SPI_SETWORKAREA, SW_HIDE,
+                SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+                SWP_NOZORDER, SWP_SHOWWINDOW, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos,
+                ShowWindow, WINDOWPOS, WM_ACTIVATEAPP, WM_DISPLAYCHANGE, WM_LBUTTONDBLCLK,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+                WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
+                WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
                 WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE,
-                WM_WINDOWPOSCHANGED, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
-                WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
+                WM_TIMER, WM_WINDOWPOSCHANGED, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+                WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+                WS_POPUP, WindowFromPoint,
             },
         },
     },
@@ -138,6 +142,10 @@ unsafe extern "system" fn popup_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        WM_TIMER if wparam.0 == SLIDE_TIMER => {
+            slide_step(hwnd);
+            return LRESULT(0);
+        }
         // Clicks act without taking the keyboard from the parent.
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
         WM_NCHITTEST => return LRESULT(HTCLIENT as isize),
@@ -326,6 +334,9 @@ struct Panel {
     screen: Option<(i32, i32, i32, i32)>,
     /// Its popup root's layer revision it last drew.
     revision: Option<u64>,
+    /// A drag preview's: its box's offset from where the scene lays its root
+    /// out (its window goes where the drag puts the root).
+    preview: Option<(f32, f32)>,
     /// How DWM rounds it, as last set.
     corner: Option<DWM_WINDOW_CORNER_PREFERENCE>,
 }
@@ -404,6 +415,7 @@ impl Panel {
                 rect: None,
                 screen: None,
                 revision: None,
+                preview: None,
                 corner: None,
             })
         }
@@ -463,16 +475,23 @@ impl Panel {
             )
         };
     }
-    /// Show it over `parent`, which owns it from now on.
+    /// Show it over `parent`, which owns it from now on. A drag preview
+    /// shows over every window, and disabled: it takes no input, and the
+    /// window under a point is the one past it (`window_at`).
     fn show(&self, parent: HWND, send: &Sink) {
         *self.target.send.borrow_mut() = Some(send.clone());
         self.target.parent.set(parent.0 as usize);
+        let preview = self.preview.is_some();
+        if preview {
+            PREVIEWS.with(|previews| previews.borrow_mut().push(self.hwnd.0 as isize));
+        }
         // SAFETY: our window; its owner is a live window of this thread.
         unsafe {
             SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, parent.0 as isize);
+            let _ = EnableWindow(self.hwnd, !preview);
             let _ = SetWindowPos(
                 self.hwnd,
-                Some(HWND_TOP),
+                Some(if preview { HWND_TOPMOST } else { HWND_TOP }),
                 0,
                 0,
                 0,
@@ -489,6 +508,20 @@ impl Panel {
                 let _ = ReleaseCapture();
             }
             SetWindowLongPtrW(self.hwnd, GWLP_HWNDPARENT, 0);
+            if self.preview.take().is_some() {
+                let hwnd = self.hwnd.0 as isize;
+                PREVIEWS.with(|previews| previews.borrow_mut().retain(|preview| *preview != hwnd));
+                let _ = EnableWindow(self.hwnd, true);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
         }
         *self.target.send.borrow_mut() = None;
         self.target.parent.set(0);
@@ -519,6 +552,8 @@ thread_local! {
     static POOL: RefCell<Vec<Panel>> = const { RefCell::new(Vec::new()) };
     /// Live `PopupHost`s, one per window.
     static HOSTS: Cell<usize> = const { Cell::new(0) };
+    /// Drag previews' windows, which `window_at` looks past.
+    static PREVIEWS: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
     /// Windows that have shown popups, their hosts, client origins and
     /// shown popup windows.
     static PARENTS: RefCell<Vec<Parent>> = const { RefCell::new(Vec::new()) };
@@ -547,6 +582,70 @@ fn release(mut panel: Panel) {
             pool.push(panel);
         }
     });
+}
+
+/// How long a drag preview nothing took slides back to its source, as
+/// AppKit's drag images do.
+const SLIDE: std::time::Duration = std::time::Duration::from_millis(200);
+/// The timer stepping a slide (`WM_TIMER`'s id on the preview's window).
+const SLIDE_TIMER: usize = 0x7a67;
+/// A drag preview's window sliding back: from and to (screen pixels), since.
+struct Slide {
+    panel: Panel,
+    from: (i32, i32),
+    to: (i32, i32),
+    began: std::time::Instant,
+}
+thread_local! {
+    static SLIDING: RefCell<Vec<Slide>> = const { RefCell::new(Vec::new()) };
+}
+/// Slide `panel`'s window to `to` (screen pixels, its top-left), easing
+/// out, then put it back in the pool.
+fn slide_back(panel: Panel, to: (i32, i32)) {
+    let Some((x, y, ..)) = panel.screen else {
+        release(panel);
+        return;
+    };
+    let hwnd = panel.hwnd;
+    SLIDING.with(|sliding| {
+        sliding.borrow_mut().push(Slide {
+            panel,
+            from: (x, y),
+            to,
+            began: std::time::Instant::now(),
+        })
+    });
+    // SAFETY: a timer on our own window, stepped in `popup_proc`.
+    unsafe { SetTimer(Some(hwnd), SLIDE_TIMER, 8, None) };
+}
+/// A step of `hwnd`'s slide: moved along, or, done, back in the pool.
+fn slide_step(hwnd: HWND) {
+    let done = SLIDING.with(|sliding| {
+        let mut sliding = sliding.borrow_mut();
+        let index = sliding.iter().position(|slide| slide.panel.hwnd == hwnd)?;
+        let slide = &sliding[index];
+        let t = (slide.began.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).min(1.);
+        let eased = 1. - (1. - t) * (1. - t);
+        let at = |from: i32, to: i32| from + ((to - from) as f32 * eased).round() as i32;
+        // SAFETY: moves our own window, never activating it.
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                at(slide.from.0, slide.to.0),
+                at(slide.from.1, slide.to.1),
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE,
+            )
+        };
+        (t >= 1.).then(|| sliding.swap_remove(index).panel)
+    });
+    if let Some(panel) = done {
+        // SAFETY: our own window's timer.
+        let _ = unsafe { KillTimer(Some(hwnd), SLIDE_TIMER) };
+        release(panel);
+    }
 }
 
 /// Have a window and its renderer ready for the popup about to open (the
@@ -606,14 +705,58 @@ pub(crate) fn content_origin(window: &winit::window::Window) -> Option<(f64, f64
     let scale = f64::from(window_scale(hwnd));
     Some((f64::from(x) / scale, f64::from(y) / scale))
 }
-// todo(windows): drags between windows need the window under a point
-// (`WindowFromPoint`) in global coordinates every window shares; until then
-// a drag stays in its window.
-pub(crate) fn window_number(_: &winit::window::Window) -> Option<isize> {
-    None
+/// The window's handle, as `window_at` names windows.
+pub(crate) fn window_number(window: &winit::window::Window) -> Option<isize> {
+    hwnd_of(window).map(|hwnd| hwnd.0 as isize)
 }
-pub(crate) fn window_at(_: f64, _: f64) -> Option<isize> {
-    None
+/// The front-most window (any app's) at global point `(x, y)`, past drag
+/// previews (`PREVIEWS`: below one, the next window down there). Global
+/// points are the dragging window's (`content_origin`): the one holding the
+/// pointer, else the one in front. Between windows of different scales they
+/// are near.
+pub(crate) fn window_at(x: f64, y: f64) -> Option<isize> {
+    // SAFETY: reads windows of this thread and the system's; the window at
+    // a point and its top-level ancestor into locals.
+    unsafe {
+        let mut source = GetCapture();
+        if source.is_invalid() {
+            source = GetForegroundWindow();
+        }
+        let scale = if source.is_invalid() {
+            1.
+        } else {
+            f64::from(window_scale(source))
+        };
+        let point = POINT {
+            x: (x * scale).round() as i32,
+            y: (y * scale).round() as i32,
+        };
+        let window = WindowFromPoint(point);
+        if window.is_invalid() {
+            return None;
+        }
+        let root = GetAncestor(window, GA_ROOT);
+        let mut window = if root.is_invalid() { window } else { root };
+        // A preview: the next visible window down holding the point.
+        while PREVIEWS.with(|previews| previews.borrow().contains(&(window.0 as isize))) {
+            window = GetWindow(window, GW_HWNDNEXT).ok()?;
+            while !holds(window, point) {
+                window = GetWindow(window, GW_HWNDNEXT).ok()?;
+            }
+        }
+        Some(window.0 as isize)
+    }
+}
+/// Whether top-level `window` shows at screen point `point`.
+fn holds(window: HWND, point: POINT) -> bool {
+    let mut rect = RECT::default();
+    // SAFETY: reads a window's visibility and rectangle into a local.
+    unsafe {
+        IsWindowVisible(window).as_bool()
+            && GetWindowRect(window, &mut rect).is_ok()
+            && (rect.left..rect.right).contains(&point.x)
+            && (rect.top..rect.bottom).contains(&point.y)
+    }
 }
 fn client_origin(hwnd: HWND) -> (i32, i32) {
     let mut origin = POINT::default();
@@ -766,7 +909,7 @@ fn follow(parent: HWND) {
         let mut rect = RECT::default();
         // SAFETY: moves a popup window of ours, never activating it.
         unsafe {
-            if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect).is_ok() {
+            if GetWindowRect(hwnd, &mut rect).is_ok() {
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -823,9 +966,8 @@ impl PopupHost {
         context: &GpuContext,
         scale: f32,
         full: bool,
-        // Drag previews stay in their window here (`Ui::set_popup_previews`).
-        _drag: Option<&zgui::input::DragState>,
-        _ended: Option<zgui::input::DragEnded>,
+        drag: Option<&zgui::input::DragState>,
+        ended: Option<zgui::input::DragEnded>,
     ) -> Result<(), GpuError> {
         if self.shown.is_empty() && scene.popups().is_empty() {
             return Ok(());
@@ -833,6 +975,7 @@ impl PopupHost {
         let Some(parent) = hwnd_of(window) else {
             return Ok(());
         };
+        let origin = client_origin(parent);
         let wanted: Vec<(NodeId, Rect)> = scene
             .popups()
             .iter()
@@ -846,9 +989,24 @@ impl PopupHost {
             }
             let (root, panel) = self.shown.swap_remove(index);
             zgui_gpu::present_log::log(|| format!("popup hide {root:?}"));
-            release(panel);
+            // A drag nothing took: its preview slides back to its source,
+            // as AppKit's drag images do. A taken one goes.
+            let back = ended
+                .filter(|ended| ended.preview == Some(root) && !ended.accepted)
+                .filter(|ended| scene.contains(ended.source))
+                .zip(panel.preview.zip(panel.rect));
+            match back {
+                Some((ended, ((dx, dy), rect))) => {
+                    let source = scene.bounds(ended.source);
+                    let to = Rect::new(source.x + dx, source.y + dy, rect.width, rect.height);
+                    let (x, y, ..) = screen_rect(origin, panel.scale, to);
+                    // SAFETY: shows our own window where it was let go.
+                    let _ = unsafe { ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE) };
+                    slide_back(panel, (x, y));
+                }
+                None => release(panel),
+            }
         }
-        let origin = client_origin(parent);
         if !wanted.is_empty() && self.parent.replace(parent.0 as usize).is_none() {
             // SAFETY: a subclass of our own window, on its thread; it holds
             // no data of its own.
@@ -896,7 +1054,21 @@ impl PopupHost {
                 renderer.render(scene, &[])?;
                 renderer.present()?;
             }
-            panel.place(origin, rect);
+            // A drag preview's window goes where the drag puts it; its frame
+            // is drawn where the scene has it.
+            let preview = drag.filter(|drag| drag.preview == Some(root)).map(|drag| {
+                let laid = scene.bounds(root);
+                let (x, y) = drag.preview_origin.unwrap_or((laid.x, laid.y));
+                (rect.x - laid.x, rect.y - laid.y, x, y)
+            });
+            if new {
+                panel.preview = preview.map(|(dx, dy, ..)| (dx, dy));
+            }
+            let frame = match preview {
+                Some((dx, dy, x, y)) => Rect::new(x + dx, y + dy, rect.width, rect.height),
+                None => rect,
+            };
+            panel.place(origin, frame);
             panel.set_corner(corner_of(scene, root, rect));
             if new {
                 // Its first frame is in its visual before it shows.
@@ -930,21 +1102,86 @@ impl PopupHost {
         });
         Ok(())
     }
-    /// A drag's preview stays in its window here: nothing to move, show or
-    /// read back.
-    pub fn follow(&mut self, _: &winit::window::Window, _: &zgui::input::DragState) {}
-    pub fn preview_image(
-        &self,
-        _: &zgui::input::DragState,
-    ) -> Option<crate::native_drag::DragImage> {
-        None
+    /// The drag preview's window, and its offset (`Panel::preview`).
+    fn preview(&mut self, drag: &zgui::input::DragState) -> Option<&mut Panel> {
+        let root = drag.preview?;
+        let (_, panel) = self.shown.iter_mut().find(|(shown, _)| *shown == root)?;
+        panel.preview.is_some().then_some(panel)
     }
+    /// Move the drag preview's window to where `drag` puts it, drawing
+    /// nothing (between frames, as the pointer moves).
+    pub fn follow(&mut self, window: &winit::window::Window, drag: &zgui::input::DragState) {
+        let (Some((x, y)), Some(parent)) = (drag.preview_origin, hwnd_of(window)) else {
+            return;
+        };
+        let Some(panel) = self.preview(drag) else {
+            return;
+        };
+        let (Some((dx, dy)), Some(rect)) = (panel.preview, panel.rect) else {
+            return;
+        };
+        panel.place(
+            client_origin(parent),
+            Rect::new(x + dx, y + dy, rect.width, rect.height),
+        );
+    }
+    /// The drag preview's last frame, as a drag image with the pointer in it
+    /// (to hand the drag to Windows).
+    pub fn preview_image(
+        &mut self,
+        drag: &zgui::input::DragState,
+    ) -> Option<crate::native_drag::DragImage> {
+        let panel = self.preview(drag)?;
+        let (rect, (.., width, height)) = (panel.rect?, panel.screen?);
+        let mut bgra = panel.renderer.as_ref()?.readback().ok()?;
+        if bgra.len() != (width * height * 4) as usize {
+            return None;
+        }
+        // Read back as RGBA, premultiplied.
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        Some(crate::native_drag::DragImage {
+            width: width as u32,
+            height: height as u32,
+            bgra,
+            scale: panel.scale,
+            grab: (drag.x - rect.x, drag.y - rect.y),
+        })
+    }
+    /// Show the drag preview, or not (`None`: Windows shows the drag's image
+    /// meanwhile); shown again with the drag's pointer at `at` (the parent's
+    /// coordinates).
     pub fn show_preview(
         &mut self,
-        _: &winit::window::Window,
-        _: &zgui::input::DragState,
-        _: Option<(f32, f32)>,
+        window: &winit::window::Window,
+        drag: &zgui::input::DragState,
+        at: Option<(f32, f32)>,
     ) {
+        let Some(parent) = hwnd_of(window) else {
+            return;
+        };
+        let Some(panel) = self.preview(drag) else {
+            return;
+        };
+        match at {
+            // SAFETY: hides our own window.
+            None => unsafe {
+                let _ = ShowWindow(panel.hwnd, SW_HIDE);
+            },
+            Some((x, y)) => {
+                let Some(rect) = panel.rect else {
+                    return;
+                };
+                let grab = (drag.x - rect.x, drag.y - rect.y);
+                panel.place(
+                    client_origin(parent),
+                    Rect::new(x - grab.0, y - grab.1, rect.width, rect.height),
+                );
+                // SAFETY: shows our own window, never activating it.
+                let _ = unsafe { ShowWindow(panel.hwnd, SW_SHOWNOACTIVATE) };
+            }
+        }
     }
     /// Hide every popup (the window closes or goes away).
     pub fn hide_all(&mut self, _: &winit::window::Window) {

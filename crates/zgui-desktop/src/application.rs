@@ -1161,7 +1161,7 @@ impl Host {
                 let _ = proxy.send_event(Event::PopupSoon(token));
             });
             // Drag previews too, moved with the pointer (`PopupHost::follow`).
-            ui.set_popup_previews(cfg!(target_os = "macos"));
+            ui.set_popup_previews(cfg!(any(target_os = "macos", windows)));
         }
         let inspector = zgui::inspect::Inspector::new();
         {
@@ -4083,6 +4083,14 @@ impl ApplicationHandler<Event> for WindowManager {
                     host.accessibility_event(event.window_event);
                 }
             }
+        }
+        // While a drag is Windows' (`native_drag`), `DoDragDrop`'s loop runs
+        // in place of winit's, which does not turn: each event ends as a turn
+        // would, stepping animations and painting, so windows go on as
+        // through a live resize. Frames keep coming every refresh meanwhile.
+        #[cfg(windows)]
+        if self.hosts.values().any(|host| host.native_drag) {
+            self.about_to_wait(event_loop);
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

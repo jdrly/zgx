@@ -11,18 +11,23 @@
 //! (AppKit's own drop is refused inside the app). Another app taking it is
 //! the drag's acceptance; nothing taking it, the preview slides back.
 //!
-//! todo(windows): `DoDragDrop` with an `IDataObject` (CF_UNICODETEXT,
-//! CF_HDROP, a URL format) and an `IDropSource`; it runs a modal loop of
-//! its own, so the host's loop must keep painting from it.
+//! Windows hands it to `DoDragDrop` (`native_drag/win32.rs`): Shell's data
+//! object with the items in Windows' formats, the preview's last frame as
+//! the drag image (`IDragSourceHelper`; Windows draws and moves it), and a
+//! drop source reporting the pointer. A release over one of the app's own
+//! windows is cancelled for Windows and dropped by zgui, as AppKit's own
+//! drop is refused there. Its modal loop runs in place of winit's, so the
+//! host steps and paints its windows after each event meanwhile.
 //! todo(x11): an XDND source (selection ownership and the XdndAware dance).
 //! todo(wayland): `wl_data_device.start_drag` with a `wl_data_source`,
 //! which winit does not expose.
 use zgui::input::DragItem;
 
 /// The platform's drag, as the host hears it: in global coordinates
-/// (top-down from the primary screen's top, in points).
+/// (top-down from the primary screen's top, in points; on Windows, screen
+/// pixels at the dragging window's scale, as `content_origin` gives).
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub(crate) enum NativeDrag {
     Moved {
         x: f64,
@@ -38,7 +43,7 @@ pub(crate) enum NativeDrag {
 
 /// The drag image: premultiplied BGRA pixels at `scale`, and the pointer
 /// within it, in points.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub(crate) struct DragImage {
     pub width: u32,
     pub height: u32,
@@ -47,7 +52,12 @@ pub(crate) struct DragImage {
     pub grab: (f32, f32),
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+pub(crate) use win32::begin;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn begin(
     _: &winit::window::Window,
     _: &[DragItem],

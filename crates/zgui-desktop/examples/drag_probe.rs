@@ -12,6 +12,10 @@
 //! winit hears moves outside a window only while a mouse button is down,
 //! which it asks the hardware (`NSEvent.pressedMouseButtons`): the probe
 //! answers that for its synthetic presses, in this process only.
+//!
+//! On Windows `scripts/windows_drag_smoke.py` drives it from outside, with
+//! real input, onto a test-owned drop target (`drop_target_probe`).
+//! `DRAG_PROBE_ANIMATE=1` moves a bar every display frame.
 use zgui::compose::prelude::*;
 use zgui_desktop::{Application, WindowBounds, WindowOptions};
 
@@ -88,6 +92,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .drag_export(|text: &String| vec![zgui::input::DragItem::Text(text.clone())])
                 .on_drag_end(|_: &String, accepted| println!("DRAG_END accepted={accepted}"));
+            // `DRAG_PROBE_ANIMATE=1`: a bar moving every display frame, to
+            // see that the window goes on animating while the platform runs
+            // the drag (Windows' `DoDragDrop` loop).
+            let clock = cx.ui.signal(0_f32);
+            if std::env::var_os("DRAG_PROBE_ANIMATE").is_some() {
+                let (clock, source) = (clock.clone(), cx.frames.clone());
+                let start = std::time::Instant::now();
+                cx.tasks.spawn(async move {
+                    loop {
+                        source.next().await;
+                        clock.set(start.elapsed().as_secs_f32());
+                    }
+                });
+            }
+            let bar = div()
+                .w(40.)
+                .h(8.)
+                .bg(rgb(0x3d7ef7))
+                .reactive_style(move || zgui::style::Styles::new().ml((clock.get() * 200.) % 300.));
             cx.render(
                 column()
                     .w_full()
@@ -95,7 +118,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .p(10.)
                     .gap(10.)
                     .child(chip)
-                    .child(tab("tab")),
+                    .child(tab("tab"))
+                    .child(bar),
             );
             #[cfg(target_os = "macos")]
             cx.tasks.spawn(async move {

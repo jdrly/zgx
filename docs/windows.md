@@ -156,6 +156,28 @@ one, and a closed one is kept hidden for the next: an app that never opens a
 popup has none. `ZGUI_POPUP_WINDOWS=0` keeps popups inside their window, as
 they are where Direct3D 12 is not available.
 
+## Drags
+
+A drag's preview shows in a window of its own, over every window, and moves
+with the pointer without drawing again. It goes from one of the app's
+windows to another (their destinations hear it, a tab torn off past them
+hears `on_drag_outside`).
+
+A drag carrying what other apps take (`View::drag_export`) becomes Windows'
+as it leaves the app's windows (`native_drag/win32.rs`): `DoDragDrop` with
+the items as Windows apps read them (text as `CF_UNICODETEXT`, files as
+`CF_HDROP`, a URL as `UniformResourceLocatorW` and as text, an image as
+`PNG`), and the preview's last frame as the drag image, which Windows draws
+and moves (`IDragSourceHelper`) over targets that show drag images, as
+Explorer and browsers do. The source hears `on_drag_end` accepted when an app
+takes it. Back over the app's windows the drag is zgui's again: let go there,
+zgui's destinations take it and Windows drops nothing. Escape, or letting go
+where nothing takes it, slides the preview back to its source.
+
+`DoDragDrop` runs a modal loop of its own, in place of winit's: windows go on
+animating and painting through it (a frame every refresh), as through a live
+resize.
+
 ## System settings
 
 The built-in themes take these from Windows, read at startup and again when
@@ -351,7 +373,7 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
@@ -359,6 +381,7 @@ python scripts/windows_platform_smoke.py target/debug/examples
 python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --both
 python scripts/windows_touch_smoke.py target/debug/examples
 python scripts/windows_popup_smoke.py target/debug/examples
+python scripts/windows_drag_smoke.py target/debug/examples
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -403,6 +426,16 @@ python scripts/windows_popup_smoke.py target/debug/examples
   window and closes as the app deactivates and on a press on the title bar.
   It posts mouse messages to its own windows only, so it leaves the pointer
   alone. `--idle` adds the probe's idle spans (about a minute).
+- `windows_drag_smoke.py` (`drag_probe` and `drop_target_probe`, a
+  test-owned OLE drop target in another process placed against the probe):
+  the chip dragged out onto the target, which receives its text while the
+  source hears it accepted; the probe animating at the display's rate through
+  `DoDragDrop`'s loop; dragged out and back, let go in its own window,
+  Windows dropping nothing; Escape over the target cancelling, and the
+  preview sliding back to the chip in its own window; a tab dropped onto the
+  probe's other window, and torn off past both. It never lets go over any
+  window but its own and the target's: it checks the way is clear before each
+  drag, and cancels with Escape if another window covers the target.
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range

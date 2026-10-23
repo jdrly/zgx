@@ -4493,6 +4493,7 @@ dependencies = [
  "wayland-protocols",
  "webview2-com",
  "windows",
+ "windows-core",
  "winit",
  "x11-dl",
  "x11rb",
