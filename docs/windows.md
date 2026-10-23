@@ -127,6 +127,12 @@ Unlike macOS:
 - App schemes are registered with the WebView2 environment: windows whose web
   views serve different sets of schemes keep their profiles in separate data
   folders.
+- `load_html` with a `file:` base serves the page from
+  `https://zgui-file.invalid/` along with the files of its folder (WebView2
+  asks the app for no `file:` request), so its origin is that host.
+
+As with WebKit without delegates for them, pages save no downloads and get no
+permission (camera, microphone, location, notifications, clipboard reads).
 
 `scripts/windows_webview_smoke.py` checks the page against zgui content
 around and over it.
