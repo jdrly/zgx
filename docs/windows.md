@@ -190,7 +190,9 @@ around and over it.
 Windows gives a window touch and pen as pointer messages, not a mouse's, and
 zgui takes them as its pointer. A pen is a mouse. A finger presses where it
 lands; lifted there it clicks, and held there first (0.6 s) it right-clicks,
-as Windows' press-and-hold does. Moved, it pans the scroll views under it
+as Windows' press-and-hold does; held on selectable text it selects the
+word, moving on extends the selection by words, and lifting opens its menu
+(Copy), as Edge does. Moved, it pans the scroll views under it
 (coasting on after a flick) and presses nothing, or, where nothing scrolls
 that way, drags what it pressed: a slider, a selection. Two fingers pan
 together; pinching does nothing yet.
@@ -300,7 +302,7 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
@@ -337,7 +339,8 @@ python scripts/windows_touch_smoke.py target/debug/examples
   its node.
 - `windows_touch_smoke.py`: synthetic touch and pen (no touchscreen needed):
   a tap clicks, a finger drags a slider, pans a list and flings it, a held
-  finger opens a context menu, and a pen's stroke drags rather than pans.
+  finger opens a context menu or selects text by words, and a pen's stroke
+  drags rather than pans.
 - `windows_settings_smoke.py`: the window menu (Alt+Space) is dark in dark
   mode and light in light mode, and a scrollbar hides at rest, shows while
   the user scrolls and hides after with "Always show scrollbars" off, and

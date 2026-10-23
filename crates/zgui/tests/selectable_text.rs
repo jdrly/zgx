@@ -170,6 +170,27 @@ fn a_word_at_a_point_selects_as_a_double_press_does() {
 }
 
 #[test]
+fn a_word_selected_during_a_press_extends_by_words_as_the_press_moves() {
+    // A finger lands, rests (the long press selects the word), then moves.
+    let mut ui = Ui::new(400., 300.);
+    document(&mut ui, vec![text("alpha beta gamma")]);
+    press(&mut ui, 40., 10., false);
+    assert!(ui.select_word_at(40., 10.));
+    assert_eq!(ui.selected_text(), "beta");
+    move_to(&mut ui, 80., 10.);
+    assert_eq!(ui.selected_text(), "beta gamma");
+    move_to(&mut ui, 4., 10.);
+    assert_eq!(ui.selected_text(), "alpha beta");
+    // Lifting keeps it.
+    release(&mut ui, 4., 10.);
+    assert_eq!(ui.selected_text(), "alpha beta");
+    // Without a press the pointer moving extends nothing.
+    assert!(ui.select_word_at(40., 10.));
+    move_to(&mut ui, 80., 10.);
+    assert_eq!(ui.selected_text(), "beta");
+}
+
+#[test]
 fn shift_press_extends_from_the_anchor() {
     let mut ui = Ui::new(400., 300.);
     document(&mut ui, vec![text("abcdefghij"), text("klmnopqrst")]);

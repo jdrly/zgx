@@ -1232,7 +1232,18 @@ impl Ui {
         {
             let mut state = self.selection_state().borrow_mut();
             state.active_root = Some(root);
-            state.gesture = None;
+            // During a press there (a finger held on the text: its press
+            // began a gesture), moving on extends the selection by words, as
+            // after a double press; the release keeps it rather than
+            // clicking.
+            let held = state.gesture.as_ref().is_some_and(|g| g.root == root);
+            state.gesture = held.then_some(Gesture {
+                root,
+                unit: Unit::Word,
+                edges: (anchor, focus),
+                dragged: true,
+                pointer: (x, y),
+            });
         }
         self.set_selection(Some(root), Some(anchor), Some(focus));
         true

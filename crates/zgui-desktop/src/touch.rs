@@ -61,6 +61,8 @@ enum Mode {
     Deciding,
     Dragging,
     Panning,
+    /// Held on selectable text: the word is selected, and moves extend it.
+    Selecting,
 }
 
 /// A fling: the speed a pan lifted at, falling off with time.
@@ -82,6 +84,8 @@ pub(crate) struct Touches {
     /// The pan's recent positions, for its speed at lift.
     trail: Vec<(Instant, (f32, f32))>,
     fling: Option<Fling>,
+    /// The press has been held long enough, and the host told (`hold`).
+    held: bool,
 }
 
 impl Default for Touches {
@@ -92,6 +96,7 @@ impl Default for Touches {
             pan: (0., 0.),
             trail: Vec::new(),
             fling: None,
+            held: false,
         }
     }
 }
@@ -154,6 +159,7 @@ impl Touches {
                     Mode::Idle => {
                         // A finger landing stops a fling.
                         self.fling = None;
+                        self.held = false;
                         self.mode = Mode::Pressed {
                             start: (x, y),
                             at: now,
@@ -180,7 +186,7 @@ impl Touches {
                         self.pan = middle(&self.contacts);
                         Vec::new()
                     }
-                    Mode::Dragging | Mode::Pen => Vec::new(),
+                    Mode::Dragging | Mode::Selecting | Mode::Pen => Vec::new(),
                 }
             }
             TouchPhase::Moved => {
@@ -204,7 +210,9 @@ impl Touches {
                             dy: start.1 - y,
                         }]
                     }
-                    Mode::Dragging if first => vec![Step::Dispatch(PointerMove { x, y })],
+                    Mode::Dragging | Mode::Selecting if first => {
+                        vec![Step::Dispatch(PointerMove { x, y })]
+                    }
                     Mode::Panning => {
                         let at = middle(&self.contacts);
                         let (dx, dy) = (self.pan.0 - at.0, self.pan.1 - at.1);
@@ -262,6 +270,28 @@ impl Touches {
                             button: primary,
                         })]
                     }
+                    // The selection stays, and its menu opens (Copy), as a
+                    // browser's does after a long press.
+                    Mode::Selecting => {
+                        let secondary = PointerButton::Secondary;
+                        vec![
+                            Step::Dispatch(PointerUp {
+                                x,
+                                y,
+                                button: primary,
+                            }),
+                            Step::Dispatch(PointerDown {
+                                x,
+                                y,
+                                button: secondary,
+                            }),
+                            Step::Dispatch(PointerUp {
+                                x,
+                                y,
+                                button: secondary,
+                            }),
+                        ]
+                    }
                     Mode::Panning => {
                         self.fling = self.lift_speed(now).map(|speed| Fling {
                             at: self.pan,
@@ -278,6 +308,32 @@ impl Touches {
                 steps
             }
         }
+    }
+
+    /// When a finger resting within the slop has been held long enough
+    /// (`hold`), for the host to wake then.
+    pub(crate) fn hold_deadline(&self) -> Option<Instant> {
+        match self.mode {
+            Mode::Pressed { at, .. } if !self.held => Some(at + HOLD),
+            _ => None,
+        }
+    }
+
+    /// Where the finger rests, once, when it has been held long enough: the
+    /// host selects the word there, if it is selectable text (`selecting`).
+    pub(crate) fn hold(&mut self, now: Instant) -> Option<(f32, f32)> {
+        let deadline = self.hold_deadline()?;
+        if now < deadline {
+            return None;
+        }
+        self.held = true;
+        self.contacts.first().map(|(_, at)| *at)
+    }
+
+    /// The held finger selected a word: moves extend it, and lifting opens
+    /// its menu.
+    pub(crate) fn selecting(&mut self) {
+        self.mode = Mode::Selecting;
     }
 
     /// No finger is down: a touch starting now begins a gesture.
@@ -412,6 +468,49 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_hold_on_text_selects_and_moves_extend_then_lifting_opens_the_menu() {
+        let t = Instant::now();
+        let mut touches = Touches::default();
+        touches.touch(1, Started, (40., 10.), false, t);
+        assert_eq!(touches.hold_deadline(), Some(t + HOLD));
+        assert_eq!(touches.hold(t + HOLD / 2), None);
+        assert_eq!(touches.hold(t + HOLD), Some((40., 10.)));
+        // Once.
+        assert_eq!(touches.hold(t + HOLD * 2), None);
+        touches.selecting();
+        let moved = events(touches.touch(1, Moved, (80., 10.), false, t + HOLD * 2));
+        assert_eq!(moved, vec![PointerMove { x: 80., y: 10. }]);
+        let up = events(touches.touch(1, Ended, (80., 10.), false, t + HOLD * 3));
+        assert!(matches!(
+            up[0],
+            PointerUp {
+                button: PointerButton::Primary,
+                ..
+            }
+        ));
+        assert!(matches!(
+            up[1],
+            PointerDown {
+                button: PointerButton::Secondary,
+                ..
+            }
+        ));
+        assert!(matches!(
+            up[2],
+            PointerUp {
+                button: PointerButton::Secondary,
+                ..
+            }
+        ));
+        // Not on text: the hold passes, and the lift right-clicks as before.
+        let mut touches = Touches::default();
+        touches.touch(2, Started, (5., 5.), false, t);
+        assert!(touches.hold(t + HOLD).is_some());
+        let up = events(touches.touch(2, Ended, (5., 5.), false, t + HOLD));
+        assert_eq!(up[0], PointerCancel);
     }
 
     #[test]

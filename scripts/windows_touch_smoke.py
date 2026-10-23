@@ -9,9 +9,11 @@ this checks what zgui makes of them:
 - a finger dragged over a list pans it, and a flick coasts on after the
   lift and comes to rest;
 - a finger held, then lifted, opens the context menu (an editor's);
+- a finger held on selectable text selects the word, a drag extends it by
+  words, and the lift opens the selection's menu;
 - a pen is a mouse: its stroke over the list does not pan it.
 
-    cargo build -p zgui-desktop --example gallery --example workbench --example form
+    cargo build -p zgui-desktop --example gallery --example workbench --example form --example selectable_text
     python scripts/windows_touch_smoke.py target/debug/examples
 """
 import argparse
@@ -203,6 +205,31 @@ def main():
         check(region(before, *below) != region(win.capture(window), *below),
               "a finger held on the notes editor opens its context menu")
         win.key("escape")
+    finally:
+        finish(proc, window)
+
+    proc, window = launch(examples, "selectable_text")
+    try:
+        before = win.capture(window)
+        touch(window, [(0, 45, 86, "down")])  # "Drag", the first word
+        for _ in range(16):
+            time.sleep(0.05)
+            touch(window, [(0, 45, 86, "move")])
+        for step in range(1, 13):
+            time.sleep(0.02)
+            touch(window, [(0, 45 + 12 * step, 86, "move")])
+        touch(window, [(0, 189, 86, "up")])
+        time.sleep(0.6)
+        check(region(before, 200, 110, 420, 190) != region(win.capture(window), 200, 110, 420, 190),
+              "a finger held on text, dragged and lifted opens the selection's menu")
+        win.key("escape")
+        time.sleep(0.2)
+        win.key("ctrl+c")
+        time.sleep(0.3)
+        copied = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                                capture_output=True, text=True).stdout.strip()
+        check(copied == "Drag across this paragraph",
+              f"the hold selected the word and the drag extended it by words ({copied!r})")
     finally:
         finish(proc, window)
     print("touch smoke passed")

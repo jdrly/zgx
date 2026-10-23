@@ -2738,6 +2738,12 @@ impl Host {
                 })?;
             }
         }
+        // A finger held on selectable text selects the word there.
+        if let Some((x, y)) = self.touch.hold(std::time::Instant::now())
+            && self.context.ui.select_word_at(x, y)
+        {
+            self.touch.selecting();
+        }
         // A fling coasts a step each refresh, and stops at the end of what
         // it scrolls.
         if self.touch.flinging()
@@ -3591,6 +3597,7 @@ impl ApplicationHandler<Event> for WindowManager {
                     host.presentation.deadline(),
                     host.context.ui.next_interaction_deadline(),
                     host.frame_deadline,
+                    host.touch.hold_deadline(),
                     host.trim_at,
                     match host.startup_trim {
                         StartupTrim::At(at) => Some(at),
