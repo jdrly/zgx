@@ -1218,13 +1218,17 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
         }
     }
     if !node.children.is_empty() {
-        let flow = flow(node);
+        // Only regions among the children take the container's flow.
+        let flow = node
+            .children
+            .iter()
+            .any(|child| child.kind.flows())
+            .then(|| flow(node));
         view = view.children(node.children.iter().map(|child| {
             let view = lower(child, low);
-            if child.kind.flows() {
-                apply_all(view, &flow)
-            } else {
-                view
+            match &flow {
+                Some(flow) if child.kind.flows() => apply_all(view, flow),
+                _ => view,
             }
         }));
     }
