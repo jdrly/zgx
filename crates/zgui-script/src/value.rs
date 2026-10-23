@@ -644,11 +644,15 @@ pub(crate) fn install_cache(lua: &Lua) {
         t.set_metatable(Some(meta))?;
         lua.create_registry_value(t)
     };
-    if let (Ok(tables), Ok(ids)) = (weak("v"), weak("k")) {
+    let tables = lua
+        .create_table()
+        .and_then(|t| lua.create_registry_value(t));
+    if let (Ok(tables), Ok(ids)) = (tables, weak("k")) {
         lua.set_app_data(Converted {
             held: Default::default(),
             tables,
             ids,
+            weight: std::cell::Cell::new(0),
             swept: std::cell::Cell::new(0),
         });
     }
@@ -656,17 +660,42 @@ pub(crate) fn install_cache(lua: &Lua) {
 /// A VM's converted values, by the identity of their contents. `held` keeps
 /// each value alive while it is cached, so an address is never reused for
 /// other contents while a table is filed under it; it lets go of a value
-/// nothing else holds. The tables themselves are held weakly: one the
-/// script no longer holds is collected, and converted again if read again.
+/// nothing else holds, and of its table with it. The tables are not held
+/// weakly: one the script had let go of would then be converted again or
+/// not as the collector happened to have run, and what a delta costs would
+/// vary from run to run.
 struct Converted {
-    held: std::cell::RefCell<HashMap<usize, Value>>,
-    /// id → table, weak values.
+    /// id → the value and its `weight`.
+    held: std::cell::RefCell<HashMap<usize, (Value, usize)>>,
+    /// id → table, while `held` holds its value.
     tables: mlua::RegistryKey,
     /// table → id, weak keys: a read-only table given back (a computed
     /// returning a row it read) is its value again, without a walk.
     ids: mlua::RegistryKey,
-    /// How many were held after the last sweep.
+    /// The `weight` of what is held.
+    weight: std::cell::Cell<usize>,
+    /// The `weight` of what was held after the last sweep.
     swept: std::cell::Cell<usize>,
+}
+/// Sweeps wait until the cache holds this much (`weight`) at least.
+const SWEPT_FROM: usize = 1 << 12;
+/// The values a cached value's table holds, its small parts counted all the
+/// way down (each large part is cached, and weighed, on its own): what its
+/// table costs the VM.
+fn weight(value: &Value) -> usize {
+    fn children(value: &Value) -> Box<dyn Iterator<Item = &Value> + '_> {
+        match value {
+            Value::List(items) => Box::new(items.iter()),
+            Value::Map(fields) => Box::new(fields.iter().map(|(_, v)| v)),
+            _ => Box::new(std::iter::empty()),
+        }
+    }
+    fn all(value: &Value) -> usize {
+        1 + children(value).map(all).sum::<usize>()
+    }
+    1 + children(value)
+        .map(|v| if large(v) { 1 } else { all(v) })
+        .sum::<usize>()
 }
 pub(crate) fn identity(value: &Value) -> usize {
     match value {
@@ -717,26 +746,36 @@ fn shared_lua(value: &Value, lua: &Lua) -> mlua::Result<mlua::Value> {
     tables.raw_set(id_key(id), &table)?;
     let ids: Table = lua.registry_value(&cache.ids)?;
     ids.raw_set(&table, id_key(id))?;
-    let size = {
-        let mut held = cache.held.borrow_mut();
-        held.insert(id, value.clone());
-        held.len()
-    };
-    // Sweep as the cache doubles: amortized, each conversion pays a little.
-    if size >= (cache.swept.get() * 2).max(256) {
-        let gone: Vec<usize> = {
+    let added = weight(value);
+    cache.held.borrow_mut().insert(id, (value.clone(), added));
+    cache.weight.set(cache.weight.get() + added);
+    // Sweep as the cache doubles in weight: amortized, each conversion pays
+    // a little, and what nothing else holds costs at most as much again as
+    // what is held.
+    if cache.weight.get() >= (cache.swept.get() * 2).max(SWEPT_FROM) {
+        let mut gone: Vec<usize> = Vec::new();
+        {
             let mut held = cache.held.borrow_mut();
-            let gone: Vec<usize> = held
-                .iter()
-                .filter(|(_, v)| only_cached(v))
-                .map(|(id, _)| *id)
-                .collect();
-            for id in &gone {
-                held.remove(id);
+            // Until none is left: letting go of a value lets go of its
+            // parts.
+            loop {
+                let before = gone.len();
+                gone.extend(
+                    held.iter()
+                        .filter(|(_, (v, _))| only_cached(v))
+                        .map(|(id, _)| *id),
+                );
+                if gone.len() == before {
+                    break;
+                }
+                for id in &gone[before..] {
+                    if let Some((_, w)) = held.remove(id) {
+                        cache.weight.set(cache.weight.get() - w);
+                    }
+                }
             }
-            cache.swept.set(held.len());
-            gone
-        };
+            cache.swept.set(cache.weight.get());
+        }
         for id in gone {
             // Its address may be reused now: nothing may find it by it.
             if let mlua::Value::Table(t) = tables.raw_get::<mlua::Value>(id_key(id))? {
@@ -762,7 +801,11 @@ fn converted_from(t: &Table, lua: &Lua) -> Option<Value> {
     let mlua::Value::LightUserData(id) = ids.raw_get::<mlua::Value>(t).ok()? else {
         return None;
     };
-    cache.held.borrow().get(&(id.0 as usize)).cloned()
+    cache
+        .held
+        .borrow()
+        .get(&(id.0 as usize))
+        .map(|(v, _)| v.clone())
 }
 /// Whether the cache holds the only reference to `value`'s contents.
 fn only_cached(value: &Value) -> bool {

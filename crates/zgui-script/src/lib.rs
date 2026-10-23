@@ -1106,9 +1106,10 @@ impl ScriptHost {
                 .sum()
         })
     }
-    /// How many converted values the loaded scripts' VMs keep (their tables
-    /// held weakly): with `script_memory`, what tells data the scripts hold
-    /// from data the host holds.
+    /// How many converted values the loaded scripts' VMs keep (each with
+    /// its table, until nothing else holds the value): with
+    /// `script_memory`, what tells data the scripts hold from data the
+    /// host holds.
     pub fn converted_values(&self) -> usize {
         let loaded = self.0.current.borrow().clone();
         loaded.map_or(0, |l| {
