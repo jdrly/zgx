@@ -41,8 +41,11 @@ use std::{cell::Cell, ffi::c_void, ptr::null, rc::Rc};
 /// A surface the renderer draws into and a layer shows.
 pub(crate) struct Buffer {
     pub surface: CFRetained<IOSurfaceRef>,
-    /// The surface as a sample buffer to enqueue (`Layer::show`).
-    sample: Sample,
+    /// The surface as a sample buffer to enqueue (`Layer::show`), made the
+    /// first time the video layer shows it: wrapping a surface sets up
+    /// CoreVideo's pixel formats, a launch cost an app that never animates
+    /// at full rate need not pay. `None` if it could not be made.
+    sample: std::cell::OnceCell<Option<Sample>>,
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     /// The texture as Metal's, for frames encoded directly (`metal_frame`).
@@ -51,6 +54,12 @@ pub(crate) struct Buffer {
     pub copy_source: std::cell::OnceCell<wgpu::BindGroup>,
 }
 impl Buffer {
+    /// The surface as a sample buffer, made on first use.
+    fn sample(&self) -> Option<&Sample> {
+        self.sample
+            .get_or_init(|| Sample::new(&self.surface).ok())
+            .as_ref()
+    }
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Result<Self, GpuError> {
         // 'BGRA': four bytes a pixel, as `FORMAT` (Bgra8Unorm) stores them.
         let number = |value: i32| CFNumber::new_i32(value);
@@ -83,7 +92,6 @@ impl Buffer {
             // property list form, as it documents.
             unsafe { surface.set_value(kIOSurfaceColorSpace, &list) };
         }
-        let sample = Sample::new(&surface)?;
         // SAFETY: The HAL guard only borrows this live device for the call.
         let hal = unsafe { device.as_hal::<wgpu::hal::api::Metal>() }
             .ok_or_else(|| GpuError("not a Metal device".into()))?;
@@ -144,7 +152,7 @@ impl Buffer {
         let view = texture.create_view(&Default::default());
         Ok(Self {
             surface,
-            sample,
+            sample: std::cell::OnceCell::new(),
             texture,
             view,
             metal,
@@ -601,7 +609,7 @@ impl Video {
             .then(|| displayed(&self.queue))
             .flatten()
     }
-    fn enqueue(&self, buffer: &Buffer) {
+    fn enqueue(&self, sample: &Sample) {
         // SAFETY: The renderer's (or layer's) own methods; the sample buffer
         // is a live CMSampleBufferRef the buffer owns.
         unsafe {
@@ -612,7 +620,7 @@ impl Video {
             if status == 2 || interrupted {
                 let _: () = msg_send![&*self.queue, flush];
             }
-            let sample = buffer.sample.sample.cast_mut().cast::<CMSampleBuffer>();
+            let sample = sample.sample.cast_mut().cast::<CMSampleBuffer>();
             let _: () = msg_send![&*self.queue, enqueueSampleBuffer: sample];
         }
     }
@@ -652,6 +660,15 @@ impl Layer {
     /// every pixel is, so the window server need not blend the layers over
     /// what lies behind them.
     pub fn show(&mut self, buffer: &Buffer, opaque: bool, steady: bool) {
+        // The video layer queues a sample buffer; a surface none can wrap
+        // shows as the plain layer's.
+        let sample = match steady || self.video.is_some() {
+            true => match buffer.sample() {
+                Some(sample) => Some(sample),
+                None => return self.show_plain(buffer, opaque),
+            },
+            false => None,
+        };
         self.set_opaque(opaque);
         if steady && self.video.is_none() {
             crate::present_log::log(|| {
@@ -677,7 +694,7 @@ impl Layer {
             self.plain_shows.set(true);
             return;
         };
-        video.enqueue(buffer);
+        video.enqueue(sample.expect("looked for while the video layer shows"));
         if !self.plain_shows.get() || self.uncovering.replace(true) {
             return;
         }
