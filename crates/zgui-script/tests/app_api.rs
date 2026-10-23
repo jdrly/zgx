@@ -253,6 +253,51 @@ fn nodes_drag_and_drop_script_values() {
     assert!(log.ends_with("end p7 true;"), "{log}");
 }
 
+/// A tab's drag in a script: `drag_moves_window` says it moves its window,
+/// `drag_export` what it carries to other apps, and `on_drag_outside` hears
+/// it torn off, with where it was held.
+#[test]
+fn a_scripts_drag_may_move_its_window_or_tear_off() {
+    let mut h = Harness::inline(
+        r##"local log = ui.state("log", "")
+        return ui.column {
+            ui.div { id = "tab", w = 100, h = 40,
+                on_drag = function() return { id = "t1", alone = true } end,
+                drag_moves_window = function(p) return p.alone end,
+                drag_export = function(p) return { text = p.id } end,
+                on_drag_outside = function(p, e)
+                    log:set(log:peek() .. "outside " .. p.id .. " " .. math.floor(e.grab_x) .. ";")
+                end },
+            ui.text { "{log}", id = "log" },
+        }"##,
+    );
+    h.ui.prepare_frame();
+    let tab = {
+        let node = h.find("tab").unwrap();
+        h.ui.scene.borrow().bounds(node)
+    };
+    h.ui.dispatch(InputEvent::PointerDown {
+        x: tab.x + 10.,
+        y: tab.y + 10.,
+        button: PointerButton::Primary,
+    });
+    h.ui.dispatch(InputEvent::PointerMove {
+        x: tab.x + 30.,
+        y: tab.y + 20.,
+    });
+    let drag = h.ui.input.drag_state().expect("dragging");
+    assert!(drag.moves_window);
+    assert_eq!(
+        drag.export.as_deref(),
+        Some(&[zgui::input::DragItem::Text("t1".into())][..])
+    );
+    // Released outside every window (as a host says).
+    h.ui.input.end_drag_elsewhere(&h.ui.scene, false, true);
+    h.settle();
+    let log = h.text("log");
+    assert_eq!(log, "outside t1 10;");
+}
+
 #[test]
 fn a_press_that_follows_the_pointer_keeps_it() {
     let mut h = Harness::inline(

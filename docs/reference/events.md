@@ -20,6 +20,8 @@ on_drag: (() -> any)?
 drag_preview: ((payload: any) -> Node)?
 on_drag_end: ((payload: any, accepted: boolean) -> ())?
 drag_export: ((payload: any) -> DragExport?)?
+on_drag_outside: ((payload: any, e: { x, y, grab_x, grab_y }) -> ())?
+drag_moves_window: ((payload: any) -> boolean)?
 drop_when: ((payload: any) -> unknown)?
 on_drag_over: ((payload: any, e: DragPoint) -> ())?
 on_drag_leave: ((payload: any) -> ())?
@@ -46,6 +48,8 @@ on_drop: ((payload: any, e: DragPoint) -> ())?
 | `drag_preview` | the payload; returns a node | what follows the pointer while it drags |
 | `on_drag_end` | the payload, whether it was dropped on a destination | the drag ends |
 | `drag_export` | the payload; returns `{ text, url, files }` | the drag leaves the window: other apps take what it returns (macOS) |
+| `on_drag_outside` | the payload, `{ x, y, grab_x, grab_y }` | released outside every window of the app (macOS): a tab torn off its window; its preview goes rather than sliding back |
+| `drag_moves_window` | the payload; returns whether the drag moves its window | the drag starts: true moves the window with the pointer instead of showing a preview (macOS), as a window's only tab does |
 | `drop_when` | the payload; returns whether to accept it | a drag comes over the node (without it, every payload is accepted) |
 | `on_drag_over` | the payload, `{ x, y, local_x, local_y, w, h }` | an accepted drag moves over it |
 | `on_drag_leave` | the payload | the drag leaves it |

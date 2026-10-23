@@ -734,6 +734,12 @@ export type WindowOptions = {
 	width: number?,
 	height: number?,
 	open: State<boolean>,
+	-- Its frame saved under this name as it moves and resizes, and reopened
+	-- where it was left (macOS).
+	frame_autosave: string?,
+	-- AppKit's window tabs (macOS): as the user's setting says, always, or
+	-- never (a window with tabs of its own).
+	tabbing: ("automatic" | "preferred" | "disallowed")?,
 	[number]: Node,
 }
 
@@ -1230,6 +1236,13 @@ export type NodeProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,

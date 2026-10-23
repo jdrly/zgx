@@ -2507,6 +2507,31 @@ fn with_drag(
             out
         });
     }
+    if let Some(outside) = events.drag_outside.clone() {
+        let vm = vm.clone();
+        view = view.on_drag_outside(move |payload: &Value, event| {
+            let at = vm.lua.create_table().ok();
+            if let Some(at) = &at {
+                for (key, value) in [
+                    ("x", event.x),
+                    ("y", event.y),
+                    ("grab_x", event.grab_x),
+                    ("grab_y", event.grab_y),
+                ] {
+                    let _ = at.set(key, value);
+                }
+            }
+            call(&vm, &outside, (payload.clone(), at));
+        });
+    }
+    if let Some(moves) = events.drag_moves_window.clone() {
+        let vm = vm.clone();
+        view = view.drag_moves_window(move |payload: &Value| {
+            call(&vm, &moves, payload.clone()).is_some_and(|moves| {
+                !matches!(moves, mlua::Value::Nil | mlua::Value::Boolean(false))
+            })
+        });
+    }
     let (drop, accept, over, leave) = (
         events.drop.clone(),
         events.drop_when.clone(),

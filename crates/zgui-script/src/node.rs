@@ -562,6 +562,12 @@ pub(crate) struct Events {
     /// `drag_export(payload) -> { text, url, files }`: what the drag carries
     /// to other apps as it leaves the window (macOS).
     pub drag_export: Option<Function>,
+    /// `on_drag_outside(payload, { x, y, grab_x, grab_y })`: released outside
+    /// every window of the app (macOS), as a tab torn off its window is.
+    pub drag_outside: Option<Function>,
+    /// `drag_moves_window(payload) -> boolean`: the drag moves its window
+    /// instead, with no preview (macOS), as a window's only tab does.
+    pub drag_moves_window: Option<Function>,
     /// On a destination: `drop_when(payload) -> bool` (default: all),
     /// `on_drag_over(payload, { x, y, local_x, local_y, w, h })` while an
     /// accepted drag hovers, `on_drag_leave(payload)` when it leaves,
@@ -608,6 +614,8 @@ impl Events {
         drag_preview: None,
         drag_end: None,
         drag_export: None,
+        drag_outside: None,
+        drag_moves_window: None,
         drop: None,
         drop_when: None,
         drag_over: None,
@@ -1671,7 +1679,12 @@ fn set_handler(
     key: &str,
     value: mlua::Value,
 ) -> mlua::Result<Option<mlua::Value>> {
-    if !(key.starts_with("on_") || matches!(key, "context_menu" | "drag_preview" | "drop_when")) {
+    if !(key.starts_with("on_")
+        || matches!(
+            key,
+            "context_menu" | "drag_preview" | "drop_when" | "drag_export" | "drag_moves_window"
+        ))
+    {
         return Ok(Some(value));
     }
     let events = events.get_or_insert_default();
@@ -1714,8 +1727,8 @@ fn set_handler(
             events.context_menu = Some(f);
             return Ok(None);
         }
-        "on_drag" | "drag_preview" | "on_drag_end" | "drag_export" | "on_drop" | "drop_when"
-        | "on_drag_over" | "on_drag_leave" => {
+        "on_drag" | "drag_preview" | "on_drag_end" | "drag_export" | "on_drag_outside"
+        | "drag_moves_window" | "on_drop" | "drop_when" | "on_drag_over" | "on_drag_leave" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime(format!("{key} takes a function")));
             };
@@ -1724,6 +1737,8 @@ fn set_handler(
                 "drag_preview" => &mut events.drag_preview,
                 "on_drag_end" => &mut events.drag_end,
                 "drag_export" => &mut events.drag_export,
+                "on_drag_outside" => &mut events.drag_outside,
+                "drag_moves_window" => &mut events.drag_moves_window,
                 "on_drop" => &mut events.drop,
                 "drop_when" => &mut events.drop_when,
                 "on_drag_over" => &mut events.drag_over,

@@ -287,6 +287,12 @@ pub fn follow_windows(
                     title: window.title.clone(),
                     width: window.width,
                     height: window.height,
+                    frame_autosave: window.frame_autosave.clone(),
+                    tabbing: match window.tabbing.as_deref() {
+                        Some("preferred") => zgui_desktop::Tabbing::Preferred,
+                        Some("disallowed") => zgui_desktop::Tabbing::Disallowed,
+                        _ => zgui_desktop::Tabbing::Automatic,
+                    },
                     ..Default::default()
                 };
                 let (view_host, state, id) = (host.clone(), window.open.clone(), window.id.clone());

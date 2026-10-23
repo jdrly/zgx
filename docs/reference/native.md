@@ -90,6 +90,8 @@ ui.window(opts: WindowOptions) -> ()
 | `open` | `State<boolean>` | required | the window shows while true |
 | `title` | `string` | the id | |
 | `width`, `height` | `number` | `480`, `360` | points |
+| `frame_autosave` | `string` | none | its frame saved under this name as it moves and resizes, and reopened where it was left (macOS) |
+| `tabbing` | `"automatic"`, `"preferred"`, `"disallowed"` | `"automatic"` | AppKit's window tabs (macOS): as the user's setting says, always, or never (a window with tabs of its own) |
 | `[1]` | `Node` | required | its content |
 
 ```lua

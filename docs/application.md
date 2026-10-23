@@ -120,6 +120,8 @@ Mount `Dialog` or `Popover` in a full-window `Layout::Overlay` layer. Populate t
 
 ## Popups past the window
 
+[Popups, drags and windows across the screen](multi-window.md) ties this together with drags out of and between windows, tear-off, and the Window menu.
+
 On macOS anchored popups reach past their window, as AppKit's menus and
 popovers do, with nothing asked of the app: a menu at a window's bottom edge
 hangs below it, a tooltip at its top shows over the title bar. Each flips and

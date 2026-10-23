@@ -1,5 +1,5 @@
 //! Windows scripts declare: `ui.window { id, title, width, height, open,
-//! node }`. A settings window, an inspector: each is open while its `open`
+//! frame_autosave, tabbing, node }`. A settings window, an inspector: each is open while its `open`
 //! state is true, and closing it sets the state false.
 //!
 //! As commands are, each run declares its windows afresh, and after a
@@ -30,12 +30,30 @@ pub struct Window {
     /// true, closes it when it turns false, and sets it false when the user
     /// closes the window.
     pub open: Signal<Value>,
+    /// Its frame saved under this name, and reopened where it was left
+    /// (macOS).
+    pub frame_autosave: Option<String>,
+    /// AppKit's window tabs (macOS): `"automatic"` (the user's setting),
+    /// `"preferred"` or `"disallowed"`.
+    pub tabbing: Option<String>,
 }
 impl PartialEq for Window {
     fn eq(&self, other: &Self) -> bool {
-        (&self.id, &self.title, self.width, self.height)
-            == (&other.id, &other.title, other.width, other.height)
-            && self.open.ptr_eq(&other.open)
+        (
+            &self.id,
+            &self.title,
+            self.width,
+            self.height,
+            &self.frame_autosave,
+            &self.tabbing,
+        ) == (
+            &other.id,
+            &other.title,
+            other.width,
+            other.height,
+            &other.frame_autosave,
+            &other.tabbing,
+        ) && self.open.ptr_eq(&other.open)
     }
 }
 impl std::fmt::Debug for Window {
@@ -124,13 +142,35 @@ pub(crate) fn install(
                 width: number("width", 480.)?,
                 height: number("height", 360.)?,
                 open,
+                frame_autosave: table.get::<Option<String>>("frame_autosave")?,
+                tabbing: match table.get::<Option<String>>("tabbing")? {
+                    Some(tabbing)
+                        if !["automatic", "preferred", "disallowed"].contains(&&*tabbing) =>
+                    {
+                        return Err(mlua::Error::runtime(format!(
+                            "{}: \"automatic\", \"preferred\" or \"disallowed\", not \"{tabbing}\"",
+                            what("tabbing")
+                        )));
+                    }
+                    tabbing => tabbing,
+                },
                 id,
             };
             for key in table.pairs::<mlua::Value, mlua::Value>() {
                 let (key, _) = key?;
                 if let mlua::Value::String(key) = key {
                     let key = key.to_str()?;
-                    if !["id", "title", "width", "height", "open"].contains(&&*key) {
+                    if ![
+                        "id",
+                        "title",
+                        "width",
+                        "height",
+                        "open",
+                        "frame_autosave",
+                        "tabbing",
+                    ]
+                    .contains(&&*key)
+                    {
                         return Err(mlua::Error::runtime(format!(
                             "ui.window `{}`: unknown option `{key}`",
                             window.id

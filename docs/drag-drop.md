@@ -1,5 +1,7 @@
 # Typed retained drag and drop
 
+[Popups, drags and windows across the screen](multi-window.md) shows the multi-window drags below with popups and windows, in Rust and Luau.
+
 A drag source produces a Rust value after a primary-button gesture travels four logical pixels. A normal click still activates the source. A target accepts only its payload type and can apply an additional predicate:
 
 ```rust

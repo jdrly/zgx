@@ -741,6 +741,12 @@ export type WindowOptions = {
 	width: number?,
 	height: number?,
 	open: State<boolean>,
+	-- Its frame saved under this name as it moves and resizes, and reopened
+	-- where it was left (macOS).
+	frame_autosave: string?,
+	-- AppKit's window tabs (macOS): as the user's setting says, always, or
+	-- never (a window with tabs of its own).
+	tabbing: ("automatic" | "preferred" | "disallowed")?,
 	[number]: Node,
 }
 
@@ -1237,6 +1243,13 @@ export type NodeProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -1509,6 +1522,13 @@ export type Props = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -1774,6 +1794,13 @@ export type ContainerProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -2042,6 +2069,13 @@ export type ScrollProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -2317,6 +2351,13 @@ export type TextProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -2632,6 +2673,13 @@ export type RichProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -2897,6 +2945,13 @@ export type ImageProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -3170,6 +3225,13 @@ export type SvgProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -3437,6 +3499,13 @@ export type CanvasProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -3703,6 +3772,13 @@ export type CheckboxProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -3972,6 +4048,13 @@ export type InputProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -4256,6 +4339,13 @@ export type ProgressProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -4522,6 +4612,13 @@ export type SliderProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -4792,6 +4889,13 @@ export type ListProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -5090,6 +5194,13 @@ export type LayerProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -5357,6 +5468,13 @@ export type ModalProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -5633,6 +5751,13 @@ export type PopoverProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -5914,6 +6039,13 @@ export type MenuItemProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -6181,6 +6313,13 @@ export type SubmenuProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -6451,6 +6590,13 @@ export type WebViewProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -6739,6 +6885,13 @@ export type TerminalProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -7005,6 +7158,13 @@ export type SlotProps = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -7276,6 +7436,13 @@ export type EachOptions = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
@@ -7550,6 +7717,13 @@ export type PresenceOptions = {
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
 	drag_export: ((payload: any) -> DragExport?)?,
+	-- Released outside every window of the app (macOS): a tab torn off its
+	-- window. `grab_x`/`grab_y` are where the source was held.
+	on_drag_outside: ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?,
+	-- The drag moves its window instead, with no preview (macOS): a
+	-- window's only tab. Dropped on another window's destination it drops
+	-- there; elsewhere the window stays where it was let go.
+	drag_moves_window: ((payload: any) -> boolean)?,
 	-- A destination: `drop_when` filters payloads (default: all).
 	drop_when: ((payload: any) -> unknown)?,
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,

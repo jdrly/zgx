@@ -109,3 +109,17 @@ fn the_window_titlebar_area_and_controls_follow_what_the_host_says() {
     h.frames(1);
     assert!(texts(&h.ui).contains(&"none".to_owned()));
 }
+
+/// A window's frame name and tabbing reach its host; a tabbing it does not
+/// know is an error.
+#[test]
+fn a_window_says_how_it_reopens_and_tabs() {
+    let h = Harness::inline(
+        r##"ui.window { id = "inspector", open = ui.state("inspector", false),
+            frame_autosave = "inspector", tabbing = "disallowed", ui.text("Inspector") }
+        return ui.text("main")"##,
+    );
+    let windows = h.host.windows().get();
+    assert_eq!(windows[0].frame_autosave.as_deref(), Some("inspector"));
+    assert_eq!(windows[0].tabbing.as_deref(), Some("disallowed"));
+}
