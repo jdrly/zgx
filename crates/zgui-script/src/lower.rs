@@ -1444,7 +1444,7 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
 
     // Literal styles apply once. Anything that can change, and an element's
     // animated values, share one reactive style.
-    let mut statics = Vec::new();
+    let mut statics = Vec::with_capacity(node.props.len());
     let mut dynamic = Vec::new();
     for (prop, source) in &node.props {
         match source {
@@ -3280,9 +3280,12 @@ fn is_transform(prop: Prop) -> bool {
 /// Applies literal styles; translation and the local transform collect
 /// their parts first, so each is set once.
 fn apply_all<S: Styled>(mut s: S, lits: &[(Prop, Lit)]) -> S {
+    // Through its styles: a view moved in and out of each setter is a
+    // kilobyte copied twice.
+    let styles = s.styles_mut();
     for (prop, lit) in lits {
         if !is_transform(*prop) {
-            s = apply(s, *prop, lit);
+            apply(&mut *styles, *prop, lit);
         }
     }
     // Single corners refine the radius or corners set with them.
@@ -3299,7 +3302,7 @@ fn apply_all<S: Styled>(mut s: S, lits: &[(Prop, Lit)]) -> S {
                 _ => {}
             }
         }
-        s = s.rounded_corners(c);
+        styles.rounded_corners(c);
     }
     let (translate, local) = literal_transform(lits);
     if let Some((x, y)) = translate {
