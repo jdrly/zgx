@@ -9,7 +9,7 @@ use taffy::{
 pub(super) struct AdvancedLayoutCache {
     tree: t::TaffyTree<NodeId>,
     root: t::NodeId,
-    nodes: std::collections::HashMap<NodeId, t::NodeId>,
+    nodes: crate::scene::NodeMap<t::NodeId>,
     order: Vec<NodeId>,
     /// The percentage bases children were last measured under: taffy keys
     /// a leaf's cached size by its known and available sizes alone.

@@ -13,7 +13,6 @@ use crate::{
 use std::{
     any::Any,
     cell::RefCell,
-    collections::HashMap,
     fmt,
     rc::{Rc, Weak},
     time::{Duration, Instant},
@@ -120,7 +119,7 @@ impl Keymap {
 #[derive(Default)]
 pub(crate) struct Registry {
     next: u64,
-    maps: HashMap<NodeId, Vec<(u64, Keymap)>>,
+    maps: crate::scene::NodeMap<Vec<(u64, Keymap)>>,
     pending: Option<Pending>,
 }
 struct Pending {

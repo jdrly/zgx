@@ -1,6 +1,5 @@
 //! Platform-independent accessibility information attached to retained nodes.
 use crate::scene::{NodeId, Scene};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +111,7 @@ struct SemanticEntry {
     revision: u64,
 }
 pub struct Semantics {
-    nodes: HashMap<NodeId, SemanticEntry>,
+    nodes: crate::scene::NodeMap<SemanticEntry>,
     revision: u64,
     instance: u64,
 }
@@ -125,7 +124,7 @@ impl Default for Semantics {
             })
             .expect("semantic store identity exhausted");
         Self {
-            nodes: HashMap::new(),
+            nodes: Default::default(),
             revision: 0,
             instance,
         }

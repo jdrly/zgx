@@ -5,7 +5,6 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::HashMap,
     rc::{Rc, Weak},
     time::{Duration, Instant},
 };
@@ -399,9 +398,9 @@ impl ClickTracker {
 }
 #[derive(Default)]
 struct State {
-    entries: HashMap<NodeId, Vec<Entry>>,
-    options: HashMap<NodeId, NodeInput>,
-    disabled_observers: HashMap<NodeId, Signal<bool>>,
+    entries: crate::scene::NodeMap<Vec<Entry>>,
+    options: crate::scene::NodeMap<NodeInput>,
+    disabled_observers: crate::scene::NodeMap<Signal<bool>>,
     next: u64,
     focused: Option<NodeId>,
     captured: Option<NodeId>,

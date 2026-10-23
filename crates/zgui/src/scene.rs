@@ -10,6 +10,26 @@ pub struct NodeId {
     index: u32,
     generation: u32,
 }
+/// A map keyed by node. Ids are small integers with a generation: a
+/// multiplicative hash beats SipHash on them, and mounting or removing a
+/// node touches several such maps.
+pub(crate) type NodeMap<V> =
+    std::collections::HashMap<NodeId, V, std::hash::BuildHasherDefault<NodeHasher>>;
+#[derive(Default, Clone, Copy)]
+pub(crate) struct NodeHasher(u64);
+impl std::hash::Hasher for NodeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn write_u32(&mut self, value: u32) {
+        self.0 = (self.0.rotate_left(32) ^ u64::from(value)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
 /// Separate damage rectangles a flush keeps before marking damage on a grid
 /// of `DAMAGE_CELL` cells instead (see `DamageGrid`).
 const DAMAGE_RECTS: usize = 64;
@@ -1270,7 +1290,7 @@ pub struct Scene {
     /// The styles contents nodes were given (`set_contents`), where not the
     /// default: their own paint, clip and margins; the rest of what lays
     /// them out is their last child's.
-    contents_styles: std::collections::HashMap<NodeId, Style>,
+    contents_styles: NodeMap<Style>,
     /// Subtrees hit testing skips (`set_inert`): usually none.
     inert: Vec<NodeId>,
     /// Text selection's settings and highlights (`set_user_select`).
