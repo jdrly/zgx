@@ -1794,11 +1794,17 @@ impl ScriptHost {
         let deadline: Rc<Cell<Option<Deadline>>> = Rc::default();
         {
             let deadline = deadline.clone();
-            lua.set_interrupt(move |_| match deadline.get() {
-                Some(d) if d.exceeded() => {
-                    Err(mlua::Error::runtime("script exceeded its time budget"))
+            // Reading the clock costs more than most of what runs between
+            // two interrupts: it is read at every 64th.
+            let ticks = Cell::new(0u8);
+            lua.set_interrupt(move |_| {
+                ticks.set(ticks.get().wrapping_add(1));
+                match deadline.get() {
+                    Some(d) if ticks.get().is_multiple_of(64) && d.exceeded() => {
+                        Err(mlua::Error::runtime("script exceeded its time budget"))
+                    }
+                    _ => Ok(VmState::Continue),
                 }
-                _ => Ok(VmState::Continue),
             });
         }
         let vm = Rc::new(Vm {

@@ -1620,11 +1620,22 @@ fn set_handler(
 
 /// Fills a node's properties, pseudo-states, handlers and children.
 fn fill(lua: &Lua, node: Node, table: Option<&Table>) -> mlua::Result<Node> {
-    fill_from(lua, node, table, false)
+    fill_from(lua, node, table, None)
 }
-/// `text`: element 1 is the text's content and `literal` how to read it,
-/// both the constructor's own.
-fn fill_from(lua: &Lua, mut node: Node, table: Option<&Table>, text: bool) -> mlua::Result<Node> {
+/// What a `ui.text` table holds besides styles: its content (element 1)
+/// and whether to show it `literal`ly.
+#[derive(Default)]
+struct TextArgs {
+    content: mlua::Value,
+    literal: Option<bool>,
+}
+/// As `fill`, keeping a text's own fields in `text`.
+fn fill_from(
+    lua: &Lua,
+    mut node: Node,
+    table: Option<&Table>,
+    mut text: Option<&mut TextArgs>,
+) -> mlua::Result<Node> {
     let Some(table) = table else {
         return Ok(node);
     };
@@ -1636,7 +1647,11 @@ fn fill_from(lua: &Lua, mut node: Node, table: Option<&Table>, text: bool) -> ml
     table.for_each(|key: mlua::Value, value: mlua::Value| {
         let key = match key {
             mlua::Value::String(key) => key,
-            mlua::Value::Integer(i) if i >= 1 && !(text && i == 1) => {
+            mlua::Value::Integer(1) if let Some(text) = text.as_deref_mut() => {
+                text.content = value;
+                return Ok(());
+            }
+            mlua::Value::Integer(i) if i >= 1 => {
                 items.push((i, value));
                 return Ok(());
             }
@@ -1644,7 +1659,10 @@ fn fill_from(lua: &Lua, mut node: Node, table: Option<&Table>, text: bool) -> ml
         };
         let key = key.to_str()?;
         let key: &str = &key;
-        if text && key == "literal" {
+        if key == "literal"
+            && let Some(text) = text.as_deref_mut()
+        {
+            text.literal = lua.unpack(value)?;
             return Ok(());
         }
         let Some(value) = set_handler(&mut node.events, key, value)? else {
@@ -2306,22 +2324,16 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         "text",
         lua.create_function(|lua, arg: mlua::Value| {
             let owner = owner(lua)?;
-            let (content, table) = match arg {
-                mlua::Value::Table(t) => (t.get::<mlua::Value>(1)?, Some(t)),
-                other => (other, None),
+            let mlua::Value::Table(table) = arg else {
+                let text = text_of(lua, arg, "ui.text", false)?;
+                return node_ud(lua, Node::new(owner, Kind::Text(text)));
             };
-            let literal = match &table {
-                Some(t) => t.get::<Option<bool>>("literal")?.unwrap_or(false),
-                None => false,
-            };
-            let mut node = Node::new(
-                owner,
-                Kind::Text(text_of(lua, content, "ui.text", literal)?),
-            );
-            if let Some(table) = &table {
-                // The content is element 1; the rest are styles.
-                node = fill_from(lua, node, Some(table), true)?;
-            }
+            // The content is element 1; the rest are styles.
+            let mut args = TextArgs::default();
+            let empty = Kind::Text(Text::Literal(String::new()));
+            let mut node = fill_from(lua, Node::new(owner, empty), Some(&table), Some(&mut args))?;
+            let literal = args.literal.unwrap_or(false);
+            node.kind = Kind::Text(text_of(lua, args.content, "ui.text", literal)?);
             node_ud(lua, node)
         })?,
     )?;
