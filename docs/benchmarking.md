@@ -8,16 +8,16 @@ Each current adapter mounts the viewport-derived visible row range plus two over
 
 zgui's native comparison adapter now defaults to the retained `wgpu` GPU renderer, alongside GPUI and QuickGUI's GPU renderers. It uses physical-size surfaces, logical-pixel scene coordinates, DPI-aware input, and the same cosmic-text font system for measurement and drawing. `ZGUI_RENDERER=software` explicitly selects the older CPU raster/softbuffer reference path; `--headless` always uses that software path. Native logs identify the selected renderer in JSON and report the GPU adapter on stderr. CPU/RSS results compare these concrete applications and backends, not an intrinsic framework ranking. GPU memory, GPU time, energy, frame latency, presentation count, dropped frames, and visual parity need separate measurement. A process can consume less CPU by failing to present, so always inspect output and independently verify presented frame cadence. Defaults disable costly blur effects in the comparison; measure effects separately with identical settings.
 
-Build once, then measure the executable—not `cargo run`:
+Build once with the `dist` profile, then measure the executable—not `cargo run`. `dist` is what an app ships: `release` with the whole program optimized as one unit (`lto = "fat"`, one codegen unit). zgui's workspace and every comparison adapter define it the same way, so each framework is measured as it would ship, under equal settings. Day-to-day `release` builds stay on thin LTO, which links in half the time; a `dist` build is about 14% smaller (macOS `heavy_workload`: 13.2 MB against 11.4) and runs about 1% fewer instructions. Compare binary sizes between `dist` builds only.
 
 ```sh
-cargo build --release --locked -p zgui-desktop --example component_workload
-cargo build --release --locked --manifest-path comparisons/gpui/Cargo.toml
-cargo build --release --locked --manifest-path comparisons/quickgui/Cargo.toml
+cargo build --profile dist --locked -p zgui-desktop --example component_workload
+cargo build --profile dist --locked --manifest-path comparisons/gpui/Cargo.toml
+cargo build --profile dist --locked --manifest-path comparisons/quickgui/Cargo.toml
 python3 scripts/compare.py \
-  --zgui target/release/examples/component_workload \
-  --gpui comparisons/gpui/target/release/zgui-compare-gpui \
-  --quickgui comparisons/quickgui/target/release/zgui-compare-quickgui \
+  --zgui target/dist/examples/component_workload \
+  --gpui comparisons/gpui/target/dist/zgui-compare-gpui \
+  --quickgui comparisons/quickgui/target/dist/zgui-compare-quickgui \
   --seconds 30 --warmup 5 --repeats 3 --output comparison.csv
 ```
 
@@ -42,7 +42,7 @@ The timer drops missed deadlines rather than processing a backlog of updates; ev
 ```sh
 swiftc -O scripts/startup_probe.swift -o /tmp/zgui-startup-probe
 for i in $(seq 10); do
-  for app in target/release/examples/component_workload comparisons/gpui/target/release/zgui-compare-gpui; do
+  for app in target/dist/examples/component_workload comparisons/gpui/target/dist/zgui-compare-gpui; do
     env -i HOME=$HOME PATH=$PATH ZGUI_MODE=idle /tmp/zgui-startup-probe $app
   done
 done
@@ -70,12 +70,12 @@ Do not combine the earlier software-rendered zgui result files with new GPU runs
 `component_workload` renders the same content, colors, logical geometry and bounded streaming data through `Application::run`, providers, component state, a caller-owned slot, fluent styles and the public `virtual_list` widget. Its application code does not append or mutate scene nodes. Button actions preserve the example's partial-append and equal-write semantics. The shared timer scheduler targets the same 60 Hz deadlines and drops missed deadlines; idle schedules only the exit deadline. Wheel scrolling remains interactive.
 
 ```sh
-cargo build --release -p zgui-desktop --example component_workload
-ZGUI_MODE=both ZGUI_SECONDS=10 target/release/examples/component_workload
+cargo build --profile dist -p zgui-desktop --example component_workload
+ZGUI_MODE=both ZGUI_SECONDS=10 target/dist/examples/component_workload
 python3 scripts/compare.py \
-  --zgui target/release/examples/component_workload \
-  --gpui comparisons/gpui/target/release/zgui-compare-gpui \
-  --quickgui comparisons/quickgui/target/release/zgui-compare-quickgui \
+  --zgui target/dist/examples/component_workload \
+  --gpui comparisons/gpui/target/dist/zgui-compare-gpui \
+  --quickgui comparisons/quickgui/target/dist/zgui-compare-quickgui \
   --seconds 30 --warmup 5 --repeats 3 --output component-comparison.csv
 ```
 
@@ -121,6 +121,9 @@ comparison workload still uses fixed-height rows. Historical rejected attempts
 remain rejected and are not pooled with this series.
 
 ### Fresh builds without archived temporary paths
+
+These reproduce the archived series as it was built (`release`, before the
+`dist` profile); new series use `dist` as above.
 
 From the repository root, build each adapter from its locked sources. The explicit
 target directories below make the executable paths independent of an inherited

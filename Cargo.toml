@@ -39,6 +39,16 @@ opt-level = 1
 lto = "thin"
 codegen-units = 1
 
+# What ships, and what the comparison tables measure: release with the
+# whole program optimized as one unit. About 14% smaller than release and a
+# little faster (heavy_workload 13.2 -> 11.4 MB on macOS, 0.9% fewer
+# instructions a tick), for twice the link time, which is why day-to-day
+# release builds stay thin. See docs/benchmarking.md.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 [profile.bench]
 lto = "thin"
 codegen-units = 1

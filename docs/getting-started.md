@@ -166,7 +166,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Shipping
 
-`cargo build --release` builds the app. To ship it on Windows (an icon, a manifest, one instance per user, an installer), see [shipping on Windows](windows.md#shipping-a-zgui-app-on-windows); on macOS, bundle the binary in an `.app` with an `Info.plist` (the terminal example's `scripts/zterm-app.sh` does).
+`cargo build --profile dist` builds the app to ship. Add the profile to your workspace's `Cargo.toml`:
+
+```toml
+# release, optimized as one program: about 14% smaller and a little faster,
+# for a slower link. Keep `release` for day-to-day optimized builds.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+```
+
+Release binaries keep their symbol table, so backtraces and crash reports name functions. Stripping it saves about another 1.4 MB, and is your choice to make: add `strip = "symbols"` to `[profile.dist]` and keep the symbols apart, in a dSYM, to read crash reports with. On macOS that is `split-debuginfo = "packed"` with `debug = "line-tables-only"` in the profile; Cargo writes `<binary>.dSYM` beside the binary. Keep it with each release you ship, so crash reports from it can be symbolicated (`atos`, or Xcode's Organizer).
+
+To ship it on Windows (an icon, a manifest, one instance per user, an installer), see [shipping on Windows](windows.md#shipping-a-zgui-app-on-windows); on macOS, bundle the binary in an `.app` with an `Info.plist` (the terminal example's `scripts/zterm-app.sh` does).
 
 ## In Luau
 
@@ -269,7 +282,7 @@ return ui.text {
 
 ### Shipping
 
-A shipped app carries its scripts compiled into the binary: a build script bundles the directory, and a small Rust host runs it from the bundle ([shipping an app](scripting.md#shipping-an-app)). The mail example (`crates/zgui-script/examples/mail`) is a whole app written this way.
+A shipped app carries its scripts compiled into the binary: a build script bundles the directory, and a small Rust host runs it from the bundle ([shipping an app](scripting.md#shipping-an-app)). Build it with the `dist` profile, as a Rust app (above), and set `LUAU_CXXFLAGS=-DNDEBUG` for it ([cost](scripting.md#cost)). The mail example (`crates/zgui-script/examples/mail`) is a whole app written this way.
 
 ## Next
 

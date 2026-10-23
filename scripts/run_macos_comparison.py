@@ -54,26 +54,26 @@ SCENES = {
     'lab': {
         'modes': MODES,
         'binaries': {
-            'zgui': ROOT / 'target/release/examples/component_workload',
-            'gpui': ROOT / 'comparisons/gpui/target/release/zgui-compare-gpui',
-            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/release/zgui-compare-gpui-fast',
-            'quickgui': ROOT / 'comparisons/quickgui/target/release/zgui-compare-quickgui',
+            'zgui': ROOT / 'target/dist/examples/component_workload',
+            'gpui': ROOT / 'comparisons/gpui/target/dist/zgui-compare-gpui',
+            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/zgui-compare-gpui-fast',
+            'quickgui': ROOT / 'comparisons/quickgui/target/dist/zgui-compare-quickgui',
         },
     },
     'heavy': {
         'modes': MODES,
         'binaries': {
-            'zgui': ROOT / 'target/release/examples/heavy_workload',
-            'gpui': ROOT / 'comparisons/gpui/target/release/heavy',
-            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/release/heavy',
+            'zgui': ROOT / 'target/dist/examples/heavy_workload',
+            'gpui': ROOT / 'comparisons/gpui/target/dist/heavy',
+            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/heavy',
         },
     },
     'animate': {
         'modes': ['animate'],
         'binaries': {
-            'zgui': ROOT / 'target/release/examples/animation_workload',
-            'gpui': ROOT / 'comparisons/gpui/target/release/animate',
-            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/release/animate',
+            'zgui': ROOT / 'target/dist/examples/animation_workload',
+            'gpui': ROOT / 'comparisons/gpui/target/dist/animate',
+            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/animate',
         },
     },
 }
@@ -102,9 +102,9 @@ def run(cmd, **kw):
 
 def build(scene):
     example = SCENES[scene]['binaries']['zgui'].name
-    run(['cargo', 'build', '--release', '--locked', '-p', 'zgui-desktop', '--example', example], cwd=ROOT)
+    run(['cargo', 'build', '--profile', 'dist', '--locked', '-p', 'zgui-desktop', '--example', example], cwd=ROOT)
     for name in list(SCENES[scene]['binaries'])[1:]:
-        run(['cargo', 'build', '--release', '--locked'], cwd=ROOT / 'comparisons' / name)
+        run(['cargo', 'build', '--profile', 'dist', '--locked'], cwd=ROOT / 'comparisons' / name)
     run(['swiftc', '-O', str(ROOT / 'scripts/macsample.swift'), '-o', str(SAMPLER), '-lIOReport'])
     run(['swiftc', '-O', str(ROOT / 'scripts/framepace.swift'), '-o', str(PACER)])
 

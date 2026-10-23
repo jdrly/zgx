@@ -12,3 +12,9 @@ zgui-workload = { path = "../workload" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# As zgui's: the comparison tables build every framework with it.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
