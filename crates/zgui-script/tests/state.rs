@@ -514,6 +514,27 @@ fn timers_faster_than_a_frame_warn_once() {
 }
 
 #[test]
+fn a_long_each_suggests_a_virtual_list() {
+    let h = Harness::inline(
+        r#"local many, few = {}, {}
+        for i = 1, 1500 do many[i] = i end
+        for i = 1, 100 do few[i] = i end
+        local long = ui.state("long", many)
+        local short = ui.state("short", few)
+        return ui.column {
+            ui.each(long, function(i) return ui.div { h = 1 } end),
+            ui.each(short, function(i) return ui.div { h = 1 } end),
+        }"#,
+    );
+    let warnings = h.host.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("app:7:") && warnings[0].contains("over 1500 items"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn timers_fire_on_their_clock_and_stop() {
     let mut h = Harness::inline(
         r#"local n = ui.state("n", 0)

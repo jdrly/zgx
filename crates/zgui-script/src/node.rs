@@ -1468,6 +1468,9 @@ fn children(
     Ok(())
 }
 
+/// Rows past which `ui.each` suggests `ui.list`.
+const LONG_EACH: usize = 1000;
+
 /// Fields a constructor reads itself rather than as style properties.
 const WIDGET_FIELDS: &[&str] = &[
     "label",
@@ -2434,6 +2437,18 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(
             |lua, (items, build, table): (mlua::Value, Function, Option<Table>)| {
                 let items = expect_state(&items, "ui.each's list")?;
+                // Every row is built and laid out: thousands are slow to
+                // mount and lay out, where `ui.list` builds what shows.
+                let rows = items.with_untracked(|list| list.list().len());
+                if rows > LONG_EACH {
+                    crate::warn(
+                        lua,
+                        &format!(
+                            "`ui.each` over {rows} items builds every row; for a list this long, \
+                             `ui.list` builds only the rows in view"
+                        ),
+                    );
+                }
                 let (key, motion) = match &table {
                     Some(t) => (
                         t.get::<Option<Function>>("key")?,

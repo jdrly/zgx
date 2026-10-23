@@ -341,7 +341,7 @@ Errors are for the developer: `error_banner(true)` shows each over the interface
 
 ### Warnings
 
-Some mistakes are not errors but are probably wrong; each is reported once per call site, with its file and line, to stderr and to `ScriptHost::warnings()`. Durations are milliseconds everywhere (`ui.tween`, `ui.loop`, `layout_duration`, `anime`): a fractional duration under 10 (`duration = 0.16`, likely meant as seconds) and a non-looping one over a minute both warn. `ui.every` under 16 ms warns too: it calls the script more often than a display refreshes. An `anime.animate` line that replaces its own unfinished animation again and again warns as well (what drives it changes faster than it plays).
+Some mistakes are not errors but are probably wrong; each is reported once per call site, with its file and line, to stderr and to `ScriptHost::warnings()`. Durations are milliseconds everywhere (`ui.tween`, `ui.loop`, `layout_duration`, `anime`): a fractional duration under 10 (`duration = 0.16`, likely meant as seconds) and a non-looping one over a minute both warn. `ui.every` under 16 ms warns too: it calls the script more often than a display refreshes. A `ui.each` over more than 1,000 items warns: it builds every row, where `ui.list` builds only those in view. An `anime.animate` line that replaces its own unfinished animation again and again warns as well (what drives it changes faster than it plays).
 
 ## Theming
 
