@@ -106,13 +106,38 @@ impl Key {
         self.text.hash(&mut hasher);
         self.caret_row.hash(&mut hasher);
         for (range, font, size, padding) in &self.spans {
-            range.hash(&mut hasher);
-            size.to_bits().hash(&mut hasher);
-            padding.to_bits().hash(&mut hasher);
-            font.weight.hash(&mut hasher);
-            font.italic.hash(&mut hasher);
+            Self::hash_span(&mut hasher, range, font, *size, *padding);
         }
         hasher.finish()
+    }
+    fn hash_span(
+        hasher: &mut FxHasher,
+        range: &Range<usize>,
+        font: &FontStyle,
+        size: f32,
+        padding: f32,
+    ) {
+        range.hash(hasher);
+        size.to_bits().hash(hasher);
+        padding.to_bits().hash(hasher);
+        font.weight.hash(hasher);
+        font.italic.hash(hasher);
+    }
+    /// `hash` of plain text's key (`plain`, with its caret row), without
+    /// building it.
+    fn plain_hash(text: &str, font_size: f32, font: &FontStyle) -> u64 {
+        let mut hasher = FxHasher::default();
+        text.hash(&mut hasher);
+        true.hash(&mut hasher);
+        Self::hash_span(&mut hasher, &(0..text.len()), font, font_size, 0.);
+        hasher.finish()
+    }
+    /// Whether this is plain text's key (`plain_hash`).
+    fn is_plain(&self, text: &str, font_size: f32, font: &FontStyle) -> bool {
+        self.caret_row
+            && *self.text == *text
+            && matches!(&self.spans[..], [(range, f, size, padding)]
+                if *range == (0..text.len()) && f == font && *size == font_size && *padding == 0.)
     }
 }
 
@@ -470,7 +495,8 @@ impl TextCache {
         if !Self::handles(rich) {
             return crate::text::ShapedText::with_runs(fonts, rich, width).size();
         }
-        self.sized(fonts, rich, false, Need::Measure, width)
+        let hash = self.entry(fonts, rich, false, Need::Measure);
+        self.sized(fonts, hash, width)
     }
     /// As `measure`, for text that is not drawn (the estimated heights of
     /// rows a virtualized list has not mounted): a text prepared here keeps
@@ -485,7 +511,8 @@ impl TextCache {
         if !Self::handles(rich) {
             return crate::text::ShapedText::with_runs(fonts, rich, width).size();
         }
-        self.sized(fonts, rich, false, Need::Detached, width)
+        let hash = self.entry(fonts, rich, false, Need::Detached);
+        self.sized(fonts, hash, width)
     }
     /// `rich` laid out at `width`. Only for texts `handles` accepts.
     pub fn layout(
@@ -494,7 +521,8 @@ impl TextCache {
         rich: &RichText,
         width: Option<f32>,
     ) -> Laid<'_> {
-        self.laid_out(fonts, rich, false, width)
+        let hash = self.entry(fonts, rich, false, Need::Layout);
+        self.laid_out(fonts, hash, width)
     }
     /// Whether plain text goes through the cache: nonempty, at a valid size.
     pub fn handles_plain(text: &str, font_size: f32) -> bool {
@@ -514,8 +542,8 @@ impl TextCache {
             return crate::text::ShapedText::with_font(fonts, text.clone(), font_size, width, font)
                 .size();
         }
-        let rich = plain(text, font_size, font);
-        self.sized(fonts, &rich, true, Need::Measure, width)
+        let hash = self.plain_entry(fonts, text, font_size, font, Need::Measure);
+        self.sized(fonts, hash, width)
     }
     /// Plain text laid out at `width`. Only for text `handles_plain` accepts.
     pub fn layout_plain(
@@ -526,30 +554,38 @@ impl TextCache {
         font: &FontStyle,
         width: Option<f32>,
     ) -> Laid<'_> {
-        let rich = plain(text, font_size, font);
-        self.laid_out(fonts, &rich, true, width)
+        let hash = self.plain_entry(fonts, text, font_size, font, Need::Layout);
+        self.laid_out(fonts, hash, width)
     }
-    fn sized(
+    /// The entry for plain text. Found, as most lookups are (a layout
+    /// measures a text at a few widths, each frame draws it again), it costs
+    /// no rich text or key built to look it up.
+    fn plain_entry(
         &mut self,
         fonts: &mut FontSystem,
-        rich: &RichText,
-        caret_row: bool,
+        text: &Arc<str>,
+        font_size: f32,
+        font: &FontStyle,
         need: Need,
-        width: Option<f32>,
-    ) -> (f32, f32) {
-        let hash = self.entry(fonts, rich, caret_row, need);
+    ) -> u64 {
+        let hash = Key::plain_hash(text, font_size, font);
+        if let Some(entry) = self.entries.get_mut(&hash)
+            && entry.key.is_plain(text, font_size, font)
+            && (entry.lines.is_some() || (need != Need::Layout && entry.compact.is_some()))
+        {
+            self.clock += 1;
+            entry.used = self.clock;
+            self.hits += 1;
+            return hash;
+        }
+        self.entry(fonts, &plain(text, font_size, font), true, need)
+    }
+    fn sized(&mut self, fonts: &mut FontSystem, hash: u64, width: Option<f32>) -> (f32, f32) {
         let size = self.update(hash, |entry| entry.size(fonts, width));
         self.evict(hash);
         size
     }
-    fn laid_out(
-        &mut self,
-        fonts: &mut FontSystem,
-        rich: &RichText,
-        caret_row: bool,
-        width: Option<f32>,
-    ) -> Laid<'_> {
-        let hash = self.entry(fonts, rich, caret_row, Need::Layout);
+    fn laid_out(&mut self, fonts: &mut FontSystem, hash: u64, width: Option<f32>) -> Laid<'_> {
         self.update(hash, |entry| entry.lay_out(fonts, width));
         self.evict(hash);
         let entry = &self.entries[&hash];
@@ -875,6 +911,23 @@ mod tests {
         RichText::new(text, runs).unwrap()
     }
 
+    #[test]
+    fn plain_text_is_found_by_the_key_its_rich_text_makes() {
+        let font = FontStyle {
+            weight: 600,
+            italic: true,
+            ..Default::default()
+        };
+        for text in ["hello", "two words", "a\nb", "héllo wörld"] {
+            let text: Arc<str> = text.into();
+            let key = Key::of(&plain(&text, 13., &font), true);
+            assert_eq!(Key::plain_hash(&text, 13., &font), key.hash(), "{text:?}");
+            assert!(key.is_plain(&text, 13., &font));
+            assert!(!key.is_plain(&text, 14., &font));
+            assert!(!key.is_plain(&text, 13., &FontStyle::default()));
+            assert!(!Key::of(&plain(&text, 13., &font), false).is_plain(&text, 13., &font));
+        }
+    }
     #[test]
     fn sizes_match_shaped_text_at_every_width() {
         let mut fonts = FontSystem::new();
