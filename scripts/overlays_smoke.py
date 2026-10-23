@@ -88,7 +88,8 @@ def main():
         report(4)
         click(80,84)
         report(5,(145,200,(40,61,84)))
-        key("Tab","Tab","Tab")
+        # The modal's two buttons are its Tab cycle; the panel is no stop.
+        key("Tab","Tab")
         report(6)
         click(200,168)
         report(7,(162,250,(74,55,104)))
