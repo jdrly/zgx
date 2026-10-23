@@ -57,7 +57,9 @@ pub(crate) enum PopupInput {
     /// A press elsewhere in the parent window (its title bar): popups close.
     Dismiss,
     /// The screens changed (a monitor, the taskbar), or popups can have no
-    /// windows of their own after all: `popup_screens` again.
+    /// windows of their own after all: `popup_screens` again. (Windows'; AppKit
+    /// and X11 popups follow screens as their windows move.)
+    #[cfg_attr(not(windows), allow(dead_code))]
     Screens,
 }
 
