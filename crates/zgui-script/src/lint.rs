@@ -13,6 +13,11 @@
 //! - `state-in-builder`: `ui.state` in a component, `each` row or `list` row.
 //!   Its key is the script's, so every instance shares one state.
 //! - `timer-interval`: `ui.every` faster than a display refresh.
+//! - `tick-tween`: an `anime.animate` in a `ui.every` callback that runs for
+//!   half the interval or more with no `frameRate`: the node lays out and
+//!   paints on most frames, forever.
+//! - `key-reads-state`: an `each` key function reading state. Keys are kept
+//!   per item value, so a key that also depends on state goes stale.
 //! - `per-frame-state`: an animation callback (`onUpdate`, `onRender`,
 //!   `onBeforeUpdate`) that writes state with no `frameRate` cap, which runs
 //!   Luau and restyles every reader on every display frame.
@@ -35,6 +40,14 @@ pub const RULES: &[(&str, &str)] = &[
     (
         "timer-interval",
         "ui.every faster than the display refreshes",
+    ),
+    (
+        "tick-tween",
+        "a tween re-fired by ui.every that runs most of each tick",
+    ),
+    (
+        "key-reads-state",
+        "an each key function reading state goes stale",
     ),
     (
         "per-frame-state",
@@ -331,6 +344,13 @@ impl Linter<'_> {
         }
         Some(parts.concat())
     }
+    /// A number literal at `at` (`1_000` too).
+    fn number(&self, at: usize) -> Option<f64> {
+        self.tokens
+            .get(at)
+            .filter(|t| t.kind == Kind::Number)
+            .and_then(|t| t.text.replace('_', "").parse().ok())
+    }
     /// The table field a value starting at `at` is given to (`key = value`).
     fn field(&self, at: usize) -> Option<String> {
         (at >= 2 && self.is(at - 1, "=") && !self.is(at - 2, "]"))
@@ -518,6 +538,71 @@ impl Linter<'_> {
                         "`ui.{what}` in a `{builder}` builder is keyed to the script, so every \
                          instance shares one state (and the key collides with any other use). \
                          Use `ui.use_state(initial)` for state of each instance."
+                    ),
+                );
+            }
+        }
+        // A `key` function of `ui.each` reading state.
+        if self.is(at, ":")
+            && (self.is(at + 1, "get") || self.is(at + 1, "peek"))
+            && self.is(at + 2, "(")
+            && let Some(f) = function
+            && f >= 2
+            && stack[f].key.as_deref() == Some("key")
+            && stack[f - 1].open == Open::Brace
+            && stack[f - 2].callee.as_deref() == Some("ui.each")
+        {
+            let state = self.name(at.wrapping_sub(1)).unwrap_or("state").to_string();
+            self.report(
+                at - 1,
+                "key-reads-state",
+                format!(
+                    "`each` keeps each item's key while the item stays the same value, so a \
+                     key reading `{state}` does not follow it: rows keep stale keys. Key on \
+                     the item alone (`item.id`), and read `{state}` in the row instead."
+                ),
+            );
+        }
+        // `anime.animate` in a `ui.every` callback, running most of the tick.
+        if self.is(at, "anime")
+            && self.is(at + 1, ".")
+            && self.is(at + 2, "animate")
+            && self.is(at + 3, "(")
+            && let Some(f) = function
+            && f > 0
+            && stack[f - 1].callee.as_deref() == Some("ui.every")
+            && let Some(interval) = self.number(stack[f - 1].at + 1)
+        {
+            let close = self.closing(at + 3);
+            // A field of the parameters table, at the call's own depth.
+            let field = |name: &str| {
+                let mut depth = 0;
+                (at + 4..close).find_map(|j| {
+                    if self.tokens[j].kind == Kind::Punct {
+                        match self.tokens[j].text.as_str() {
+                            "(" | "{" | "[" => depth += 1,
+                            ")" | "}" | "]" => depth -= 1,
+                            _ => {}
+                        }
+                    }
+                    (depth == 1 && self.is(j, name) && self.is(j + 1, "=")).then_some(j + 2)
+                })
+            };
+            let capped = field("frameRate").or_else(|| field("frame_rate")).is_some();
+            let duration = field("duration").map_or(Some(1000.), |j| self.number(j));
+            if let Some(duration) = duration
+                && !capped
+                && duration * 2. >= interval
+            {
+                self.report(
+                    at,
+                    "tick-tween",
+                    format!(
+                        "a {duration} ms tween fired every {interval} ms keeps its node \
+                         animating {}% of the time: it lays out and paints on most frames, \
+                         for as long as the timer runs. Cap it with `frameRate` (the rate the \
+                         eye needs, 30 or less), or make it much shorter than the tick.",
+                        (duration.min(interval) / interval * 100.).round()
                     ),
                 );
             }
@@ -790,6 +875,34 @@ items:update(function(list) return sort(list) end)
                 (4, "update-copy".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn tweens_refired_by_a_timer_for_most_of_each_tick() {
+        let source = r##"
+ui.every(500, function() anime.animate("#bar", { width = sample(), duration = 420 }) end)
+ui.every(500, function() anime.animate("#bar", { width = sample() }) end)
+ui.every(500, function() anime.animate("#bar", { width = sample(), duration = 420, frameRate = 20 }) end)
+ui.every(1000, function() anime.animate("#bar", { width = sample(), duration = 200 }) end)
+ui.every(ms, function() anime.animate("#bar", { width = sample(), duration = 420 }) end)
+"##;
+        assert_eq!(
+            rules(source),
+            [(2, "tick-tween".to_string()), (3, "tick-tween".to_string())]
+        );
+    }
+
+    #[test]
+    fn each_keys_reading_state() {
+        let source = r##"
+local sort = ui.state("sort", "name")
+ui.each(rows, build, { key = function(row) return row.id .. sort:get() end })
+ui.each(rows, build, { key = function(row) return row.id end })
+ui.each(rows, function(row) return ui.text { function() return sort:get() end } end, {
+    key = function(row) return row.id end,
+})
+"##;
+        assert_eq!(rules(source), one(3, "key-reads-state"));
     }
 
     #[test]

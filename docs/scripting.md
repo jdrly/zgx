@@ -81,6 +81,8 @@ zgui lint --rules            # what it looks for
 | `untracked-get` | `state:get()` while an element is built (`ui.text { "n: " .. n:get() }`, `ui.show(open:get(), …)`): the interface is built once, untracked, so it shows that moment's value forever | the state itself, a template (`"n: {n}"`) or a function (`function() return n:get() end`) |
 | `state-in-builder` | `ui.state("key", …)` inside a component, `each` row or `list` row: one script-wide state that every instance shares | `ui.use_state(initial)`, or a key naming the instance (`` `file:{pane}` ``) when sharing by key is the point |
 | `timer-interval` | `ui.every(ms)` under 16 ms: more script calls than display frames | `anime` or `ui.tween` (Rust, paced by the display), or the rate the value really changes |
+| `tick-tween` | `anime.animate` in a `ui.every` callback running half the interval or more, uncapped: a 420 ms tween every 500 ms animates 84% of the time, laying out and painting on most frames for as long as the timer runs | `frameRate` (30 or less), or a duration well under the interval |
+| `key-reads-state` | an `each` key function reading state: keys are kept per item value, so the key goes stale when the state changes | key on the item alone (`item.id`); read the state in the row |
 | `per-frame-state` | `onUpdate`/`onRender`/`onBeforeUpdate` writing state with no `frameRate`: the script and every reader of the state run each display frame | animate the property, or the state as a target (`anime.animate(state, { value = 1 })`); or cap it (`frameRate = 8` for a clock) |
 | `update-copy` | `state:update(fn)` that only inserts, removes or sets one path: it copies the whole value through Luau | `push`, `insert`, `remove`, `set_key(path, v)`, `patch` |
 
