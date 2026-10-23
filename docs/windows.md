@@ -62,6 +62,26 @@ measured the same as a window's own swap chain: every frame shown, the same
 keystroke latency and idle cost.
 `scripts/windows_chrome_smoke.py` checks the buttons and the resize bands.
 
+## System settings
+
+The built-in themes take these from Windows, read at startup and again when
+the user changes them (`WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`), in every
+window whatever its title bar:
+
+- The accent colour (Settings, Personalization, Colors): text selections are
+  drawn in it with white text, as WinUI's text fields and Notepad draw them.
+- High contrast (contrast themes): backgrounds, surfaces, text, borders, the
+  accent, selections and hover take the contrast theme's system colours.
+- Animation effects off (Accessibility, Visual effects): the motion duration
+  tokens are zero, so what animates with them changes at once.
+- Text size (Accessibility): the font size and line height tokens scale with
+  it, 100% to 225%, and spacing and icons keep their size. A subtree whose
+  layout depends on fixed text, like a terminal grid, opts out with
+  `ThemeOverride::fixed_text_size`.
+
+An app theme or `theme_scope` that sets a colour or duration token itself
+keeps its own value; the text size scales the font tokens of every theme.
+
 ## Limitations
 
 - `Application::application_id` opts into OS activation callbacks, which are not
