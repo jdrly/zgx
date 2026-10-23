@@ -14,6 +14,9 @@ svg = ["dep:resvg"]
 png = ["image/png"]
 jpeg = ["image/jpeg"]
 gif = ["dep:gif"]
+# Windows: presentation into DirectComposition visuals of the caller's
+# (composition.rs), with native views composited between the planes.
+composition = ["windows/Win32_Graphics_DirectComposition"]
 
 [dependencies]
 zgui = { path = "../zgui" }

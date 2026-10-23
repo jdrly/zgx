@@ -6,6 +6,8 @@ use rustc_hash::FxHashMap;
 use std::{cell::RefCell, fmt, rc::Rc, sync::Arc};
 use zgui::scene::{Color, NodeId, NodeKind, Rect, Scene};
 
+#[cfg(all(windows, feature = "composition"))]
+mod composition;
 #[cfg(windows)]
 mod dxgi;
 mod effects;
@@ -1297,6 +1299,9 @@ pub struct GpuRenderer {
     /// DXGI's account of shown presents (`ZGUI_PRESENT_LOG`).
     #[cfg(windows)]
     dxgi_stats: dxgi::PresentStats,
+    /// The caller's visual the surface presents into (composition.rs).
+    #[cfg(all(windows, feature = "composition"))]
+    composition: Option<composition::Target>,
     config: Option<wgpu::SurfaceConfiguration>,
     width: u32,
     height: u32,
@@ -1466,16 +1471,26 @@ impl GpuRenderer {
         height: u32,
         context: &GpuContext,
     ) -> Result<Self, GpuError> {
+        let surface = window
+            .clone()
+            .map(|window| context.inner.instance.create_surface(window))
+            .transpose()
+            .map_err(|e| GpuError(e.to_string()))?;
+        Self::create_on(window, surface, width, height, context)
+    }
+    /// `create` presenting to `surface` (none: offscreen).
+    fn create_on(
+        window: Option<Arc<winit::window::Window>>,
+        surface: Option<wgpu::Surface<'static>>,
+        width: u32,
+        height: u32,
+        context: &GpuContext,
+    ) -> Result<Self, GpuError> {
         let instance = context.inner.instance.clone();
         let device = context.inner.device.clone();
         let queue = context.inner.queue.clone();
         let adapter = &context.inner.adapter;
         let info = context.inner.info.clone();
-        let surface = window
-            .clone()
-            .map(|window| instance.create_surface(window))
-            .transpose()
-            .map_err(|e| GpuError(e.to_string()))?;
         if surface
             .as_ref()
             .is_some_and(|surface| !adapter.is_surface_supported(surface))
@@ -1611,6 +1626,8 @@ impl GpuRenderer {
             context: context.clone(),
             #[cfg(windows)]
             dxgi_stats: Default::default(),
+            #[cfg(all(windows, feature = "composition"))]
+            composition: None,
             scene_identity: None,
             pruned_revision: None,
             pending: RefCell::new(None),
@@ -6968,6 +6985,11 @@ impl surface::SurfaceSource for GpuRenderer {
         })
     }
     fn recreate(&mut self) -> Result<(), GpuError> {
+        #[cfg(all(windows, feature = "composition"))]
+        if let Some(target) = &self.composition {
+            self.surface = Some(target.surface(&self.instance)?);
+            return Ok(());
+        }
         self.surface = Some(
             self.instance
                 .create_surface(self.window.as_ref().unwrap().clone())
@@ -6984,6 +7006,11 @@ impl surface::SurfaceSource for GpuRenderer {
             .as_ref()
             .unwrap()
             .configure(&self.device, self.config.as_ref().unwrap());
+        // A new swap chain shows in its visual once the tree commits.
+        #[cfg(all(windows, feature = "composition"))]
+        if let Some(target) = &self.composition {
+            target.commit();
+        }
         // Configuring restores the default count.
         #[cfg(target_os = "macos")]
         if self.wide_until.is_some() {
