@@ -1320,6 +1320,16 @@ pub(crate) fn lit(value: &Value, ty: Ty) -> Option<Lit> {
 /// A property's value as a script gives it (`name = value`): a literal is
 /// checked by the design lint, unless `ui.raw` marks it.
 pub(crate) fn source(lua: &Lua, ty: Ty, name: &str, value: mlua::Value) -> mlua::Result<Source> {
+    source_linted(lua, ty, name, value, None)
+}
+/// As `source`, with the design lint's mode if the caller has read it.
+fn source_linted(
+    lua: &Lua,
+    ty: Ty,
+    name: &str,
+    value: mlua::Value,
+    lint: Option<crate::DesignLint>,
+) -> mlua::Result<Source> {
     if let Some(state) = state_of(&value) {
         return Ok(Source::State(state));
     }
@@ -1350,7 +1360,7 @@ pub(crate) fn source(lua: &Lua, ty: Ty, name: &str, value: mlua::Value) -> mlua:
                 }
             };
             if !raw
-                && crate::design::mode(lua) != crate::DesignLint::Off
+                && lint.unwrap_or_else(|| crate::design::mode(lua)) != crate::DesignLint::Off
                 && let Some(prop) = Prop::parse(name)
             {
                 crate::design::check(lua, prop, name, &lit)?;
@@ -1669,8 +1679,11 @@ impl std::hash::Hasher for AddressHasher {
 }
 
 /// Fills a node's properties, pseudo-states, handlers and children.
-fn fill(lua: &Lua, node: Node, table: Option<&Table>) -> mlua::Result<Node> {
-    fill_from(lua, node, table, None)
+fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> {
+    if let Some(table) = table {
+        fill_from(lua, &mut node, table, None)?;
+    }
+    Ok(node)
 }
 /// What a `ui.text` table holds besides styles: its content (element 1)
 /// and whether to show it `literal`ly.
@@ -1679,22 +1692,21 @@ struct TextArgs {
     content: mlua::Value,
     literal: Option<bool>,
 }
-/// As `fill`, keeping a text's own fields in `text`.
+/// As `fill`, in place (a node is large to move), keeping a text's own
+/// fields in `text`.
 fn fill_from(
     lua: &Lua,
-    mut node: Node,
-    table: Option<&Table>,
+    node: &mut Node,
+    table: &Table,
     mut text: Option<&mut TextArgs>,
-) -> mlua::Result<Node> {
-    let Some(table) = table else {
-        return Ok(node);
-    };
+) -> mlua::Result<()> {
     let mut layout_given = false;
     let mut variants = None;
     // One walk over the table: properties as they come, children kept to
     // put in order after.
     let mut items = Vec::new();
     let keys = lua.app_data_ref::<StyleKeys>();
+    let lint = Some(crate::design::mode(lua));
     table.for_each(|key: mlua::Value, value: mlua::Value| {
         let string = match key {
             mlua::Value::String(key) => key,
@@ -1714,7 +1726,7 @@ fn fill_from(
             .and_then(|keys| keys.0.borrow().get(&address).map(|(_, prop)| *prop));
         if let Some(prop) = known {
             node.props
-                .push((prop, source(lua, prop.ty(), prop.name(), value)?));
+                .push((prop, source_linted(lua, prop.ty(), prop.name(), value, lint)?));
             return Ok(());
         }
         let key = string.to_str()?;
@@ -2081,7 +2093,7 @@ fn fill_from(
                     keys.0.borrow_mut().insert(address, (string.clone(), prop));
                 }
                 node.props
-                    .push((prop, source(lua, prop.ty(), name, value)?));
+                    .push((prop, source_linted(lua, prop.ty(), name, value, lint)?));
             }
         }
         Ok(())
@@ -2097,7 +2109,7 @@ fn fill_from(
     }
     // What the element's variants set and it does not.
     if let Some(selection) = variants {
-        crate::variants::apply(&mut node, selection);
+        crate::variants::apply(node, selection);
     }
     // Table order is arbitrary, so shorthands apply before what refines
     // them: `p = 0, px = 8` pads the sides, and `border = 1,
@@ -2112,7 +2124,7 @@ fn fill_from(
         )));
     }
     node.children = kids;
-    Ok(node)
+    Ok(())
 }
 
 /// What a `pointer_events` value says: whether the pointer stops at the
@@ -2332,7 +2344,10 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
     let ui = lua.create_table()?;
     let container = |kind: fn() -> Kind| {
         lua.create_function(move |lua, table: Option<Table>| {
-            let node = fill(lua, Node::new(owner(lua)?, kind()), table.as_ref())?;
+            let mut node = Node::new(owner(lua)?, kind());
+            if let Some(table) = &table {
+                fill_from(lua, &mut node, table, None)?;
+            }
             node_ud(lua, node)
         })
     };
@@ -2399,8 +2414,8 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             // The content is element 1; the rest are styles.
             let mut args = TextArgs::default();
-            let empty = Kind::Text(Text::Literal(String::new()));
-            let mut node = fill_from(lua, Node::new(owner, empty), Some(&table), Some(&mut args))?;
+            let mut node = Node::new(owner, Kind::Text(Text::Literal(String::new())));
+            fill_from(lua, &mut node, &table, Some(&mut args))?;
             let literal = args.literal.unwrap_or(false);
             node.kind = Kind::Text(text_of(lua, args.content, "ui.text", literal)?);
             node_ud(lua, node)
