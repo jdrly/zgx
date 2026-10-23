@@ -1042,6 +1042,13 @@ struct Host {
     touch: crate::touch::Touches,
     /// What had focus before a finger pressed, for a pan to give it back.
     touch_focus: Option<zgui::scene::NodeId>,
+    /// The last press was a finger's or a pen's, not a mouse's: an editor
+    /// it focuses brings up the touch keyboard.
+    #[cfg(windows)]
+    touch_last: bool,
+    /// zgui brought the touch keyboard up, and puts it away.
+    #[cfg(windows)]
+    touch_keyboard: bool,
     /// Where the trackpad's scroll gesture is: what its phases report
     /// (`InputEvent::ScrollGesture`, for elastic scrolling).
     trackpad: Trackpad,
@@ -1157,6 +1164,10 @@ impl Host {
             scroll: Default::default(),
             touch: Default::default(),
             touch_focus: None,
+            #[cfg(windows)]
+            touch_last: false,
+            #[cfg(windows)]
+            touch_keyboard: false,
             trackpad: Trackpad::Idle,
             pending_file_drops: Default::default(),
             modifiers: Modifiers::default(),
@@ -1348,6 +1359,12 @@ impl Host {
             }
             if target.is_some() {
                 window.set_ime_allowed(true);
+            }
+            #[cfg(windows)]
+            if target.is_some() && self.touch_last {
+                self.touch_keyboard = crate::input_pane::show(window);
+            } else if target.is_none() && std::mem::take(&mut self.touch_keyboard) {
+                crate::input_pane::hide(window);
             }
             self.ime_target = target;
         }
@@ -2346,6 +2363,10 @@ impl Host {
             }
             WindowEvent::HoveredFileCancelled => self.dispatch(InputEvent::FileHoverCancelled)?,
             WindowEvent::MouseInput { state, button, .. } => {
+                #[cfg(windows)]
+                {
+                    self.touch_last = false;
+                }
                 let button = match button {
                     MouseButton::Left => PointerButton::Primary,
                     MouseButton::Right => PointerButton::Secondary,
@@ -2378,6 +2399,10 @@ impl Host {
                 let p = touch.location.to_logical::<f32>(self.scale_factor);
                 self.cursor = (p.x, p.y);
                 let pen = crate::touch::is_pen(touch.id);
+                #[cfg(windows)]
+                {
+                    self.touch_last = true;
+                }
                 if touch.phase == winit::event::TouchPhase::Started && self.touch.idle() {
                     self.touch_focus = self.context.ui.input.focused();
                 }

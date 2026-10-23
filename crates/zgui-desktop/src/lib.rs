@@ -71,6 +71,8 @@ pub use application::{
     Application, TaskSpawner, WindowContext, WindowFactory, WindowHandle, WindowOptions,
 };
 
+#[cfg(windows)]
+mod input_pane;
 #[cfg(target_os = "linux")]
 mod linux_appearance;
 mod scoped_task;
