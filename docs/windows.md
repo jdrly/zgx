@@ -50,8 +50,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 ## Presentation
 
-wgpu runs on Direct3D 12 alone; Vulkan stands in only where Direct3D 12 has
-no adapter (`WGPU_BACKEND` still overrides). Swap chains use DXGI's flip model
+wgpu runs on Direct3D 12 alone (`WGPU_BACKEND` still overrides, among the
+backends built in). Every Windows 10 and 11 machine has a Direct3D 12
+adapter: where the GPU's driver has no Direct3D 12, Windows' WARP renders in
+software. GPUs that old (Intel before Skylake, AMD before GCN, NVIDIA before
+Kepler) have no Windows Vulkan driver either, so Vulkan is a feature
+(`vulkan`, on zgui-desktop, zgui-script or zgui-gpu), off by default, for a
+driver whose Direct3D 12 fails: with it, Vulkan stands in where Direct3D 12
+has no adapter. Swap chains use DXGI's flip model
 at sync interval 0: a present replaces one the compositor has not taken yet,
 without tearing, so input draws at once and shows on the next refresh even
 while an animation runs. Animation frames start half a refresh after the
@@ -63,9 +69,9 @@ Measured on an RTX 4090 at 60 Hz:
 | | before | now |
 | --- | --- | --- |
 | Gallery at rest | 10.6 M cycles/s, Vulkan and D3D12 drivers loaded | 2.7 M cycles/s (the driver's own threads) |
-| Keystroke to composed screen, at rest | 12â€“14 ms median | 12â€“14 ms median |
+| Keystroke to composed screen, at rest | 12–14 ms median | 12–14 ms median |
 | Keystroke to composed screen, animating | 47 ms median | 12 ms median |
-| Animation at the display's rate | 57.7â€“60 fps, timer drifting against refreshes | every refresh, none repeated or dropped |
+| Animation at the display's rate | 57.7–60 fps, timer drifting against refreshes | every refresh, none repeated or dropped |
 
 `ZGUI_PRESENT_LOG=1` logs each shown present as DXGI reports it. The probes
 measure the same things on any machine:
@@ -299,6 +305,25 @@ and how they fit what zgui does at run time.
   Visual C++ Redistributable.
 - ARM64 machines run x64 builds emulated. Build `aarch64-pc-windows-msvc`
   as well for native speed (see ARM64 above).
+
+**Size.** zgui's comparison app (`component_workload`, every image format)
+is 12.1 MiB x64 built as it ships: `lto = "fat"` and `codegen-units = 1`,
+the workspace's `dist` profile, which an app sets in its own `[profile.release]`
+or a profile like it (thin LTO is 0.7 MiB larger). What else changes it,
+measured on that app:
+- Image formats (zgui-desktop's features, see
+  [images-and-animation.md](images-and-animation.md)): SVG is 0.75 MiB,
+  JPEG 0.22, PNG 0.13. GIF's decoder is linked only into an app that shows a
+  GIF.
+- The `vulkan` feature adds 1.1 MiB (see Presentation).
+- `panic = "abort"` saves 3.2 MiB, a quarter. It is the app's choice, not
+  zgui's default: zgui contains a panic in an event handler, an effect or a
+  task by unwinding it ([application.md](application.md)), and with abort
+  such a panic ends the app instead.
+- `opt-level = "s"` saves 3.0 MiB; measure the app's own frames before
+  shipping it, since zgui's hot paths are measured at `opt-level = 3`.
+- `strip` saves nothing on Windows: MSVC writes symbols to the `.pdb` beside
+  the executable, which you keep for crash dumps rather than ship.
 
 **Resources.** Embed them from a build script, for example with
 `winresource`:

@@ -17,6 +17,8 @@ svg = ["zgui-gpu/svg"]
 png = ["zgui-gpu/png"]
 jpeg = ["zgui-gpu/jpeg"]
 gif = ["zgui-gpu/gif"]
+# Windows: Vulkan where Direct3D 12 has no adapter (see zgui-gpu).
+vulkan = ["zgui-gpu/vulkan"]
 # macOS private API, looked up as it is first used and done without where
 # it is missing: `CGSMoveWindow` moves a drag preview's window (a sixth of
 # what `setFrameOrigin:` costs). Off for App Store builds, which may not

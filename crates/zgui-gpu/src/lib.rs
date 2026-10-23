@@ -1192,11 +1192,14 @@ impl GpuContext {
         // Direct3D 12 alone: it presents through DXGI's flip model, which the
         // compositor schedules, and leaves no Vulkan driver loaded beside it
         // (on NVIDIA, three quarters of the idle CPU and 18 MiB of working
-        // set). Vulkan stands in only where Direct3D 12 has no adapter. On
-        // Linux, GL stands in where no Vulkan driver is (VMs and older GPUs
-        // without one): made only then, so a Vulkan system loads no EGL.
-        let attempts: &[wgpu::Backends] = if cfg!(windows) {
+        // set). Vulkan, with the `vulkan` feature, stands in only where
+        // Direct3D 12 has no adapter. On Linux, GL stands in where no Vulkan
+        // driver is (VMs and older GPUs without one): made only then, so a
+        // Vulkan system loads no EGL.
+        let attempts: &[wgpu::Backends] = if cfg!(all(windows, feature = "vulkan")) {
             &[wgpu::Backends::DX12, wgpu::Backends::VULKAN]
+        } else if cfg!(windows) {
+            &[wgpu::Backends::DX12]
         } else if cfg!(target_os = "linux") {
             &[wgpu::Backends::PRIMARY, wgpu::Backends::GL]
         } else {

@@ -23,12 +23,17 @@ gif = ["dep:gif"]
 # Windows: presentation into DirectComposition visuals of the caller's
 # (composition.rs), with native views composited between the planes.
 composition = ["windows/Win32_Graphics_DirectComposition"]
+# Windows: Vulkan where Direct3D 12 has no adapter. Every Windows 10 and 11
+# machine has a Direct3D 12 adapter (WARP, in software, where the GPU's
+# driver has none), so it is off there: 1.1 MiB of every binary. Linux
+# always has it.
+vulkan = ["wgpu/vulkan"]
 
 [dependencies]
 zgui = { path = "../zgui", version = "0.1.0" }
-# wgpu's defaults less WebGPU (the browser's) and GL, which is Linux's
-# fallback alone (below).
-wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+# wgpu's defaults less WebGPU (the browser's), and Vulkan and GL, which only
+# Linux and its kind always build (below).
+wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "wgsl"] }
 winit = "0.30.13"
 cosmic-text = { version = "0.19.0", features = ["shape-run-cache"] }
 pollster = "0.4"
@@ -47,6 +52,9 @@ gif = { version = "=0.14.2", default-features = false, features = ["std"], optio
 # systems that ship none. Never loaded where Vulkan is (`GpuContext::create`).
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { version = "29.0.4", default-features = false, features = ["gles"] }
+
+[target.'cfg(not(any(windows, target_vendor = "apple")))'.dependencies]
+wgpu = { version = "29.0.4", default-features = false, features = ["vulkan"] }
 
 # DXGI frame statistics for ZGUI_PRESENT_LOG (dxgi.rs); the version wgpu-hal uses.
 [target.'cfg(windows)'.dependencies]
