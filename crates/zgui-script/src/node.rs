@@ -42,7 +42,8 @@ pub(crate) struct Node {
     pub label: Option<Rc<str>>,
     pub classes: Rc<[Rc<str>]>,
     pub refs: Vec<Rc<Ref>>,
-    pub events: Events,
+    /// Handlers, boxed: most nodes have none (read them with `events()`).
+    pub events: Option<Box<Events>>,
     pub focusable: Option<bool>,
     /// `pointer_events = "none"`: the pointer passes through. A literal, a
     /// state or a function (true or `"auto"` stops it, false or `"none"`
@@ -402,7 +403,7 @@ impl Node {
             label: None,
             classes: Rc::new([]),
             refs: Vec::new(),
-            events: Events::default(),
+            events: None,
             focusable: None,
             pointer_events: None,
             disabled: None,
@@ -448,9 +449,12 @@ impl Node {
         self.id.is_some()
             || !self.classes.is_empty()
             || !self.refs.is_empty()
-            || self.events.mount.is_some()
-            || self.events.resize.is_some()
-            || self.events.visible.is_some()
+            || self.events().mount.is_some()
+            || self.events().resize.is_some()
+            || self.events().visible.is_some()
+    }
+    pub fn events(&self) -> &Events {
+        self.events.as_deref().unwrap_or(&Events::NONE)
     }
     /// Animations, scroll offsets, widget bindings and overlays need a
     /// component context.
@@ -578,6 +582,31 @@ impl Kind {
     }
 }
 impl Events {
+    const NONE: Events = Events {
+        click: None,
+        press: None,
+        release: None,
+        hover: None,
+        pointer_move: None,
+        key: None,
+        key_up: None,
+        focus: None,
+        blur: None,
+        wheel: None,
+        mount: None,
+        resize: None,
+        visible: None,
+        drag: None,
+        drag_preview: None,
+        drag_end: None,
+        drop: None,
+        drop_when: None,
+        drag_over: None,
+        drag_leave: None,
+        context_menu: None,
+        context_menu_style: None,
+        context_menu_below: false,
+    };
     pub fn any_input(&self) -> bool {
         self.press.is_some()
             || self.release.is_some()
@@ -1423,17 +1452,24 @@ fn text_of(lua: &Lua, value: mlua::Value, what: &str, literal: bool) -> mlua::Re
 /// nil` in a child list leaves a nil, which must not end the list (Lua's
 /// length and `ipairs` both stop at the first hole).
 pub(crate) fn array_items(table: &Table) -> mlua::Result<Vec<mlua::Value>> {
-    let mut items: Vec<(i64, mlua::Value)> = Vec::new();
-    for pair in table.pairs::<mlua::Value, mlua::Value>() {
-        let (key, value) = pair?;
+    let mut items = Vec::with_capacity(table.raw_len());
+    table.for_each(|key, value| {
         if let mlua::Value::Integer(i) = key
             && i >= 1
         {
             items.push((i, value));
         }
+        Ok(())
+    })?;
+    Ok(in_order(items))
+}
+/// Array entries by index: the array part comes in order, so this is one
+/// pass unless the table has holes.
+fn in_order(mut items: Vec<(i64, mlua::Value)>) -> Vec<mlua::Value> {
+    if !items.is_sorted_by_key(|(i, _)| *i) {
+        items.sort_unstable_by_key(|(i, _)| *i);
     }
-    items.sort_unstable_by_key(|(i, _)| *i);
-    Ok(items.into_iter().map(|(_, v)| v).collect())
+    items.into_iter().map(|(_, v)| v).collect()
 }
 
 /// Appends children from a table's array part: nodes, strings (text),
@@ -1441,10 +1477,10 @@ pub(crate) fn array_items(table: &Table) -> mlua::Result<Vec<mlua::Value>> {
 fn children(
     lua: &Lua,
     owner: &Weak<Vm>,
-    table: &Table,
+    items: Vec<mlua::Value>,
     out: &mut Vec<Rc<Node>>,
 ) -> mlua::Result<()> {
-    for child in array_items(table)? {
+    for child in items {
         match child {
             mlua::Value::UserData(ud) if ud.is::<NodeUd>() => {
                 out.push(ud.borrow::<NodeUd>()?.0.clone())
@@ -1457,7 +1493,7 @@ fn children(
                 owner.clone(),
                 Kind::Text(Text::Computed(f)),
             ))),
-            mlua::Value::Table(nested) => children(lua, owner, &nested, out)?,
+            mlua::Value::Table(nested) => children(lua, owner, array_items(&nested)?, out)?,
             mlua::Value::Nil | mlua::Value::Boolean(false) => {}
             other => {
                 return Err(mlua::Error::runtime(format!(
@@ -1511,7 +1547,16 @@ const WIDGET_FIELDS: &[&str] = &[
     "animate",
 ];
 
-fn set_handler(events: &mut Events, key: &str, value: mlua::Value) -> mlua::Result<bool> {
+/// Sets the handler `key` names, or gives `value` back if it names none.
+fn set_handler(
+    events: &mut Option<Box<Events>>,
+    key: &str,
+    value: mlua::Value,
+) -> mlua::Result<Option<mlua::Value>> {
+    if !(key.starts_with("on_") || matches!(key, "context_menu" | "drag_preview" | "drop_when")) {
+        return Ok(Some(value));
+    }
+    let events = events.get_or_insert_default();
     let slot = match key {
         "on_click" => &mut events.click,
         "on_press" => &mut events.press,
@@ -1528,28 +1573,28 @@ fn set_handler(events: &mut Events, key: &str, value: mlua::Value) -> mlua::Resu
                 return Err(mlua::Error::runtime("on_mount takes a function"));
             };
             events.mount = Some(f);
-            return Ok(true);
+            return Ok(None);
         }
         "on_resize" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime("on_resize takes a function"));
             };
             events.resize = Some(f);
-            return Ok(true);
+            return Ok(None);
         }
         "on_visible" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime("on_visible takes a function"));
             };
             events.visible = Some(f);
-            return Ok(true);
+            return Ok(None);
         }
         "context_menu" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime("context_menu takes a function"));
             };
             events.context_menu = Some(f);
-            return Ok(true);
+            return Ok(None);
         }
         "on_drag" | "drag_preview" | "on_drag_end" | "on_drop" | "drop_when" | "on_drag_over"
         | "on_drag_leave" => {
@@ -1565,31 +1610,47 @@ fn set_handler(events: &mut Events, key: &str, value: mlua::Value) -> mlua::Resu
                 "on_drag_over" => &mut events.drag_over,
                 _ => &mut events.drag_leave,
             } = Some(f);
-            return Ok(true);
+            return Ok(None);
         }
-        _ => return Ok(false),
+        _ => return Ok(Some(value)),
     };
     *slot = Some(handler(value)?);
-    Ok(true)
+    Ok(None)
 }
 
 /// Fills a node's properties, pseudo-states, handlers and children.
-fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> {
+fn fill(lua: &Lua, node: Node, table: Option<&Table>) -> mlua::Result<Node> {
+    fill_from(lua, node, table, false)
+}
+/// `text`: element 1 is the text's content and `literal` how to read it,
+/// both the constructor's own.
+fn fill_from(lua: &Lua, mut node: Node, table: Option<&Table>, text: bool) -> mlua::Result<Node> {
     let Some(table) = table else {
         return Ok(node);
     };
     let mut layout_given = false;
     let mut variants = None;
-    for pair in table.pairs::<mlua::Value, mlua::Value>() {
-        let (key, value) = pair?;
-        let mlua::Value::String(key) = key else {
-            continue;
+    // One walk over the table: properties as they come, children kept to
+    // put in order after.
+    let mut items = Vec::new();
+    table.for_each(|key: mlua::Value, value: mlua::Value| {
+        let key = match key {
+            mlua::Value::String(key) => key,
+            mlua::Value::Integer(i) if i >= 1 && !(text && i == 1) => {
+                items.push((i, value));
+                return Ok(());
+            }
+            _ => return Ok(()),
         };
-        let key = key.to_string_lossy();
-        if set_handler(&mut node.events, &key, value.clone())? {
-            continue;
+        let key = key.to_str()?;
+        let key: &str = &key;
+        if text && key == "literal" {
+            return Ok(());
         }
-        match key.as_str() {
+        let Some(value) = set_handler(&mut node.events, key, value)? else {
+            return Ok(());
+        };
+        match key {
             "id" => node.id = Some(lua.unpack::<String>(value)?.into()),
             "class" => {
                 let classes: String = lua.unpack(value)?;
@@ -1617,7 +1678,7 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
             "selection_color" | "selected_text_color" => {
                 let at = usize::from(key == "selected_text_color");
                 node.selection_colors.get_or_insert_default()[at] =
-                    Some(source(lua, Ty::Color, &key, value)?);
+                    Some(source(lua, Ty::Color, key, value)?);
             }
             "tooltip" => {
                 let content = match value {
@@ -1844,7 +1905,7 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
                 let mlua::Value::Boolean(below) = value else {
                     return Err(mlua::Error::runtime("`context_menu_below` takes a boolean"));
                 };
-                node.events.context_menu_below = below;
+                node.events.get_or_insert_default().context_menu_below = below;
             }
             "context_menu_style" => {
                 let mlua::Value::Table(styles) = value else {
@@ -1867,7 +1928,7 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
                     };
                     lits.push((prop, lit));
                 }
-                node.events.context_menu_style = Some(lits.into());
+                node.events.get_or_insert_default().context_menu_style = Some(lits.into());
             }
             "theme" => {
                 node.theme = Some(if let Some(state) = state_of(&value) {
@@ -1882,7 +1943,7 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
                 });
             }
             "hover" | "active" | "focus" | "disabled" => {
-                let pseudo = match key.as_str() {
+                let pseudo = match key {
                     "hover" => Pseudo::Hover,
                     "active" => Pseudo::Active,
                     "focus" => Pseudo::Focus,
@@ -1942,7 +2003,8 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
                     .push((prop, source(lua, prop.ty(), name, value)?));
             }
         }
-    }
+        Ok(())
+    })?;
     // With a `layout_id`, `layout_duration` and `layout_ease` alone time its
     // moves; they do not ask for a size box.
     if node.layout_id.is_some()
@@ -1960,8 +2022,8 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
     // them: `p = 0, px = 8` pads the sides, and `border = 1,
     // border_sides = …` keeps the per-side widths `border` would reset.
     node.props.sort_by_key(|(prop, _)| specificity(*prop));
-    let mut kids = Vec::new();
-    children(lua, &node.owner, table, &mut kids)?;
+    let mut kids = Vec::with_capacity(items.len());
+    children(lua, &node.owner, in_order(items), &mut kids)?;
     if !kids.is_empty() && !node.kind.takes_children() {
         return Err(mlua::Error::runtime(format!(
             "`{}` does not take children",
@@ -2258,9 +2320,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             );
             if let Some(table) = &table {
                 // The content is element 1; the rest are styles.
-                table.raw_remove(1)?;
-                table.raw_set("literal", mlua::Value::Nil)?;
-                node = fill(lua, node, Some(table))?;
+                node = fill_from(lua, node, Some(table), true)?;
             }
             node_ud(lua, node)
         })?,

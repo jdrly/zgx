@@ -1785,7 +1785,10 @@ impl ScriptHost {
             Grants::All
         });
         let code = script.code(files)?;
-        let lua = Lua::new();
+        // The handle `Lua::new` returns collects all garbage when it drops,
+        // a full pass over everything the script just built; a clone does
+        // not, and the VM frees all it holds when the last one goes.
+        let lua = Lua::new().clone();
         let limits = self.0.limits;
         lua.set_memory_limit(limits.memory).map_err(fail)?;
         let deadline: Rc<Cell<Option<Deadline>>> = Rc::default();

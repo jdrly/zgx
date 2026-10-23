@@ -1689,7 +1689,7 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
         }
         None => {}
     }
-    if let Some(handler) = &node.events.click {
+    if let Some(handler) = &node.events().click {
         let (handler, vm, actions) = (handler.clone(), vm.clone(), low.actions.clone());
         // Told the keys held: `{ shift, ctrl, alt, meta }` (a ⌘-click).
         view = view.on_click_with(move |held| {
@@ -1699,19 +1699,19 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
     }
     // The node's handle, for local pointer coordinates and elements.
     let handle: Rc<OnceCell<NodeHandle>> = Rc::default();
-    if node.events.any_input() {
+    if node.events().any_input() {
         view = with_events(view, node, vm, low, handle.clone());
     }
-    if node.events.any_drag() || node.events.drag_preview.is_some() {
+    if node.events().any_drag() || node.events().drag_preview.is_some() {
         view = with_drag(view, node, vm, low, handle.clone());
     }
-    if let Some(style) = &node.events.context_menu_style {
+    if let Some(style) = &node.events().context_menu_style {
         view = view.context_menu_style(apply_all(Styles::new(), style));
     }
-    if node.events.context_menu_below {
+    if node.events().context_menu_below {
         view = view.context_menu_below(true);
     }
-    if let Some(build) = node.events.context_menu.clone() {
+    if let Some(build) = node.events().context_menu.clone() {
         let (vm, low) = (vm.clone(), low.clone());
         view = view.context_menu(move |e| {
             let point = vm.lua.create_table().and_then(|t| {
@@ -1761,7 +1761,7 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
         });
     }
     // Input and drag handlers read the node's handle (local coordinates).
-    if element.is_some() || node.events.any_input() || node.events.any_drag() {
+    if element.is_some() || node.events().any_input() || node.events().any_drag() {
         let (element, elements, refs) = (element.clone(), low.elements.clone(), node.refs.clone());
         let targetable = node.targetable();
         // Moves are measured against the parent; with a size box, against
@@ -1775,9 +1775,9 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
             (node.layout_id.clone(), timing, depth)
         });
         let (mount, resize, visible, vm) = (
-            node.events.mount.clone(),
-            node.events.resize.clone(),
-            node.events.visible.clone(),
+            node.events().mount.clone(),
+            node.events().resize.clone(),
+            node.events().visible.clone(),
             vm.clone(),
         );
         view = view.on_mount(move |mounted| {
@@ -2394,7 +2394,7 @@ fn with_events(
     low: &Rc<Lowering>,
     handle: Rc<OnceCell<NodeHandle>>,
 ) -> View {
-    let events = &node.events;
+    let events = node.events();
     let (press, release, hover, moved) = (
         events.press.clone(),
         events.release.clone(),
@@ -2556,7 +2556,7 @@ fn with_drag(
     handle: Rc<OnceCell<NodeHandle>>,
 ) -> View {
     use zgui::input::DragPhase;
-    let events = &node.events;
+    let events = node.events();
     fn call(vm: &Rc<Vm>, f: &mlua::Function, args: impl mlua::IntoLuaMulti) -> Option<mlua::Value> {
         vm.runtime
             .clone()
