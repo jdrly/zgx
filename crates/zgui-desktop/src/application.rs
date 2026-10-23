@@ -51,7 +51,7 @@ pub struct WindowOptions {
     /// example to save power. Input-driven redraws are not limited. `None`
     /// follows the display.
     pub max_frame_rate: Option<f64>,
-    /// The title bar's style (macOS; other platforms keep theirs).
+    /// The title bar's style (macOS and Windows; other platforms keep theirs).
     pub titlebar: crate::Titlebar,
     /// A frosted desktop behind the window (macOS): the window is then
     /// transparent, whatever `transparent` says.
@@ -950,6 +950,9 @@ struct Host {
     frames: FrameClock,
     #[cfg(any(target_os = "macos", windows))]
     display_link: Option<crate::frame_source::DisplayLink>,
+    /// `Titlebar::Inset`'s caption buttons (Windows).
+    #[cfg(windows)]
+    caption: Option<crate::window_chrome::CaptionHost>,
     /// When the display link last delivered a refresh, aligning `frame_timer`
     /// to its grid: until `VSYNC_RESYNC` later the timer paces frames and the
     /// link (a thread spinning to each refresh) stays stopped.
@@ -1137,6 +1140,8 @@ impl Host {
             frames,
             #[cfg(any(target_os = "macos", windows))]
             display_link: None,
+            #[cfg(windows)]
+            caption: None,
             #[cfg(target_os = "macos")]
             vsync_synced: None,
             #[cfg(target_os = "macos")]
@@ -1652,6 +1657,15 @@ impl Host {
             };
         }
         self.context.window_info.corner_radius.set(radius);
+        #[cfg(windows)]
+        {
+            let proxy = self.proxy.clone();
+            let token = self.context.window.token;
+            self.caption =
+                crate::window_chrome::CaptionHost::new(&window, &self.context.ui, move || {
+                    let _ = proxy.send_event(Event::Wake(token));
+                });
+        }
         self.x11 = window.display_handle().is_ok_and(|handle| {
             matches!(
                 handle.as_raw(),
@@ -1997,6 +2011,10 @@ impl Host {
         #[cfg(any(target_os = "macos", windows))]
         {
             self.display_link = None;
+        }
+        #[cfg(windows)]
+        {
+            self.caption = None;
         }
         self.frame_deadline = None;
         self.frame_heartbeat = None;
@@ -2386,6 +2404,10 @@ impl Host {
         }
         if self.tasks.has_ready() {
             self.tasks.tick();
+        }
+        #[cfg(windows)]
+        if let Some(caption) = &mut self.caption {
+            caption.sync(&mut self.context.ui);
         }
         #[cfg(target_os = "macos")]
         let paced = self.vsync_paced

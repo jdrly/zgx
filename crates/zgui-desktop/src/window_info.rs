@@ -161,6 +161,13 @@ pub(crate) fn attributes(
         .with_transparent(options.is_transparent())
         .with_decorations(options.decorations)
         .with_visible(false);
+    // Windows: a title bar of the app's own is a frameless window keeping
+    // the frame's shadow (the rest is `window_chrome`).
+    #[cfg(windows)]
+    if options.titlebar != crate::Titlebar::Standard {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        attrs = attrs.with_decorations(false).with_undecorated_shadow(true);
+    }
     if let Some((w, h)) = options.min_size {
         if !w.is_finite() || !h.is_finite() || w <= 0. || h <= 0. {
             return Err("minimum window dimensions must be finite and positive".into());

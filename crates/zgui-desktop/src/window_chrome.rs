@@ -1,8 +1,10 @@
 //! Window chrome from `WindowOptions`: the title bar's style and a frosted
-//! glass behind a translucent window. Applied when the window is made, on
-//! macOS; other platforms keep their own title bars and draw no glass.
+//! glass behind a translucent window. Applied when the window is made: title
+//! bars on macOS and Windows, glass on macOS; elsewhere windows keep their
+//! own title bars and draw no glass.
 
-/// How a window's title bar looks (macOS; elsewhere the platform's own).
+/// How a window's title bar looks (macOS and Windows; elsewhere the
+/// platform's own).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Titlebar {
     /// The platform's title bar.
@@ -11,10 +13,13 @@ pub enum Titlebar {
     /// Transparent, without the title: content runs under it, the window
     /// buttons (the traffic lights) inset over it in a 40-point strip, as
     /// Electron's `hiddenInset`. Mark the strip `View::window_drag` so it
-    /// moves the window.
+    /// moves the window. On Windows, zgui draws Windows 11's caption buttons
+    /// over the content's top right (46 by 32 points each) and Windows takes
+    /// them for its own: their tooltips, and snap layouts on maximize.
     Inset,
     /// None: content fills the window and the window buttons are hidden.
-    /// The window keeps its rounded corners and shadow.
+    /// The window keeps its rounded corners and shadow; on Windows its edges
+    /// resize it (5 points in from them).
     Hidden,
 }
 
@@ -102,10 +107,451 @@ pub(crate) fn apply(
     {
         mac::apply(window, titlebar, glass)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let _ = glass;
+        win::apply(window, titlebar)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (window, titlebar, glass);
         0.
+    }
+}
+
+#[cfg(windows)]
+pub(crate) use win::CaptionHost;
+
+#[cfg(windows)]
+mod win {
+    //! Windows title bars. `Titlebar::Hidden` is winit's frameless window
+    //! (its client the whole window, with the system's shadow) with what
+    //! the frame gave back: rounded corners on Windows 11 and resize bands
+    //! along its edges. `Titlebar::Inset` adds the caption buttons, drawn
+    //! by zgui over the content's top right (`CaptionHost`) as Windows 11
+    //! draws its own, and reported to Windows as its buttons
+    //! (`WM_NCHITTEST`), so it shows the maximize button's snap layouts and
+    //! the buttons' tooltips. Windows' own handling of a press on them draws
+    //! classic buttons into the window, so the subclass handles them itself.
+    use super::Titlebar;
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        sync::Arc,
+    };
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::{
+            Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
+            Gdi::ScreenToClient,
+        },
+        UI::{
+            HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::{
+                GetClientRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCLOSE, HTLEFT, HTMAXBUTTON,
+                HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed, PostMessageW,
+                SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_MOUSEMOVE, WM_NCDESTROY,
+                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SYSCOMMAND,
+            },
+        },
+    };
+    use winit::{
+        raw_window_handle::{HasWindowHandle, RawWindowHandle},
+        window::Window,
+    };
+    use zgui::{compose::prelude::*, scene::Color, style::Styled, widgets::Ui};
+
+    /// Windows 11's caption buttons, in logical pixels.
+    const BUTTON_WIDTH: f64 = 46.;
+    const BUTTON_HEIGHT: f64 = 32.;
+    /// Resize bands inside a frameless window's edges, in logical pixels:
+    /// it has no frame outside them to take the pointer.
+    const RESIZE_BAND: f64 = 5.;
+    /// Windows 11's window corner radius, in logical pixels.
+    const CORNER_RADIUS: f64 = 8.;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum CaptionButton {
+        Minimize,
+        Maximize,
+        Close,
+    }
+    impl CaptionButton {
+        fn hit(self) -> u32 {
+            match self {
+                Self::Minimize => HTMINBUTTON,
+                Self::Maximize => HTMAXBUTTON,
+                Self::Close => HTCLOSE,
+            }
+        }
+        fn from_hit(hit: usize) -> Option<Self> {
+            [Self::Minimize, Self::Maximize, Self::Close]
+                .into_iter()
+                .find(|button| button.hit() as usize == hit)
+        }
+    }
+
+    /// What the window procedure knows of the caption, shared with its host.
+    struct Caption {
+        buttons: bool,
+        hovered: Cell<Option<CaptionButton>>,
+        pressed: Cell<Option<CaptionButton>>,
+        tracking: Cell<bool>,
+        /// Asks the host for a frame when the buttons' look changed.
+        wake: RefCell<Option<Box<dyn Fn()>>>,
+    }
+    impl Caption {
+        fn set(&self, hovered: Option<CaptionButton>, pressed: Option<CaptionButton>) {
+            let hover_changed = self.hovered.replace(hovered) != hovered;
+            let press_changed = self.pressed.replace(pressed) != pressed;
+            if (hover_changed || press_changed)
+                && let Some(wake) = &*self.wake.borrow()
+            {
+                wake();
+            }
+        }
+    }
+
+    fn hwnd(window: &Window) -> Option<HWND> {
+        match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn apply(window: &Window, titlebar: Titlebar) -> f64 {
+        let Some(hwnd) = hwnd(window) else {
+            return 0.;
+        };
+        if titlebar == Titlebar::Standard {
+            return 0.;
+        }
+        // A frameless window is square unless asked; Windows 10 has no
+        // rounded windows and refuses.
+        // SAFETY: sets one documented attribute on our own window.
+        let rounded = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &DWMWCP_ROUND as *const _ as *const _,
+                size_of_val(&DWMWCP_ROUND) as u32,
+            )
+        }
+        .is_ok();
+        let caption = Rc::new(Caption {
+            buttons: titlebar == Titlebar::Inset,
+            hovered: Cell::new(None),
+            pressed: Cell::new(None),
+            tracking: Cell::new(false),
+            wake: RefCell::new(None),
+        });
+        // SAFETY: the subclass runs on this (the window's) thread; its
+        // reference is released when the window is destroyed.
+        let installed = unsafe {
+            SetWindowSubclass(
+                hwnd,
+                Some(subclass),
+                SUBCLASS_ID,
+                Rc::into_raw(caption.clone()) as usize,
+            )
+        }
+        .as_bool();
+        if installed {
+            CAPTIONS.with(|captions| captions.borrow_mut().push((hwnd.0 as usize, caption)));
+        }
+        if rounded { CORNER_RADIUS } else { 0. }
+    }
+
+    const SUBCLASS_ID: usize = 0x7a67_7569; // "zgui"
+    thread_local! {
+        /// Each subclassed window's caption, for its host to find.
+        static CAPTIONS: RefCell<Vec<(usize, Rc<Caption>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn scale(hwnd: HWND) -> f64 {
+        // SAFETY: reads our own window's DPI.
+        f64::from(unsafe { GetDpiForWindow(hwnd) }.max(96)) / 96.
+    }
+
+    /// What lies at screen point (`x`, `y`) of the window's client, if not
+    /// the content: a resize band or a caption button.
+    fn hit_test(hwnd: HWND, caption: &Caption, x: i32, y: i32) -> Option<u32> {
+        let mut point = POINT { x, y };
+        let mut client = RECT::default();
+        // SAFETY: our own window; both write into locals.
+        unsafe {
+            if !ScreenToClient(hwnd, &mut point).as_bool()
+                || GetClientRect(hwnd, &mut client).is_err()
+            {
+                return None;
+            }
+        }
+        let scale = scale(hwnd);
+        // SAFETY: reads our own window's state.
+        let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+        let band = if maximized {
+            0
+        } else {
+            (RESIZE_BAND * scale).round() as i32
+        };
+        let (left, right) = (point.x < band, point.x >= client.right - band);
+        let (top, bottom) = (point.y < band, point.y >= client.bottom - band);
+        // The caption buttons keep all but the window's outermost pixels.
+        if caption.buttons && point.y >= band.min(1) && f64::from(point.y) < BUTTON_HEIGHT * scale {
+            let width = (BUTTON_WIDTH * scale).round() as i32;
+            let from_right = client.right - 1 - point.x;
+            if (band.min(1)..3 * width).contains(&from_right) {
+                return Some(match from_right / width {
+                    0 => HTCLOSE,
+                    1 => HTMAXBUTTON,
+                    _ => HTMINBUTTON,
+                });
+            }
+        }
+        Some(match (top, bottom, left, right) {
+            (true, _, true, _) => HTTOPLEFT,
+            (true, _, _, true) => HTTOPRIGHT,
+            (_, true, true, _) => HTBOTTOMLEFT,
+            (_, true, _, true) => HTBOTTOMRIGHT,
+            (true, ..) => HTTOP,
+            (_, true, ..) => HTBOTTOM,
+            (.., true, _) => HTLEFT,
+            (.., true) => HTRIGHT,
+            _ => return None,
+        })
+    }
+
+    unsafe extern "system" fn subclass(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        data: usize,
+    ) -> LRESULT {
+        // SAFETY: `data` is the `Rc` `apply` leaked for this subclass, alive
+        // until `WM_NCDESTROY` below takes it back.
+        let caption = unsafe { &*(data as *const Caption) };
+        let point = || {
+            (
+                (lparam.0 & 0xffff) as i16 as i32,
+                ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+            )
+        };
+        match message {
+            WM_NCHITTEST => {
+                let (x, y) = point();
+                if let Some(hit) = hit_test(hwnd, caption, x, y) {
+                    return LRESULT(hit as isize);
+                }
+            }
+            WM_NCMOUSEMOVE => {
+                if !caption.tracking.replace(true) {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE | TME_NONCLIENT,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    // SAFETY: tracks our own window.
+                    let _ = unsafe { TrackMouseEvent(&mut track) };
+                }
+                let hovered = CaptionButton::from_hit(wparam.0);
+                let pressed = caption.pressed.get().filter(|_| hovered.is_some());
+                caption.set(hovered, pressed);
+            }
+            WM_NCMOUSELEAVE => {
+                caption.tracking.set(false);
+                caption.set(None, None);
+            }
+            WM_MOUSEMOVE => caption.set(None, None),
+            WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK => {
+                if let Some(button) = CaptionButton::from_hit(wparam.0) {
+                    caption.set(Some(button), Some(button));
+                    return LRESULT(0);
+                }
+            }
+            WM_NCLBUTTONUP => {
+                if let Some(button) = CaptionButton::from_hit(wparam.0) {
+                    let pressed = caption.pressed.get() == Some(button);
+                    caption.set(Some(button), None);
+                    if pressed {
+                        let command = match button {
+                            CaptionButton::Minimize => SC_MINIMIZE,
+                            // SAFETY: reads our own window's state.
+                            CaptionButton::Maximize if unsafe { IsZoomed(hwnd) }.as_bool() => {
+                                SC_RESTORE
+                            }
+                            CaptionButton::Maximize => SC_MAXIMIZE,
+                            CaptionButton::Close => SC_CLOSE,
+                        };
+                        // The system command animates and asks winit, as
+                        // the frame's own buttons do.
+                        // SAFETY: posts to our own window.
+                        let _ = unsafe {
+                            PostMessageW(
+                                Some(hwnd),
+                                WM_SYSCOMMAND,
+                                WPARAM(command as usize),
+                                LPARAM(0),
+                            )
+                        };
+                    }
+                    return LRESULT(0);
+                }
+            }
+            WM_NCDESTROY => {
+                // SAFETY: removes this subclass and takes back its reference.
+                unsafe {
+                    let _ = RemoveWindowSubclass(hwnd, Some(subclass), SUBCLASS_ID);
+                    drop(Rc::from_raw(data as *const Caption));
+                }
+                CAPTIONS.with(|captions| {
+                    captions
+                        .borrow_mut()
+                        .retain(|(window, _)| *window != hwnd.0 as usize)
+                });
+            }
+            _ => {}
+        }
+        // SAFETY: forwards to the next procedure in the chain (winit's).
+        unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    }
+
+    /// The caption buttons of a window with `Titlebar::Inset`, drawn over
+    /// its content: hovered, pressed, the window's state and appearance
+    /// follow the window procedure, a frame after they change.
+    pub(crate) struct CaptionHost {
+        caption: Rc<Caption>,
+        window: std::sync::Weak<Window>,
+        hovered: zgui::reactive::Signal<Option<CaptionButton>>,
+        pressed: zgui::reactive::Signal<Option<CaptionButton>>,
+        maximized: zgui::reactive::Signal<bool>,
+        active: zgui::reactive::Signal<bool>,
+        dark: zgui::reactive::Signal<bool>,
+        view: Option<zgui::compose::ViewHandle>,
+    }
+    impl CaptionHost {
+        /// For a window `apply` gave caption buttons; `wake` asks for a frame.
+        pub(crate) fn new(
+            window: &Arc<Window>,
+            ui: &Ui,
+            wake: impl Fn() + 'static,
+        ) -> Option<Self> {
+            let hwnd = hwnd(window)?.0 as usize;
+            let caption = CAPTIONS.with(|captions| {
+                captions
+                    .borrow()
+                    .iter()
+                    .find(|(window, _)| *window == hwnd)
+                    .map(|(_, caption)| caption.clone())
+            })?;
+            if !caption.buttons {
+                return None;
+            }
+            *caption.wake.borrow_mut() = Some(Box::new(wake));
+            Some(Self {
+                caption,
+                window: Arc::downgrade(window),
+                hovered: ui.signal(None),
+                pressed: ui.signal(None),
+                maximized: ui.signal(false),
+                active: ui.signal(true),
+                dark: ui.signal(true),
+                view: None,
+            })
+        }
+        /// Before a frame: bring the buttons up to date, and back if the
+        /// content was rendered again over them.
+        pub(crate) fn sync(&mut self, ui: &mut Ui) {
+            if let Some(window) = self.window.upgrade() {
+                self.maximized.set(window.is_maximized());
+                self.active.set(window.has_focus());
+                self.dark
+                    .set(window.theme() != Some(winit::window::Theme::Light));
+            }
+            self.hovered.set(self.caption.hovered.get());
+            self.pressed.set(self.caption.pressed.get());
+            if !self.view.as_ref().is_some_and(|view| view.is_mounted()) {
+                self.view = Some(ui.mount(self.buttons()));
+            }
+        }
+        fn buttons(&self) -> View {
+            // Windows 11's icon font; Windows 10's has the same glyphs.
+            let font = if std::path::Path::new(r"C:\Windows\Fonts\SegoeIcons.ttf").exists() {
+                "Segoe Fluent Icons"
+            } else {
+                "Segoe MDL2 Assets"
+            };
+            let button = |kind: CaptionButton| {
+                let (hovered, pressed, dark) = (
+                    self.hovered.clone(),
+                    self.pressed.clone(),
+                    self.dark.clone(),
+                );
+                let (glyph_hovered, glyph_dark, active, maximized) = (
+                    self.hovered.clone(),
+                    self.dark.clone(),
+                    self.active.clone(),
+                    self.maximized.clone(),
+                );
+                div()
+                    .size(BUTTON_WIDTH as f32, BUTTON_HEIGHT as f32)
+                    .items_center()
+                    .justify_center()
+                    .reactive_style(move || {
+                        let hover = hovered.get() == Some(kind);
+                        let down = hover && pressed.get() == Some(kind);
+                        // WinUI's caption button brushes.
+                        let fill = match (kind, hover, down, dark.get()) {
+                            (_, false, ..) => Color(0, 0, 0, 0),
+                            (CaptionButton::Close, _, false, _) => Color(196, 43, 28, 255),
+                            (CaptionButton::Close, _, true, _) => Color(196, 43, 28, 230),
+                            (_, _, false, true) => Color(255, 255, 255, 15),
+                            (_, _, true, true) => Color(255, 255, 255, 10),
+                            (_, _, false, false) => Color(0, 0, 0, 9),
+                            (_, _, true, false) => Color(0, 0, 0, 6),
+                        };
+                        Styles::new().bg(fill)
+                    })
+                    .child(
+                        text_signal(move || {
+                            match kind {
+                                CaptionButton::Minimize => "\u{e921}",
+                                CaptionButton::Maximize if maximized.get() => "\u{e923}",
+                                CaptionButton::Maximize => "\u{e922}",
+                                CaptionButton::Close => "\u{e8bb}",
+                            }
+                            .to_owned()
+                        })
+                        .font_family(font)
+                        .text_size(10.)
+                        .reactive_style(move || {
+                            let red =
+                                kind == CaptionButton::Close && glyph_hovered.get() == Some(kind);
+                            let color = match (red, glyph_dark.get(), active.get()) {
+                                (true, ..) => Color(255, 255, 255, 255),
+                                (_, true, true) => Color(255, 255, 255, 255),
+                                (_, true, false) => Color(255, 255, 255, 93),
+                                (_, false, true) => Color(0, 0, 0, 228),
+                                (_, false, false) => Color(0, 0, 0, 92),
+                            };
+                            Styles::new().text_color(color)
+                        }),
+                    )
+            };
+            row()
+                .absolute()
+                .top(0.)
+                .right(0.)
+                .pointer_events(false)
+                .child(button(CaptionButton::Minimize))
+                .child(button(CaptionButton::Maximize))
+                .child(button(CaptionButton::Close))
+        }
     }
 }
 

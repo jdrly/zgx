@@ -43,6 +43,17 @@ python scripts/windows_latency_probe.py target/release/examples/input_latency.ex
 python scripts/windows_pacing_probe.py target/release/examples/animation_workload.exe
 ```
 
+## Title bars
+
+`Titlebar::Inset` and `Titlebar::Hidden` are frameless windows that keep the
+system shadow and Windows 11's rounded corners, resizing from bands 5 points in
+from their edges. `Inset` adds Windows 11's caption buttons over the content's
+top right, drawn by zgui and reported to Windows as its own (`WM_NCHITTEST`),
+so they get the system's tooltips and the maximize button's snap layouts; the
+buttons minimize, maximize, restore and close through the system's commands.
+The title bar follows the system's light or dark mode.
+`scripts/windows_chrome_smoke.py` checks the buttons and the resize bands.
+
 ## Limitations
 
 - `Application::application_id` opts into OS activation callbacks, which are not
