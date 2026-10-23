@@ -36,18 +36,18 @@ impl View {
         mut self,
         build: impl FnMut(&ContextMenuEvent) -> Vec<View> + 'static,
     ) -> Self {
-        self.context_menu = Some(Box::new(build));
+        self.rare_mut().context_menu = Some(Box::new(build));
         self
     }
     /// Open the context menu under the view, aligned to its left edge, as a
     /// tab's or a toolbar button's does, rather than at the pointer.
     pub fn context_menu_below(mut self, below: bool) -> Self {
-        self.context_menu_below = Some(below);
+        self.rare_mut().context_menu_below = Some(below);
         self
     }
     /// Styles for the context menu's panel, over a menu's defaults.
     pub fn context_menu_style(mut self, styles: Styles) -> Self {
-        self.context_menu_style = Some(Box::new(styles));
+        self.rare_mut().context_menu_style = Some(Box::new(styles));
         self
     }
 }

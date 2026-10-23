@@ -317,9 +317,20 @@ pub struct View {
     variants: Variants,
     reactive_style: Option<Box<dyn FnMut() -> Styles>>,
     disabled: Option<Box<dyn FnMut() -> bool>>,
-    read_only: Option<Box<dyn FnMut() -> bool>>,
     click: Option<Box<dyn FnMut(crate::input::Modifiers)>>,
     events: Vec<EventListener>,
+    focusable: Option<bool>,
+    id: Option<String>,
+    contents: bool,
+    mounted: Vec<Box<dyn FnOnce(NodeHandle)>>,
+    /// What few views set, boxed: views move by value through every
+    /// builder call and mount level, and most carry none of it.
+    rare: Option<Box<Rare>>,
+}
+/// `View`'s fields few views set (`View::rare`).
+#[derive(Default)]
+pub(crate) struct Rare {
+    read_only: Option<Box<dyn FnMut() -> bool>>,
     keymap: crate::actions::Keymap,
     pub(crate) drag_preview: Option<crate::compose_drag::PreviewBuilder>,
     pub(crate) context_menu: Option<crate::compose_context_menu::ContextMenuBuilder>,
@@ -327,10 +338,8 @@ pub struct View {
     /// through each builder call.
     pub(crate) context_menu_style: Option<Box<Styles>>,
     pub(crate) context_menu_below: Option<bool>,
-    focusable: Option<bool>,
     /// Whether the pointer stops at the view (`pointer_events`), followed.
     pointer_events: Option<Box<dyn FnMut() -> bool>>,
-    id: Option<String>,
     scrollbar: Option<bool>,
     follow_end: Option<bool>,
     animation: Option<animation::Animated>,
@@ -345,8 +354,6 @@ pub struct View {
     menu_checked: Option<bool>,
     /// A menu item that leaves its menu open (a toggle, a pin).
     menu_keep_open: bool,
-    contents: bool,
-    mounted: Vec<Box<dyn FnOnce(NodeHandle)>>,
     accessible_label: Option<String>,
     accessibility: Option<Box<Accessibility>>,
     placeholder: Option<Box<dyn FnMut() -> String>>,
@@ -365,7 +372,82 @@ pub struct View {
     /// Conditional children (`child_when`), mounted after the others.
     conditional: Vec<RegionBuilder>,
 }
+impl Rare {
+    /// `View::refine`'s part: what an outer view sets over its inner one.
+    fn merge_into(self, inner: &mut Rare) {
+        if self.trigger_id.is_some() {
+            inner.trigger_id = self.trigger_id;
+        }
+        if self.dismiss_backdrop.is_some() {
+            inner.dismiss_backdrop = self.dismiss_backdrop;
+        }
+        if self.portal.is_some() {
+            inner.portal = self.portal;
+        }
+        if self.keyboard_navigation.is_some() {
+            inner.keyboard_navigation = self.keyboard_navigation;
+        }
+        if self.scrollbar.is_some() {
+            inner.scrollbar = self.scrollbar;
+        }
+        if self.follow_end.is_some() {
+            inner.follow_end = self.follow_end;
+        }
+        if self.drag_preview.is_some() {
+            inner.drag_preview = self.drag_preview;
+        }
+        if self.context_menu.is_some() {
+            inner.context_menu = self.context_menu;
+        }
+        if self.context_menu_style.is_some() {
+            inner.context_menu_style = self.context_menu_style;
+        }
+        if self.context_menu_below.is_some() {
+            inner.context_menu_below = self.context_menu_below;
+        }
+        if self.pointer_events.is_some() {
+            inner.pointer_events = self.pointer_events;
+        }
+        if self.read_only.is_some() {
+            inner.read_only = self.read_only;
+        }
+        if self.placeholder.is_some() {
+            inner.placeholder = self.placeholder;
+        }
+        if self.placeholder_color.is_some() {
+            inner.placeholder_color = self.placeholder_color;
+        }
+        if self.select_on_focus.is_some() {
+            inner.select_on_focus = self.select_on_focus;
+        }
+        if self.spellcheck.is_some() {
+            inner.spellcheck = self.spellcheck;
+        }
+        if self.secure.is_some() {
+            inner.secure = self.secure;
+        }
+        if self.line_numbers.is_some() {
+            inner.line_numbers = self.line_numbers;
+        }
+        if self.selectable.is_some() {
+            inner.selectable = self.selectable;
+        }
+        if self.selection_style.is_some() {
+            inner.selection_style = self.selection_style;
+        }
+        if self.row_text.is_some() {
+            inner.row_text = self.row_text;
+        }
+        inner.keymap.extend(self.keymap);
+        inner.window_drag |= self.window_drag;
+        inner.conditional.extend(self.conditional);
+    }
+}
 impl View {
+    /// The fields few views set, made on first use.
+    pub(crate) fn rare_mut(&mut self) -> &mut Rare {
+        self.rare.get_or_insert_default()
+    }
     /// Merge `styles` over this view's own (the crate's builders use it).
     pub(crate) fn merge_styles(mut self, styles: &Styles) -> Self {
         self.styles.merge(styles);
@@ -377,7 +459,7 @@ impl View {
             matches!(self.kind, Kind::MenuItem(_)),
             "menu_checked requires a menu item"
         );
-        self.menu_checked = Some(checked);
+        self.rare_mut().menu_checked = Some(checked);
         self
     }
     /// A menu item that leaves its menu open when chosen (a toggle, a pin):
@@ -387,14 +469,14 @@ impl View {
             matches!(self.kind, Kind::MenuItem(_)),
             "keep_open requires a menu item"
         );
-        self.menu_keep_open = true;
+        self.rare_mut().menu_keep_open = true;
         self
     }
     /// Transform decoded image/SVG painting around its allocated center without
     /// changing layout. Use `image_signal` and `ImageData::transformed` for a
     /// reactive matrix. This method requires an image view.
     pub fn with_transformation(mut self, transformation: crate::affine::Affine) -> Self {
-        if let Some(animated) = &mut self.animation {
+        if let Some(animated) = self.rare.as_mut().and_then(|r| r.animation.as_mut()) {
             let frames = animated
                 .animation
                 .frames()
@@ -442,43 +524,14 @@ impl View {
             variants: Variants::default(),
             reactive_style: None,
             disabled: None,
-            read_only: None,
             click: None,
             events: Vec::new(),
-            keymap: crate::actions::Keymap::new(),
-            drag_preview: None,
-            context_menu: None,
-            context_menu_style: None,
-            context_menu_below: None,
             focusable: None,
-            pointer_events: None,
             id: None,
-            scrollbar: None,
-            follow_end: None,
-            animation: None,
-            keyboard_navigation: None,
-            dismiss_backdrop: None,
-            portal: None,
-            layout_target: None,
-            trigger_id: None,
-            menu_trigger: None,
-            menu_checked: None,
-            menu_keep_open: false,
             contents: false,
             mounted: Vec::new(),
-            accessible_label: None,
-            accessibility: None,
-            placeholder: None,
-            placeholder_color: None,
-            select_on_focus: None,
-            secure: None,
-            spellcheck: None,
-            line_numbers: None,
-            window_drag: false,
-            selectable: None,
-            selection_style: None,
-            row_text: None,
-            conditional: Vec::new(),
+
+            rare: None,
         }
     }
     /// Lay this container out as its last child would in its place, as CSS
@@ -505,29 +558,29 @@ impl View {
     }
     /// Show an interactive overlay scrollbar on a scroll viewport or virtual list.
     pub fn scrollbar(mut self, visible: bool) -> Self {
-        self.scrollbar = Some(visible);
+        self.rare_mut().scrollbar = Some(visible);
         self
     }
     /// Keep a scroll viewport at its end while its content grows, as long as
     /// it was at the end (a chat transcript); scrolling away releases it.
     pub fn follow_end(mut self, follow: bool) -> Self {
-        self.follow_end = Some(follow);
+        self.rare_mut().follow_end = Some(follow);
         self
     }
     /// Enable bounded keyboard row navigation on a virtual list.
     pub fn keyboard_navigation(mut self, enabled: bool) -> Self {
-        self.keyboard_navigation = Some(enabled);
+        self.rare_mut().keyboard_navigation = Some(enabled);
         self
     }
     /// Configure whether clicking outside a modal or popover panel dismisses it.
     pub fn dismiss_on_backdrop(mut self, enabled: bool) -> Self {
-        self.dismiss_backdrop = Some(enabled);
+        self.rare_mut().dismiss_backdrop = Some(enabled);
         self
     }
     /// Where an anchored popover or menu opens against its trigger (below
     /// it, start-aligned, 4 points away unless set).
     pub fn placement(mut self, placement: crate::compose_popover::Placement) -> Self {
-        self.portal.get_or_insert_default().placement = Some(placement);
+        self.rare_mut().portal.get_or_insert_default().placement = Some(placement);
         self
     }
     /// A non-modal layer over the window (toasts, a heads-up): a modal view
@@ -535,7 +588,7 @@ impl View {
     /// through it but for what it holds, which stays live while a dialog
     /// holds focus; it is raised over everything as it opens.
     pub fn layer(mut self) -> Self {
-        self.portal.get_or_insert_default().layer = true;
+        self.rare_mut().portal.get_or_insert_default().layer = true;
         self
     }
     /// Open a menu with its item `id` over the trigger, as a pop-up button's
@@ -543,7 +596,7 @@ impl View {
     /// than below it. `id` is read as it opens and while open (the chosen
     /// item, from state); one not in the menu places it as usual.
     pub fn open_over(mut self, id: impl Fn() -> String + 'static) -> Self {
-        self.portal.get_or_insert_default().over = Some(Rc::new(id));
+        self.rare_mut().portal.get_or_insert_default().over = Some(Rc::new(id));
         self
     }
     /// A popover's arrow, as AppKit's popovers have: it reaches `size`
@@ -552,7 +605,7 @@ impl View {
     /// with the panel's own background and border; the panel sits `size`
     /// further from the trigger to make room. Menus have none.
     pub fn arrow(mut self, size: f32) -> Self {
-        self.portal.get_or_insert_default().arrow = (size > 0.).then_some(size);
+        self.rare_mut().portal.get_or_insert_default().arrow = (size > 0.).then_some(size);
         self
     }
     /// Build a modal's, popover's or menu's panel the first time it opens
@@ -561,31 +614,34 @@ impl View {
     /// observers) until one opens. What is inside is not found (`find`) or
     /// in the accessibility tree before then.
     pub fn lazy(mut self) -> Self {
-        self.portal.get_or_insert_default().lazy = true;
+        self.rare_mut().portal.get_or_insert_default().lazy = true;
         self
     }
     /// Whether a modal, popover or menu focuses its first control as it
     /// opens (it does unless set false; then the panel holds focus).
     pub fn autofocus(mut self, autofocus: bool) -> Self {
-        self.portal.get_or_insert_default().autofocus = Some(autofocus);
+        self.rare_mut().portal.get_or_insert_default().autofocus = Some(autofocus);
         self
     }
     /// A submenu's trigger, drawn by the app: a `menu_item` with content of
     /// its own (an icon, the label, a value, a chevron) instead of the
     /// label and the engine's chevron.
     pub fn trigger(mut self, trigger: View) -> Self {
-        self.portal.get_or_insert_default().trigger = Some(trigger);
+        self.rare_mut().portal.get_or_insert_default().trigger = Some(trigger);
         self
     }
     /// Where a modal's panel sits in the window (centred unless set): a
     /// side sheet against an edge, a command menu near the top.
     pub fn modal_placement(mut self, placement: crate::compose_modal::ModalPlacement) -> Self {
-        self.portal.get_or_insert_default().modal_placement = Some(placement);
+        self.rare_mut()
+            .portal
+            .get_or_insert_default()
+            .modal_placement = Some(placement);
         self
     }
     /// Assign an ID to a submenu's internally owned menu-item trigger.
     pub fn trigger_id(mut self, id: impl Into<String>) -> Self {
-        self.trigger_id = Some(id.into());
+        self.rare_mut().trigger_id = Some(id.into());
         self
     }
     /// Add `child` after the existing children.
@@ -610,7 +666,8 @@ impl View {
         mut select: impl FnMut() -> Option<K> + 'static,
         mut build: impl FnMut(K, &mut Context) -> View + 'static,
     ) -> Self {
-        self.conditional
+        self.rare_mut()
+            .conditional
             .push(Box::new(move |ui: &mut Ui, parent, environment| {
                 let weak = ui.downgrade();
                 let runtime = ui.runtime.clone();
@@ -677,7 +734,7 @@ impl View {
     }
     /// Add scoped bindings and literal key contexts to this retained component.
     pub fn keymap(mut self, keymap: crate::actions::Keymap) -> Self {
-        self.keymap.extend(keymap);
+        self.rare_mut().keymap.extend(keymap);
         self
     }
     /// Handle a typed action at the target or during bubbling. The handler may
@@ -706,7 +763,7 @@ impl View {
     }
     /// `pointer_events`, followed: it changes as what `enabled` reads does.
     pub fn pointer_events_when(mut self, enabled: impl FnMut() -> bool + 'static) -> Self {
-        self.pointer_events = Some(Box::new(enabled));
+        self.rare_mut().pointer_events = Some(Box::new(enabled));
         self
     }
     /// Override whether this root accepts focus and participates in Tab traversal.
@@ -762,19 +819,19 @@ impl View {
     /// Keep an editor selectable and focusable while preventing user edits.
     /// External model updates remain permitted. Only editor roots accept this.
     pub fn read_only(mut self, read_only: bool) -> Self {
-        self.read_only = Some(Box::new(move || read_only));
+        self.rare_mut().read_only = Some(Box::new(move || read_only));
         self
     }
     /// Reactively control an editor's read-only state without remounting it.
     pub fn read_only_when(mut self, read_only: impl FnMut() -> bool + 'static) -> Self {
-        self.read_only = Some(Box::new(read_only));
+        self.rare_mut().read_only = Some(Box::new(read_only));
         self
     }
     /// The name assistive technology reads for this node, instead of one
     /// made from its text: a switch, or a button showing only an icon. A
     /// node without a role of its own becomes a named group.
     pub fn accessible_label(mut self, label: impl Into<String>) -> Self {
-        self.accessible_label = Some(label.into());
+        self.rare_mut().accessible_label = Some(label.into());
         self
     }
     /// `accessible_label` followed: a recycled row's name, made from what it
@@ -784,7 +841,9 @@ impl View {
         self
     }
     fn accessibility_mut(&mut self) -> &mut Accessibility {
-        self.accessibility.get_or_insert_with(Default::default)
+        self.rare_mut()
+            .accessibility
+            .get_or_insert_with(Default::default)
     }
     /// What assistive technology takes this node for (ARIA's `role`),
     /// instead of what it is: a clickable row as a `ListBoxOption`, a row
@@ -868,7 +927,7 @@ impl View {
     }
     /// A placeholder that follows the reactive values it reads.
     pub fn placeholder_when(mut self, text: impl FnMut() -> String + 'static) -> Self {
-        self.placeholder = Some(Box::new(text));
+        self.rare_mut().placeholder = Some(Box::new(text));
         self
     }
     /// The placeholder's colour, instead of the theme's `muted`.
@@ -880,7 +939,7 @@ impl View {
         mut self,
         color: impl FnMut() -> crate::scene::Color + 'static,
     ) -> Self {
-        self.placeholder_color = Some(Box::new(color));
+        self.rare_mut().placeholder_color = Some(Box::new(color));
         self
     }
     /// Select an editor's whole text whenever it takes focus, as a browser's
@@ -888,13 +947,13 @@ impl View {
     /// the caret (see `EditorHandle::set_select_on_focus`). Only editor
     /// roots accept this.
     pub fn select_on_focus(mut self, select: bool) -> Self {
-        self.select_on_focus = Some(select);
+        self.rare_mut().select_on_focus = Some(select);
         self
     }
     /// A password field: its text shows masked and can't be copied (see
     /// `EditorHandle::set_secure`). Only editor views take it.
     pub fn secure(mut self, secure: bool) -> Self {
-        self.secure = Some(secure);
+        self.rare_mut().secure = Some(secure);
         self
     }
     /// Check the spelling as it is typed, as a browser's text fields do
@@ -908,14 +967,14 @@ impl View {
     /// `spellcheck`, following the reactive values it reads (a setting):
     /// turned off, the marks go; turned on, the whole text is checked.
     pub fn spellcheck_when(mut self, check: impl FnMut() -> bool + 'static) -> Self {
-        self.spellcheck = Some(Box::new(check));
+        self.rare_mut().spellcheck = Some(Box::new(check));
         self
     }
     /// Number a multiline editor's lines in a gutter at its left, as a code
     /// editor does (see `EditorHandle::set_line_numbers`). Only editor roots
     /// accept this.
     pub fn line_numbers(mut self, numbered: bool) -> Self {
-        self.line_numbers = Some(numbered);
+        self.rare_mut().line_numbers = Some(numbered);
         self
     }
     /// Make the view a window drag region, like CSS's
@@ -926,7 +985,7 @@ impl View {
     /// descendants keep their presses. The desktop host performs it (see
     /// `Ui::take_window_gesture`).
     pub fn window_drag(mut self) -> Self {
-        self.window_drag = true;
+        self.rare_mut().window_drag = true;
         self
     }
     /// Let the pointer select the text in this view and everything it holds,
@@ -939,7 +998,7 @@ impl View {
     /// their own text, and links and buttons inside still click (a drag
     /// that starts on one selects).
     pub fn selectable(mut self, selectable: bool) -> Self {
-        self.selectable = Some(selectable);
+        self.rare_mut().selectable = Some(selectable);
         self
     }
     /// The highlight behind this selectable region's selected text, in place
@@ -953,7 +1012,10 @@ impl View {
         mut self,
         color: impl FnMut() -> crate::scene::Color + 'static,
     ) -> Self {
-        self.selection_style.get_or_insert_default().background = Some(Box::new(color));
+        self.rare_mut()
+            .selection_style
+            .get_or_insert_default()
+            .background = Some(Box::new(color));
         self
     }
     /// The colour of this selectable region's selected text, in place of
@@ -968,7 +1030,7 @@ impl View {
         mut self,
         color: impl FnMut() -> crate::scene::Color + 'static,
     ) -> Self {
-        self.selection_style.get_or_insert_default().text = Some(Box::new(color));
+        self.rare_mut().selection_style.get_or_insert_default().text = Some(Box::new(color));
         self
     }
     /// A virtual list's plain text of row `index` (`None` past its end):
@@ -977,50 +1039,16 @@ impl View {
     /// copying it copies it all. Mounted rows copy as they show. Without
     /// it, only mounted rows copy. For a virtual list.
     pub fn row_text(mut self, text: impl Fn(usize) -> Option<String> + 'static) -> Self {
-        self.row_text = Some(std::rc::Rc::new(text));
+        self.rare_mut().row_text = Some(std::rc::Rc::new(text));
         self
     }
     // Wrapper properties refine the component's actual root without an extra layout box.
     fn refine(self, mut inner: View) -> View {
-        if self.trigger_id.is_some() {
-            inner.trigger_id = self.trigger_id;
-        }
-        if self.dismiss_backdrop.is_some() {
-            inner.dismiss_backdrop = self.dismiss_backdrop;
-        }
-        if self.portal.is_some() {
-            inner.portal = self.portal;
-        }
-        if self.keyboard_navigation.is_some() {
-            inner.keyboard_navigation = self.keyboard_navigation;
-        }
-        if self.scrollbar.is_some() {
-            inner.scrollbar = self.scrollbar;
-        }
-        if self.follow_end.is_some() {
-            inner.follow_end = self.follow_end;
-        }
         inner.events.extend(self.events);
-        inner.keymap.extend(self.keymap);
-        if self.drag_preview.is_some() {
-            inner.drag_preview = self.drag_preview;
-        }
-        if self.context_menu.is_some() {
-            inner.context_menu = self.context_menu;
-        }
-        if self.context_menu_style.is_some() {
-            inner.context_menu_style = self.context_menu_style;
-        }
-        if self.context_menu_below.is_some() {
-            inner.context_menu_below = self.context_menu_below;
-        }
         if self.focusable.is_some() {
             inner.focusable = self.focusable;
         }
         inner.contents |= self.contents;
-        if self.pointer_events.is_some() {
-            inner.pointer_events = self.pointer_events;
-        }
         inner.styles.merge(&self.styles);
         inner.children.extend(self.children);
         fn merge_variant(base: &mut Option<Box<Styles>>, patch: Option<Box<Styles>>) {
@@ -1079,45 +1107,16 @@ impl View {
         if self.disabled.is_some() {
             inner.disabled = self.disabled;
         }
-        if self.read_only.is_some() {
-            inner.read_only = self.read_only;
-        }
         if self.click.is_some() {
             inner.click = self.click;
         }
         if self.id.is_some() {
             inner.id = self.id;
         }
-        if self.placeholder.is_some() {
-            inner.placeholder = self.placeholder;
-        }
-        if self.placeholder_color.is_some() {
-            inner.placeholder_color = self.placeholder_color;
-        }
-        if self.select_on_focus.is_some() {
-            inner.select_on_focus = self.select_on_focus;
-        }
-        if self.spellcheck.is_some() {
-            inner.spellcheck = self.spellcheck;
-        }
-        if self.secure.is_some() {
-            inner.secure = self.secure;
-        }
-        if self.line_numbers.is_some() {
-            inner.line_numbers = self.line_numbers;
-        }
-        inner.window_drag |= self.window_drag;
-        if self.selectable.is_some() {
-            inner.selectable = self.selectable;
-        }
-        if self.selection_style.is_some() {
-            inner.selection_style = self.selection_style;
-        }
-        if self.row_text.is_some() {
-            inner.row_text = self.row_text;
-        }
         inner.mounted.extend(self.mounted);
-        inner.conditional.extend(self.conditional);
+        if let Some(rare) = self.rare {
+            rare.merge_into(inner.rare_mut());
+        }
         inner
     }
 }
@@ -1227,7 +1226,7 @@ pub fn animated_image(
     animation: std::sync::Arc<crate::animation::Animation>,
 ) -> View {
     let mut view = image(label, animation.frames()[0].image.clone());
-    view.animation = Some(animation::Animated {
+    view.rare_mut().animation = Some(animation::Animated {
         animation,
         playing: None,
     });
@@ -1240,7 +1239,7 @@ pub fn animated_image_controlled(
     playing: Signal<bool>,
 ) -> View {
     let mut view = animated_image(label, animation);
-    view.animation.as_mut().unwrap().playing = Some(playing);
+    view.rare_mut().animation.as_mut().unwrap().playing = Some(playing);
     view
 }
 /// A retained CoreVideo frame (see [`crate::native_surface`]), shown
@@ -2017,12 +2016,13 @@ fn mount_overlay(
         Kind::Submenu { label, open } => {
             // The app's own trigger row (a menu item with content), or the
             // label with a chevron.
-            let mut anchor = match view.portal.as_mut().and_then(|p| p.trigger.take()) {
+            let trigger = view.rare.as_mut().and_then(|r| r.portal.as_mut());
+            let mut anchor = match trigger.and_then(|p| p.trigger.take()) {
                 Some(trigger) => trigger,
                 None => menu_item(label.clone()),
             };
-            anchor.menu_trigger = Some(open.clone());
-            if let Some(id) = view.trigger_id.take() {
+            anchor.rare_mut().menu_trigger = Some(open.clone());
+            if let Some(id) = view.rare.as_mut().and_then(|r| r.trigger_id.take()) {
                 anchor.id = Some(id);
             }
             mount_portal(
@@ -2086,7 +2086,8 @@ fn mount_portal(
     if let Some(anchor) = anchor {
         ui.listen_popup_soon(anchor);
     }
-    if !view.portal.as_ref().is_some_and(|p| p.lazy) {
+    let options = view.rare.as_ref().and_then(|r| r.portal.as_ref());
+    if !options.is_some_and(|p| p.lazy) {
         mount_portal_panel(
             ui,
             owner,
@@ -2177,7 +2178,8 @@ fn mount_portal_panel(
         environment.menu = Some(menu.clone());
     }
 
-    let is_layer = view.portal.as_ref().is_some_and(|p| p.layer);
+    let options = view.rare.as_ref().and_then(|r| r.portal.as_ref());
+    let is_layer = options.is_some_and(|p| p.layer);
     // A layer's panel is only what it holds; a dialog's or menu's is a card.
     let mut defaults = if is_layer {
         Styles::new()
@@ -2228,10 +2230,11 @@ fn mount_portal_panel(
     }));
     // A submenu leaves the pointer to its parent menu (moving over its other
     // items closes it); the parent's backdrop dismisses both.
-    let dismiss_backdrop = view.dismiss_backdrop.take().unwrap_or(!is_submenu);
-    let (placement, modal_placement, autofocus, over, arrow) = view
-        .portal
-        .take()
+    let mut rare = view.rare.as_mut();
+    let dismiss_backdrop = rare.as_mut().and_then(|r| r.dismiss_backdrop.take());
+    let dismiss_backdrop = dismiss_backdrop.unwrap_or(!is_submenu);
+    let (placement, modal_placement, autofocus, over, arrow) = rare
+        .and_then(|r| r.portal.take())
         .map_or((None, None, None, None, None), |p| {
             (p.placement, p.modal_placement, p.autofocus, p.over, p.arrow)
         });
@@ -2244,7 +2247,9 @@ fn mount_portal_panel(
     let placement = placement.unwrap_or_default();
     let panel_focusable = view.focusable.unwrap_or(true);
     let layout_target = is_menu.then(|| ui.signal(None));
-    view.layout_target = layout_target.clone();
+    if layout_target.is_some() || view.rare.is_some() {
+        view.rare_mut().layout_target = layout_target.clone();
+    }
     let menu_children = if is_menu {
         std::mem::take(&mut view.children)
     } else {
@@ -2513,26 +2518,7 @@ fn mount_element(
     mut view: View,
     environment: Environment,
 ) -> NodeId {
-    assert!(
-        view.trigger_id.is_none(),
-        "trigger_id is only supported on submenu views"
-    );
-    assert!(
-        view.dismiss_backdrop.is_none(),
-        "dismiss_on_backdrop is only supported on modal and popover views"
-    );
-    assert!(
-        view.keyboard_navigation.is_none() || matches!(kind, Kind::VirtualList(_)),
-        "keyboard_navigation is only supported on virtual_list views"
-    );
-    let keyboard_navigation = view.keyboard_navigation.unwrap_or(false);
     let _theme = ui.enter_theme(&environment.theme);
-    assert!(
-        view.scrollbar.is_none() || matches!(kind, Kind::Scroll { .. } | Kind::VirtualList(_)),
-        "scrollbar is only supported on scroll, scroll_x, and virtual_list views"
-    );
-    let scrollbar = view.scrollbar.unwrap_or(false);
-    let follow_end = view.follow_end.unwrap_or(false);
     // Decorated/padded text gets an actual layout box. Plain text stays a single
     // node, keeping common reactive labels small. Dynamic/state styles may add
     // decoration later, so reserve that box at mount rather than remount on hover.
@@ -2564,11 +2550,39 @@ fn mount_element(
             );
         }
     }
+    // What few views set, out of its box for the rest of mounting.
+    let mut rare = view.rare.take();
+    assert!(
+        rare.as_ref().is_none_or(|r| r.trigger_id.is_none()),
+        "trigger_id is only supported on submenu views"
+    );
+    assert!(
+        rare.as_ref().is_none_or(|r| r.dismiss_backdrop.is_none()),
+        "dismiss_on_backdrop is only supported on modal and popover views"
+    );
+    assert!(
+        rare.as_ref()
+            .is_none_or(|r| r.keyboard_navigation.is_none())
+            || matches!(kind, Kind::VirtualList(_)),
+        "keyboard_navigation is only supported on virtual_list views"
+    );
+    let keyboard_navigation = rare
+        .as_ref()
+        .and_then(|r| r.keyboard_navigation)
+        .unwrap_or(false);
+    assert!(
+        rare.as_ref().is_none_or(|r| r.scrollbar.is_none())
+            || matches!(kind, Kind::Scroll { .. } | Kind::VirtualList(_)),
+        "scrollbar is only supported on scroll, scroll_x, and virtual_list views"
+    );
+    let scrollbar = rare.as_ref().and_then(|r| r.scrollbar).unwrap_or(false);
+    let follow_end = rare.as_ref().and_then(|r| r.follow_end).unwrap_or(false);
     let mut opened = open_element(
         ui,
         parent,
         kind,
         view,
+        rare.as_deref_mut(),
         environment,
         keyboard_navigation,
         scrollbar,
@@ -2614,6 +2628,7 @@ fn open_element(
     parent: NodeId,
     kind: Kind,
     mut view: View,
+    mut rare: Option<&mut Rare>,
     mut environment: Environment,
     keyboard_navigation: bool,
     scrollbar: bool,
@@ -2629,30 +2644,35 @@ fn open_element(
     let mut image_source = None;
     let mut image_intrinsic = None;
     let is_menu_item = matches!(kind, Kind::MenuItem(_));
-    let is_submenu_trigger = is_menu_item && view.menu_trigger.is_some();
+    let is_submenu_trigger =
+        is_menu_item && rare.as_deref().is_some_and(|r| r.menu_trigger.is_some());
     // A trigger drawn by the app (`View::trigger`) shows its own chevron.
     let submenu_indicator = is_submenu_trigger && view.children.is_empty();
     // Outside a menu (a popover's list) an item is a plain action.
     let item_menu = is_menu_item.then(|| environment.menu.clone()).flatten();
     let is_editor = matches!(kind, Kind::Editor { .. });
     assert!(
-        view.read_only.is_none() || is_editor,
+        rare.as_deref().is_none_or(|r| r.read_only.is_none()) || is_editor,
         "read_only is only supported on editor views"
     );
     assert!(
-        view.spellcheck.is_none() || is_editor,
+        rare.as_deref().is_none_or(|r| r.spellcheck.is_none()) || is_editor,
         "spellcheck is only supported on editor views"
     );
     assert!(
-        (view.placeholder.is_none() && view.placeholder_color.is_none()) || is_editor,
+        (rare.as_deref().is_none_or(|r| r.placeholder.is_none())
+            && rare
+                .as_deref()
+                .is_none_or(|r| r.placeholder_color.is_none()))
+            || is_editor,
         "placeholder is only supported on editor views"
     );
     assert!(
-        view.select_on_focus.is_none() || is_editor,
+        rare.as_deref().is_none_or(|r| r.select_on_focus.is_none()) || is_editor,
         "select_on_focus is only supported on editor views"
     );
     assert!(
-        view.line_numbers.is_none() || is_editor,
+        rare.as_deref().is_none_or(|r| r.line_numbers.is_none()) || is_editor,
         "line_numbers is only supported on editor views"
     );
     if is_editor {
@@ -2772,7 +2792,7 @@ fn open_element(
             }
             let root = ui.container(parent, Layout::Row, Default::default());
             let mut semantic = SemanticNode::new(Role::MenuItem, label.clone());
-            semantic.checked = view.menu_checked;
+            semantic.checked = rare.as_deref().and_then(|r| r.menu_checked);
             ui.semantics.borrow_mut().set(root, semantic);
             if view.children.is_empty() {
                 if is_submenu_trigger {
@@ -2950,12 +2970,12 @@ fn open_element(
     if view.contents {
         ui.scene.borrow_mut().set_contents(root, true);
     }
-    match view.selectable {
+    match rare.as_deref().and_then(|r| r.selectable) {
         Some(true) => crate::selection::mount_root(
             ui,
             root,
-            view.selection_style
-                .take()
+            rare.as_deref_mut()
+                .and_then(|r| r.selection_style.take())
                 .map(|style| *style)
                 .unwrap_or_default(),
         ),
@@ -2967,38 +2987,48 @@ fn open_element(
         .unwrap_or(interactive || is_editor || is_slider || keyboard_navigation);
     // Prepend in reverse so declaration order is preserved even when a primitive
     // constructor (such as an editor) already registered its default handlers.
-    if let Some(preview) = view.drag_preview {
+    if let Some(preview) = rare.as_deref_mut().and_then(|r| r.drag_preview.take()) {
         crate::compose_drag::mount(ui, root, preview);
     }
     // A selectable region's own menu (Copy, Select All), or an editor's
     // (Cut, Copy, Paste, Select All), unless it has one.
-    let context_menu = view.context_menu.take().or_else(|| {
-        if let Some(editor) = &editor {
-            return Some(crate::editor_menu::context_menu(
-                editor.clone(),
-                environment.services.get(),
-            ));
-        }
-        (view.selectable == Some(true))
-            .then(|| crate::selection::context_menu(ui, root, environment.services.get()))
-    });
+    let context_menu = rare
+        .as_deref_mut()
+        .and_then(|r| r.context_menu.take())
+        .or_else(|| {
+            if let Some(editor) = &editor {
+                return Some(crate::editor_menu::context_menu(
+                    editor.clone(),
+                    environment.services.get(),
+                ));
+            }
+            (rare.as_deref().and_then(|r| r.selectable) == Some(true))
+                .then(|| crate::selection::context_menu(ui, root, environment.services.get()))
+        });
     if let Some(build) = context_menu {
-        let style = view.context_menu_style.take().map(|style| *style);
-        let below = view.context_menu_below.unwrap_or(false);
+        let style = rare
+            .as_deref_mut()
+            .and_then(|r| r.context_menu_style.take())
+            .map(|style| *style);
+        let below = rare
+            .as_deref()
+            .and_then(|r| r.context_menu_below)
+            .unwrap_or(false);
         crate::compose_context_menu::mount(ui, root, build, style, below, environment.clone());
     }
     for callback in view.events.into_iter().rev() {
         let binding = ui.input.listen_first(root, callback);
         ui.retain(root, binding);
     }
-    if view.window_drag {
+    if rare.as_deref().is_some_and(|r| r.window_drag) {
         mount_window_drag(ui, root);
     }
-    if !view.keymap.bindings.is_empty()
-        || !view.keymap.contexts.is_empty()
-        || !view.keymap.context.entries.is_empty()
+    if let Some(rare) = rare.as_deref_mut()
+        && (!rare.keymap.bindings.is_empty()
+            || !rare.keymap.contexts.is_empty()
+            || !rare.keymap.context.entries.is_empty())
     {
-        let binding = ui.input.bind_keys(root, view.keymap);
+        let binding = ui.input.bind_keys(root, std::mem::take(&mut rare.keymap));
         ui.retain(root, binding);
     }
     if interactive {
@@ -3020,8 +3050,8 @@ fn open_element(
         let menu_click = item_menu
             .as_ref()
             .map(|_| Rc::new(RefCell::new(click.take())));
-        let menu_trigger = view.menu_trigger.take();
-        let keep_open = view.menu_keep_open;
+        let menu_trigger = rare.as_deref_mut().and_then(|r| r.menu_trigger.take());
+        let keep_open = rare.as_deref().is_some_and(|r| r.menu_keep_open);
         let runner = item_menu
             .as_ref()
             .and_then(|_| environment.services.get::<TaskRunner>());
@@ -3102,9 +3132,11 @@ fn open_element(
         });
     }
     let scroll_layout_target = is_scroll.then(|| ui.signal(None));
-    if is_scroll {
-        view.layout_target = scroll_layout_target.clone();
-    }
+    // A scroll view's layout follows its content; another's, its own.
+    let layout_target = match is_scroll {
+        true => scroll_layout_target.clone(),
+        false => rare.as_deref_mut().and_then(|r| r.layout_target.take()),
+    };
     let image_fit = is_image.then(|| ui.signal(crate::style::ObjectFit::default()));
     environment.typography = mount_style_with_intrinsic(
         ui,
@@ -3116,7 +3148,7 @@ fn open_element(
         view.disabled,
         focusable,
         image_intrinsic,
-        view.layout_target,
+        layout_target,
         image_fit.clone(),
         Some(environment.theme.clone()),
     );
@@ -3428,7 +3460,7 @@ fn open_element(
     }
     if let Some(source) = image_source {
         mount_image(ui, root, source.clone(), image_fit.expect("image fitting"));
-        if let Some(animation) = view.animation.take() {
+        if let Some(animation) = rare.as_deref_mut().and_then(|r| r.animation.take()) {
             animation::mount(ui, root, source, animation, &environment);
         }
     }
@@ -3439,28 +3471,31 @@ fn open_element(
         mount_slider(ui, root, value, range, environment.typography.clone());
     }
     if let Some(editor) = editor {
-        if let Some(mut read_only) = view.read_only.take() {
+        if let Some(mut read_only) = rare.as_deref_mut().and_then(|r| r.read_only.take()) {
             let editor = editor.clone();
             ui.bind(root, move || editor.set_read_only(read_only()));
         }
-        if let Some(select) = view.select_on_focus {
+        if let Some(select) = rare.as_deref().and_then(|r| r.select_on_focus) {
             editor.set_select_on_focus(select);
         }
-        if let Some(secure) = view.secure {
+        if let Some(secure) = rare.as_deref().and_then(|r| r.secure) {
             editor.set_secure(secure);
         }
-        if let Some(check) = view.spellcheck.take()
-            && view.secure != Some(true)
+        if let Some(check) = rare.as_deref_mut().and_then(|r| r.spellcheck.take())
+            && rare.as_deref().and_then(|r| r.secure) != Some(true)
             && let Some(platform) = environment
                 .services
                 .get::<crate::platform::PlatformService>()
         {
             crate::editor_spell::mount(ui, editor.clone(), platform, check);
         }
-        if let Some(numbered) = view.line_numbers {
+        if let Some(numbered) = rare.as_deref().and_then(|r| r.line_numbers) {
             editor.set_line_numbers(numbered);
         }
-        let (mut text, mut color) = (view.placeholder.take(), view.placeholder_color.take());
+        let (mut text, mut color) = (
+            rare.as_deref_mut().and_then(|r| r.placeholder.take()),
+            rare.as_deref_mut().and_then(|r| r.placeholder_color.take()),
+        );
         if text.is_some() {
             let editor = editor.clone();
             ui.bind(root, move || {
@@ -3516,11 +3551,14 @@ fn open_element(
     let child_parent = scroll_nodes.map_or(root, |(_, content)| content);
     Opened {
         children: view.children,
-        conditional: view.conditional,
-        row_text: view.row_text,
-        pointer_events: view.pointer_events,
-        accessible_label: view.accessible_label,
-        accessibility: view.accessibility,
+        conditional: rare
+            .as_deref_mut()
+            .map(|r| std::mem::take(&mut r.conditional))
+            .unwrap_or_default(),
+        row_text: rare.as_deref_mut().and_then(|r| r.row_text.take()),
+        pointer_events: rare.as_deref_mut().and_then(|r| r.pointer_events.take()),
+        accessible_label: rare.as_deref_mut().and_then(|r| r.accessible_label.take()),
+        accessibility: rare.and_then(|r| r.accessibility.take()),
         mounted: view.mounted,
         focusable_set: view.focusable.is_some(),
         environment,

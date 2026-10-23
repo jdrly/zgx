@@ -110,7 +110,7 @@ impl View {
         mut build: impl FnMut(&T) -> View + 'static,
         cursor_offset: Option<(f32, f32)>,
     ) -> Self {
-        self.drag_preview = Some(PreviewBuilder {
+        self.rare_mut().drag_preview = Some(PreviewBuilder {
             build: Box::new(move |payload| payload.downcast_ref::<T>().map(&mut build)),
             cursor_offset,
         });
