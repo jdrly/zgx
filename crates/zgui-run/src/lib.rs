@@ -35,6 +35,8 @@ pub fn menus(commands: &[Command]) -> Vec<AppMenu> {
 }
 
 /// `cmd+shift+d`, `cmd+alt+arrowleft`, `cmd+1`, `cmd+[` as an accelerator.
+/// `cmd` is the platform's command key, as menus' shortcuts use it: Command
+/// on macOS, Control elsewhere (`super` and `meta` name the key itself).
 pub fn accelerator(text: &str) -> Option<MenuAccelerator> {
     let mut modifiers = Modifiers::default();
     let mut parts: Vec<&str> = text.split('+').collect();
@@ -42,7 +44,9 @@ pub fn accelerator(text: &str) -> Option<MenuAccelerator> {
     let key = parts.pop()?.to_ascii_lowercase();
     for part in parts {
         match part.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "super" | "meta" => modifiers.meta = true,
+            "cmd" | "command" if cfg!(target_os = "macos") => modifiers.meta = true,
+            "cmd" | "command" => modifiers.control = true,
+            "super" | "meta" => modifiers.meta = true,
             "ctrl" | "control" => modifiers.control = true,
             "alt" | "opt" | "option" => modifiers.alt = true,
             "shift" => modifiers.shift = true,
@@ -326,6 +330,11 @@ mod tests {
         let error = AppConfig::for_script(&script).unwrap_err();
         assert!(error.contains("unknown key `widht`"), "{error}");
         assert!(accelerator("cmd+shift+d").is_some());
+        // Cmd+N is Ctrl+N off macOS: there, Win+N is Windows' own.
+        let new = accelerator("cmd+n").unwrap().0;
+        assert_eq!(new.modifiers.meta, cfg!(target_os = "macos"));
+        assert_eq!(new.modifiers.control, !cfg!(target_os = "macos"));
+        assert!(accelerator("super+n").unwrap().0.modifiers.meta);
         std::fs::remove_dir_all(dir).ok();
     }
 }

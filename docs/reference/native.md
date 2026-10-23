@@ -72,7 +72,7 @@ A `Term`'s `id`, `title`, `pwd`, `process`, `pid`, `focused`, `bell` (it rang si
 | `id` | `string` | required | unique among the run's commands |
 | `title` | `string` | the id | the menu item's text |
 | `menu` | `string` | `"File"` | `"File"`, `"Edit"`, `"View"`, `"Window"` or any other menu |
-| `key` | `string` | none | modifiers and a key joined by `+`: `"cmd+shift+d"`, `"cmd+alt+arrowleft"`, `"cmd+["`, `"ctrl+tab"` |
+| `key` | `string` | none | modifiers and a key joined by `+`: `"cmd+shift+d"`, `"cmd+alt+arrowleft"`, `"cmd+["`, `"ctrl+tab"`. `cmd` is Command on macOS and Control elsewhere; `super` names the Windows or Super key itself |
 | `run` | `() -> ()` | required | called when it is chosen |
 | `separator` | `boolean` | `false` | a separator line in `menu` instead of a command (`id` and `run` are not needed) |
 
