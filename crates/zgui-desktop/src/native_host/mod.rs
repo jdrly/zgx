@@ -93,8 +93,14 @@ pub(crate) struct NativeHost {
 impl NativeHost {
     pub fn new(ui: &Ui, wake: impl Fn() + 'static) -> Self {
         let natives = NativeViews::new();
+        // Pages go in DirectComposition visuals, which only Direct3D 12
+        // presents into: a `WGPU_BACKEND` without it leaves them placeholders.
         #[cfg(all(windows, feature = "webview2"))]
-        let supported = webview2::available();
+        let supported = webview2::available()
+            && std::env::var("WGPU_BACKEND").map_or(true, |backends| {
+                let backends = backends.to_ascii_lowercase();
+                backends.contains("dx12") || backends.contains("d3d12")
+            });
         #[cfg(not(all(windows, feature = "webview2")))]
         let supported = cfg!(target_os = "macos");
         natives.set_supported(supported);
@@ -134,16 +140,26 @@ impl NativeHost {
             self.surfaces = None;
             self.composition = None;
             match dcomp::Composition::new(&window) {
-                Ok(composition) => {
-                    let renderer = zgui_gpu::GpuRenderer::for_window_visual(
-                        window,
-                        composition.base.clone(),
-                        composition.device.clone(),
-                        context,
-                    )?;
-                    self.composition = Some(Rc::new(composition));
-                    return Ok(renderer);
-                }
+                Ok(composition) => match zgui_gpu::GpuRenderer::for_window_visual(
+                    window.clone(),
+                    composition.base.clone(),
+                    composition.device.clone(),
+                    context,
+                ) {
+                    Ok(renderer) => {
+                        self.composition = Some(Rc::new(composition));
+                        return Ok(renderer);
+                    }
+                    // Another shared context may suit the window: the caller tries it.
+                    Err(error) if error.is_surface_incompatible() => return Err(error),
+                    // No Direct3D 12 (Vulkan presents to the window, not to
+                    // visuals): the window as without native views.
+                    Err(error) => {
+                        eprintln!("zgui: native views unavailable: {error}");
+                        drop(composition);
+                        self.natives.set_supported(false);
+                    }
+                },
                 Err(error) => {
                     eprintln!("zgui: native views unavailable: {error}");
                     self.natives.set_supported(false);
@@ -333,11 +349,13 @@ impl NativeHost {
     pub fn begin(&self) -> Option<platform::Transaction> {
         #[cfg(target_os = "macos")]
         return self.active().then(macos::Transaction::begin);
+        // Also for the frame that takes the last page out (DirectComposition
+        // shows nothing until it commits, where Core Animation commits itself).
         #[cfg(all(windows, feature = "webview2"))]
         return self
             .composition
             .as_ref()
-            .filter(|_| self.active())
+            .filter(|_| self.active() || self.pending)
             .map(|composition| dcomp::Transaction::begin(composition.clone()));
     }
     /// Within `begin`'s transaction: show the overlay plane's frame (before

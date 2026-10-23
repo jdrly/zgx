@@ -23,11 +23,13 @@ use windows::{
         Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
         Graphics::DirectComposition::IDCompositionVisual,
         System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, IStream},
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{GetFocus, SetFocus},
             Shell::SHCreateMemStream,
             WindowsAndMessaging::{
-                HCURSOR, IsChild, PostMessageW, RegisterWindowMessageW, SetCursor,
+                CreateWindowExW, DefWindowProcW, HCURSOR, HWND_MESSAGE, IsChild, PostMessageW,
+                RegisterClassW, SetCursor, WM_APP, WNDCLASSW,
             },
         },
     },
@@ -271,17 +273,60 @@ thread_local! {
 /// Answers from any thread, until the UI thread hands them to WebView2.
 static ANSWERS: Mutex<Vec<(u64, Option<SchemeResponse>)>> = Mutex::new(Vec::new());
 
-/// The window message that has the UI thread hand over answers (dcomp.rs's
-/// subclass calls `deliver_answers` for it).
-pub(crate) fn answer_message() -> u32 {
-    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    // SAFETY: registers (or finds) a message name.
-    *MESSAGE.get_or_init(|| unsafe {
-        RegisterWindowMessageW(windows::core::w!("zgui.webview2.answers"))
+/// A message-only window of the UI thread's that hands answers over when
+/// posted to (`deliver_answers`), whatever window asked: one closed since
+/// still gets its requests completed. Made with the first request (UI thread).
+fn answers_window() -> isize {
+    thread_local! {
+        static WINDOW: std::cell::OnceCell<isize> = const { std::cell::OnceCell::new() };
+    }
+    unsafe extern "system" fn procedure(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        if message == WM_APP {
+            deliver_answers();
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+        // SAFETY: the default procedure, for our own window.
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    }
+    WINDOW.with(|window| {
+        *window.get_or_init(|| {
+            let class = windows::core::w!("zgui.webview2.answers");
+            // SAFETY: registers a class of ours and makes a message-only
+            // window of it, which lives as long as the thread.
+            unsafe {
+                let instance = GetModuleHandleW(None).unwrap_or_default();
+                RegisterClassW(&WNDCLASSW {
+                    lpfnWndProc: Some(procedure),
+                    hInstance: instance.into(),
+                    lpszClassName: class,
+                    ..Default::default()
+                });
+                CreateWindowExW(
+                    Default::default(),
+                    class,
+                    None,
+                    Default::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(HWND_MESSAGE),
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .map_or(0, |hwnd| hwnd.0 as isize)
+            }
+        })
     })
 }
 /// Hand WebView2 the scheme answers that arrived (UI thread).
-pub(crate) fn deliver_answers() {
+fn deliver_answers() {
     let answers = std::mem::take(&mut *ANSWERS.lock().unwrap_or_else(|e| e.into_inner()));
     for (id, response) in answers {
         let Some(served) = SERVED.with(|served| served.borrow_mut().remove(&id)) else {
@@ -343,6 +388,8 @@ pub(crate) struct Page {
     ready: RefCell<Option<Ready>>,
     /// Commands from before the page was ready, in order.
     queued: RefCell<Vec<WebViewCommand>>,
+    /// Ready and its scripts in: commands run at once.
+    started: Cell<bool>,
     /// The page could not be made.
     failed: Cell<bool>,
     /// The visual it shows in, its bounds in the window (physical pixels:
@@ -365,15 +412,21 @@ pub(crate) struct Page {
     serving: RefCell<Option<String>>,
     /// The URL of the last top-frame navigation that started.
     navigating: RefCell<String>,
+    /// The folder of HTML shown with a file base (see `served_url`).
+    files: RefCell<Option<std::path::PathBuf>>,
     /// The app schemes it serves (its options' that WebView2 can take).
     schemes: RefCell<Vec<String>>,
+    /// Commits the tree of the window it shows in, for changes made outside
+    /// that window's frames (the page becoming ready, or going).
+    commit: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 /// The `WebViewBackend` of a page (its `as_any` finds the page).
 pub(crate) struct Backend(pub Rc<Page>);
 impl WebViewBackend for Backend {
     fn run(&self, command: WebViewCommand) {
-        if self.0.ready.borrow().is_some() {
+        // Queued until its scripts are in: then in order.
+        if self.0.started.get() {
             self.0.run(command);
         } else if !self.0.failed.get() {
             self.0.queued.borrow_mut().push(command);
@@ -395,6 +448,7 @@ impl Drop for Backend {
                 let _ = ready.composition.SetRootVisualTarget(None);
                 let _ = ready.controller.Close();
             }
+            self.0.committed();
         }
     }
 }
@@ -418,6 +472,7 @@ pub(crate) fn backend(web: &WebView, parent: HWND, scale: f32) -> Option<Rc<Page
         web: web.downgrade(),
         ready: RefCell::new(None),
         queued: RefCell::new(Vec::new()),
+        started: Cell::new(false),
         failed: Cell::new(false),
         target: RefCell::new(None),
         bounds: Cell::new((0, 0, 0, 0)),
@@ -431,7 +486,9 @@ pub(crate) fn backend(web: &WebView, parent: HWND, scale: f32) -> Option<Rc<Page
         html: RefCell::new(None),
         serving: RefCell::new(None),
         navigating: RefCell::new(String::new()),
+        files: RefCell::new(None),
         schemes: RefCell::new(Vec::new()),
+        commit: RefCell::new(None),
     });
     web.attach(Rc::new(Backend(page.clone())));
     let mut schemes: Vec<String> = Vec::new();
@@ -623,7 +680,14 @@ impl Page {
             .iter()
             .map(|script| {
                 if script.main_frame_only {
-                    format!("if (window === window.top) {{\n{}\n}}", script.source)
+                    // WebView2 injects into every frame. Stopped at its top in
+                    // iframes, the source stays a script of its own in the top
+                    // frame: its top-level `const`, `let` and `class` are
+                    // global, as WebKit's are (a block or an eval would scope them).
+                    format!(
+                        "if (window !== window.top) throw 'zgui: a main-frame-only script';\n{}",
+                        script.source
+                    )
                 } else {
                     script.source.clone()
                 }
@@ -635,11 +699,13 @@ impl Page {
         let view = ready.view.clone();
         *self.ready.borrow_mut() = Some(ready);
         self.apply_target();
+        self.committed();
         let remaining = Rc::new(Cell::new(scripts.len()));
         let weak = Rc::downgrade(self);
         let start = Rc::new(move || {
             if let Some(page) = weak.upgrade() {
                 let queued = std::mem::take(&mut *page.queued.borrow_mut());
+                page.started.set(true);
                 for command in queued {
                     page.run(command);
                 }
@@ -759,6 +825,29 @@ impl Page {
                 })),
                 &mut token,
             );
+            // As WebKit with no delegate for them: pages save no files and
+            // get no permission (camera, location, notifications, the
+            // clipboard) in the app's name.
+            let _ = view.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                    if let Some(args) = args {
+                        let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            );
+            if let Ok(view) = view.cast::<ICoreWebView2_4>() {
+                let _ = view.add_DownloadStarting(
+                    &DownloadStartingEventHandler::create(Box::new(|_, args| {
+                        if let Some(args) = args {
+                            let _ = args.SetCancel(true);
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                );
+            }
             let new_windows = options.new_windows;
             let page = on.clone();
             let _ = view.add_NewWindowRequested(
@@ -1041,16 +1130,27 @@ impl Page {
         };
         // SAFETY: as above.
         let url = take(|v| unsafe { request.Uri(v) });
-        if let Some(html) = self.html_for(&url) {
+        let local = match self.html_for(&url) {
+            Some(html) => Some((html.into_bytes(), "text/html; charset=utf-8")),
+            None if url.starts_with(FILE_ORIGIN) => {
+                // The HTML's folder: a file of it, or not found.
+                Some(self.serve_file(&url).unwrap_or((Vec::new(), "")))
+            }
+            None => None,
+        };
+        if let Some((body, kind)) = local {
+            let (status, reason) = if kind.is_empty() {
+                (404, windows::core::w!("Not Found"))
+            } else {
+                (200, windows::core::w!("OK"))
+            };
+            let headers = HSTRING::from(format!("Content-Type: {kind}"));
             // SAFETY: as above.
             unsafe {
-                let stream: Option<IStream> = SHCreateMemStream(Some(html.as_bytes()));
-                if let Ok(answer) = environment.CreateWebResourceResponse(
-                    stream.as_ref(),
-                    200,
-                    windows::core::w!("OK"),
-                    windows::core::w!("Content-Type: text/html; charset=utf-8"),
-                ) {
+                let stream: Option<IStream> = SHCreateMemStream(Some(&body));
+                if let Ok(answer) =
+                    environment.CreateWebResourceResponse(stream.as_ref(), status, reason, &headers)
+                {
                     let _ = args.SetResponse(&answer);
                 }
             }
@@ -1123,17 +1223,17 @@ impl Page {
                 },
             )
         });
-        let parent = self.parent.get().0 as isize;
+        let answers = answers_window();
         let responder = SchemeResponder::new(move |response| {
             ANSWERS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push((id, response));
-            // SAFETY: posts to the page's window (its subclass delivers).
+            // SAFETY: posts to the UI thread's answers window.
             let _ = unsafe {
                 PostMessageW(
-                    Some(HWND(parent as *mut c_void)),
-                    answer_message(),
+                    Some(HWND(answers as *mut c_void)),
+                    WM_APP,
                     WPARAM(0),
                     LPARAM(0),
                 )
@@ -1156,7 +1256,7 @@ impl Page {
     /// The HTML to answer a request for `url` with, while showing it there.
     fn html_for(&self, url: &str) -> Option<String> {
         let serving = self.serving.borrow();
-        if serving.as_deref() != Some(url) {
+        if serving.as_deref() != Some(normalized(url).as_str()) {
             return None;
         }
         self.html.borrow().as_ref().map(|(html, _)| html.clone())
@@ -1177,9 +1277,11 @@ impl Page {
     pub fn cursor(&self) -> Option<HCURSOR> {
         self.cursor.get()
     }
-    /// Show the page in `visual` (the innermost of its cuts) of window `parent`.
-    pub fn mount(&self, visual: &IDCompositionVisual, parent: HWND) {
+    /// Show the page in `visual` (the innermost of its cuts) of window
+    /// `parent`, whose tree `commit` commits. Within a frame: its commit shows it.
+    pub fn mount(&self, visual: &IDCompositionVisual, parent: HWND, commit: Rc<dyn Fn()>) {
         *self.target.borrow_mut() = Some(visual.clone());
+        *self.commit.borrow_mut() = Some(commit);
         if self.parent.replace(parent) != parent
             && let Some(ready) = &*self.ready.borrow()
         {
@@ -1252,6 +1354,13 @@ impl Page {
             })
         };
     }
+    /// Show a change made outside a frame of the page's window.
+    fn committed(&self) {
+        let commit = self.commit.borrow().clone();
+        if let Some(commit) = commit {
+            commit();
+        }
+    }
     /// Put the made controller where zgui placed the page.
     fn apply_target(&self) {
         let ready = self.ready.borrow();
@@ -1314,6 +1423,7 @@ impl Page {
                 WebViewCommand::LoadUrl(url) => {
                     self.html.replace(None);
                     self.serving.replace(None);
+                    self.files.replace(None);
                     let target = if std::path::Path::new(&url).is_absolute() && !url.contains("://")
                     {
                         // A path: show the file.
@@ -1337,8 +1447,11 @@ impl Page {
                 WebViewCommand::Reload => {
                     // Still on the HTML's page (not a link followed from it).
                     let html = self.html.borrow().clone().filter(|(_, base)| {
-                        let shown = base.clone().unwrap_or_else(|| "about:blank".into());
-                        take(|v| view.Source(v)) == shown
+                        let shown = match base {
+                            Some(_) => self.serving.borrow().clone().unwrap_or_default(),
+                            None => "about:blank".into(),
+                        };
+                        normalized(&take(|v| view.Source(v))) == shown
                     });
                     match html {
                         Some((html, base)) => self.show_html(view, html, base),
@@ -1392,14 +1505,16 @@ impl Page {
         unsafe {
             match &base {
                 Some(base) => {
-                    // Its requests come back to `serve`, answered with the HTML.
-                    let filter = HSTRING::from(base.as_str());
-                    let previous = self.serving.replace(Some(base.clone()));
-                    if previous.as_deref() != Some(base.as_str()) {
+                    // Its requests come back to `serve`, answered with the HTML,
+                    // at the URL as WebView2 writes it.
+                    let served = self.served_url(view, base);
+                    let filter = HSTRING::from(served.as_str());
+                    let previous = self.serving.replace(Some(served.clone()));
+                    if previous.as_deref() != Some(served.as_str()) {
                         if let Some(previous) = previous {
                             let _ = view.RemoveWebResourceRequestedFilter(
                                 &HSTRING::from(previous),
-                                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
                             );
                         }
                         let _ = view.AddWebResourceRequestedFilter(
@@ -1412,11 +1527,74 @@ impl Page {
                 }
                 None => {
                     self.serving.replace(None);
+                    self.files.replace(None);
                     let _ = view.NavigateToString(&HSTRING::from(html.as_str()));
                     self.html.replace(Some((html, None)));
                 }
             }
         }
+    }
+    /// Where HTML given for `base` is served: `base` as WebView2 writes it,
+    /// or, for a file (WebView2 asks the app for no `file:` request), its
+    /// name on a host of the page's own whose other paths are the files in
+    /// its folder (`serve_file`), so relative URLs find its neighbours.
+    fn served_url(&self, view: &ICoreWebView2, base: &str) -> String {
+        self.files.replace(None);
+        if !base.to_ascii_lowercase().starts_with("file:") {
+            return normalized(base);
+        }
+        let path = percent_decoded(base["file:".len()..].trim_start_matches('/'));
+        let path = std::path::PathBuf::from(path.replace('/', "\\"));
+        let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+            return normalized(base);
+        };
+        self.files.replace(Some(folder.to_path_buf()));
+        let filter = HSTRING::from(format!("{FILE_ORIGIN}/*"));
+        // SAFETY: WebView2 on the UI thread.
+        let _ = unsafe {
+            view.AddWebResourceRequestedFilter(&filter, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
+        };
+        format!("{FILE_ORIGIN}/{}", name.to_string_lossy())
+    }
+    /// A file of the HTML's folder, for a request on its host: its bytes and
+    /// type, or none (outside the folder, or missing).
+    fn serve_file(&self, url: &str) -> Option<(Vec<u8>, &'static str)> {
+        let folder = self.files.borrow().clone()?;
+        let path = url.strip_prefix(FILE_ORIGIN)?.split(['?', '#']).next()?;
+        let relative = percent_decoded(path.trim_start_matches('/'));
+        let mut file = folder.clone();
+        for part in relative.split(['/', '\\']) {
+            match part {
+                "" | "." => {}
+                // Never above the folder.
+                ".." => return None,
+                part => file.push(part),
+            }
+        }
+        let bytes = std::fs::read(&file).ok()?;
+        let kind = match file
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("html" | "htm") => "text/html; charset=utf-8",
+            Some("css") => "text/css",
+            Some("js" | "mjs") => "text/javascript",
+            Some("json") => "application/json",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("ico") => "image/x-icon",
+            Some("woff2") => "font/woff2",
+            Some("woff") => "font/woff",
+            Some("ttf") => "font/ttf",
+            Some("wasm") => "application/wasm",
+            Some("txt") => "text/plain; charset=utf-8",
+            _ => "application/octet-stream",
+        };
+        Some((bytes, kind))
     }
     fn evaluate(
         &self,
@@ -1477,6 +1655,52 @@ impl Page {
             let _ = view.ExecuteScript(&script, &handler);
         }
     }
+}
+
+/// Where HTML given with a file base is served, with its folder's files
+/// (see `served_url`).
+const FILE_ORIGIN: &str = "https://zgui-file.invalid";
+
+/// `text` with its `%XX` escapes decoded (UTF-8).
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (
+            bytes[i],
+            bytes.get(i + 1).copied().and_then(hex),
+            bytes.get(i + 2).copied().and_then(hex),
+        ) {
+            (b'%', Some(high), Some(low)) => {
+                out.push((high * 16 + low) as u8);
+                i += 3;
+            }
+            (byte, ..) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `url` as WebView2 writes a request's: scheme and host lowercase, a path
+/// (`/` at least) after an authority, no fragment.
+fn normalized(url: &str) -> String {
+    let url = url.split('#').next().unwrap_or_default();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, rest) = rest.split_at(end);
+    let slash = if rest.starts_with('/') { "" } else { "/" };
+    format!(
+        "{}://{}{slash}{rest}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    )
 }
 
 /// The origin of `url`: `https://example.com`, `myapp://settings` (a port

@@ -36,10 +36,11 @@ use windows::Win32::{
         Input::KeyboardAndMouse::{GetFocus, ReleaseCapture, SetCapture, SetFocus},
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, IsChild, SetCursor, WM_CAPTURECHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-            WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-            WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCDESTROY, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN,
-            WM_RBUTTONUP, WM_SETCURSOR, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONUP,
+            HTCLIENT, IsChild, SetCursor, WM_CAPTURECHANGED, WM_EXITSIZEMOVE, WM_LBUTTONDBLCLK,
+            WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+            WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCDESTROY, WM_RBUTTONDBLCLK,
+            WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_XBUTTONDBLCLK, WM_XBUTTONDOWN,
+            WM_XBUTTONUP,
         },
     },
 };
@@ -177,10 +178,14 @@ struct Pointer {
     router: Rc<Router>,
     /// A press a page took: it hears every move and button until released.
     pressed: Cell<Option<NodeId>>,
-    /// Buttons pressed on zgui content: their moves are zgui's, wherever.
-    ui_buttons: Cell<u32>,
+    /// A press on zgui content: its moves are zgui's, wherever, while a
+    /// button is held (the messages' own MK_ flags say: a release the window
+    /// never hears, capture lost to another window, ends it as well).
+    ui_press: Cell<bool>,
     /// The page the pointer is over, which heard its last move.
     hovered: Cell<Option<NodeId>>,
+    /// The window still has the subclass (its destruction removes it).
+    attached: Cell<bool>,
 }
 impl Pointer {
     /// Send a mouse message to the page of `node`, at client point
@@ -216,6 +221,14 @@ impl Pointer {
             }
         }
     }
+    /// Whether a press of zgui's holds the pointer, by the buttons a mouse
+    /// message says are down.
+    fn ui_held(&self, wparam: WPARAM) -> bool {
+        if wparam.0 & BUTTONS == 0 {
+            self.ui_press.set(false);
+        }
+        self.ui_press.get()
+    }
     /// Where the pointer at client point `(x, y)` goes.
     fn route(&self, hwnd: HWND, x: i32, y: i32) -> PointerRoute {
         let scale = scale_of(hwnd);
@@ -237,7 +250,7 @@ impl Pointer {
                     self.send(hwnd, node, message, wparam, x, y);
                     return true;
                 }
-                if self.ui_buttons.get() > 0 {
+                if self.ui_held(wparam) {
                     return false;
                 }
                 match self.route(hwnd, x, y) {
@@ -257,7 +270,12 @@ impl Pointer {
                     self.send(hwnd, node, message, wparam, x, y);
                     return true;
                 }
-                if self.ui_buttons.get() == 0
+                // Another button of a press of zgui's still held: still zgui's.
+                let others = wparam.0 & BUTTONS & !button_of(message, wparam);
+                if !(self.ui_press.get() && others != 0) {
+                    self.ui_press.set(false);
+                }
+                if !self.ui_press.get()
                     && let PointerRoute::Native(node) = self.route(hwnd, x, y)
                 {
                     self.pressed.set(Some(node));
@@ -266,7 +284,7 @@ impl Pointer {
                     self.send(hwnd, node, message, wparam, x, y);
                     return true;
                 }
-                self.ui_buttons.set(self.ui_buttons.get() + 1);
+                self.ui_press.set(true);
                 // A click on zgui content takes the keyboard back from a page.
                 // SAFETY: reads and sets focus within our own window.
                 unsafe {
@@ -282,14 +300,14 @@ impl Pointer {
                 if let Some(node) = self.pressed.get() {
                     self.send(hwnd, node, message, wparam, x, y);
                     // Released when no button is held (MK_ flags).
-                    if wparam.0 & 0x73 == 0 {
+                    if wparam.0 & BUTTONS == 0 {
                         self.pressed.set(None);
                         // SAFETY: releases the capture taken for the press.
                         let _ = unsafe { ReleaseCapture() };
                     }
                     return true;
                 }
-                self.ui_buttons.set(self.ui_buttons.get().saturating_sub(1));
+                self.ui_held(wparam);
                 false
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
@@ -300,12 +318,10 @@ impl Pointer {
                 let _ = unsafe { ScreenToClient(hwnd, &mut point) };
                 let node = match self.pressed.get() {
                     Some(node) => Some(node),
-                    None if self.ui_buttons.get() == 0 => {
-                        match self.route(hwnd, point.x, point.y) {
-                            PointerRoute::Native(node) => Some(node),
-                            PointerRoute::Ui => None,
-                        }
-                    }
+                    None if !self.ui_held(wparam) => match self.route(hwnd, point.x, point.y) {
+                        PointerRoute::Native(node) => Some(node),
+                        PointerRoute::Ui => None,
+                    },
                     None => None,
                 };
                 if let Some(node) = node {
@@ -323,7 +339,14 @@ impl Pointer {
             WM_CAPTURECHANGED => {
                 if lparam.0 as *mut std::ffi::c_void != hwnd.0 {
                     self.pressed.set(None);
+                    self.ui_press.set(false);
                 }
+                false
+            }
+            // A move or resize loop (a window drag) took the pointer.
+            WM_EXITSIZEMOVE => {
+                self.pressed.set(None);
+                self.ui_press.set(false);
                 false
             }
             WM_MOVE => {
@@ -362,11 +385,9 @@ unsafe extern "system" fn subclass(
     // SAFETY: `data` is the `Rc` `Surfaces::new` leaked for this subclass,
     // alive until it is removed (here or when the surfaces go).
     let pointer = unsafe { &*(data as *const Pointer) };
-    if message == webview2::answer_message() {
-        webview2::deliver_answers();
-        return LRESULT(0);
-    }
+
     if message == WM_NCDESTROY {
+        pointer.attached.set(false);
         // SAFETY: removes this subclass and takes back its reference.
         unsafe {
             let _ = RemoveWindowSubclass(hwnd, Some(subclass), SUBCLASS_ID);
@@ -377,6 +398,20 @@ unsafe extern "system" fn subclass(
     }
     // SAFETY: forwards to the next procedure in the chain.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+/// The MK_ flags of the mouse buttons.
+const BUTTONS: usize = 0x73;
+/// The MK_ flag of the button a button message is for.
+fn button_of(message: u32, wparam: WPARAM) -> usize {
+    match message {
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => 0x01,
+        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => 0x02,
+        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => 0x10,
+        // XBUTTON1 or XBUTTON2, in the high word.
+        _ if (wparam.0 >> 16) & 0xffff == 2 => 0x40,
+        _ => 0x20,
+    }
 }
 
 /// A box in physical pixels: left, top, right, bottom.
@@ -496,8 +531,9 @@ impl Surfaces {
         let pointer = Rc::new(Pointer {
             router: Rc::new(router),
             pressed: Cell::new(None),
-            ui_buttons: Cell::new(0),
+            ui_press: Cell::new(false),
             hovered: Cell::new(None),
+            attached: Cell::new(true),
         });
         // SAFETY: the subclass runs on this (the window's) thread; its
         // reference is released when it is removed.
@@ -639,7 +675,16 @@ impl Surfaces {
                     old.unmount(&clip.inner);
                 }
                 if let Some(page) = &page {
-                    page.mount(&clip.inner, self.hwnd);
+                    let composition = Rc::downgrade(&self.composition);
+                    page.mount(
+                        &clip.inner,
+                        self.hwnd,
+                        Rc::new(move || {
+                            if let Some(composition) = composition.upgrade() {
+                                composition.commit();
+                            }
+                        }),
+                    );
                 }
                 clip.page = page;
                 clip.placed = None;
@@ -813,10 +858,13 @@ impl Drop for Surfaces {
                 page.unmount(&clip.inner);
             }
         }
-        // SAFETY: removes our subclass (if the window still has it) and
-        // takes back its reference, and our visuals from our tree.
+        // SAFETY: removes our subclass (if the window still has it: its
+        // handle may be another window's by now) and takes back its
+        // reference, and our visuals from our tree.
         unsafe {
-            if RemoveWindowSubclass(self.hwnd, Some(subclass), SUBCLASS_ID).as_bool() {
+            if self.pointer.attached.replace(false)
+                && RemoveWindowSubclass(self.hwnd, Some(subclass), SUBCLASS_ID).as_bool()
+            {
                 drop(Rc::from_raw(Rc::as_ptr(&self.pointer)));
             }
             for (_, clip) in &self.clips {
