@@ -233,6 +233,34 @@ fn garbage_from_builtins_is_collected_before_the_memory_limit() {
 }
 
 #[test]
+fn copies_of_state_meet_the_memory_limit() {
+    // A state's records are built for the script through Luau's C API, in
+    // one protected call: reaching the limit there is still the script's
+    // memory error.
+    let runtime = Runtime::new();
+    let limits = Limits {
+        memory: 4 << 20,
+        load: Duration::from_secs(20),
+        ..Limits::default()
+    };
+    let host = ScriptHost::inline(
+        &runtime,
+        "copies",
+        r#"local rows = {}
+        for i = 1, 2000 do rows[i] = { name = "row " .. i, n = i } end
+        local s = ui.state("rows", rows)
+        local kept = {}
+        for i = 1, 1000 do
+            s:update(function(list) kept[i] = list; return list end)
+        end
+        return ui.div {}"#,
+    )
+    .limits(limits);
+    let error = host.reload().unwrap_err();
+    assert!(error.contains("memory"), "{error}");
+}
+
+#[test]
 fn a_script_keeping_nodes_meets_the_memory_limit() {
     // Nodes are made with the limit set aside for their one allocation
     // (vendor/mlua/ZGUI_PATCH.md): a script that keeps making them still
