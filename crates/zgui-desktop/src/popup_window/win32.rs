@@ -8,8 +8,9 @@
 //! and keys reach the popup's content through the window's focus. Its pointer
 //! input goes to the parent's host, in the parent's coordinates. Its frames
 //! are an overlay renderer's (`GpuRenderer::for_overlay_visual`) drawing the
-//! popup root alone, in a swap chain with alpha: what zgui draws (the panel,
-//! its rounded corners, its shadow) is all that shows.
+//! popup root alone, in a swap chain with alpha. A menu or popover that is
+//! one rounded panel gets DWM's rounded corners, rim and shadow, as Windows
+//! 11's menus do (`corner_of`).
 //!
 //! The parent window is subclassed while it has popups: an owned window does
 //! not follow its owner, so popups move with it (`WM_WINDOWPOSCHANGED`), and
@@ -32,6 +33,10 @@ use windows::{
             DirectComposition::{
                 DCompositionCreateDevice2, IDCompositionDevice, IDCompositionTarget,
                 IDCompositionVisual,
+            },
+            Dwm::{
+                DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+                DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DwmSetWindowAttribute,
             },
             Gdi::{
                 ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
@@ -65,7 +70,7 @@ use windows::{
 };
 use winit::event::{MouseButton, MouseScrollDelta, TouchPhase};
 use zgui::{
-    scene::{NodeId, Rect, Scene},
+    scene::{NodeId, NodeKind, Rect, Scene},
     semantics::Semantics,
 };
 use zgui_gpu::{GpuContext, GpuError, GpuRenderer};
@@ -318,6 +323,35 @@ struct Panel {
     screen: Option<(i32, i32, i32, i32)>,
     /// Its popup root's layer revision it last drew.
     revision: Option<u64>,
+    /// How DWM rounds it, as last set.
+    corner: Option<DWM_WINDOW_CORNER_PREFERENCE>,
+}
+
+/// How DWM frames popup root `root`'s window at `rect`: as Windows 11 frames
+/// its menus, with rounded corners, a rim and a shadow, when what it shows is
+/// one rounded panel filling it; otherwise not at all, zgui drawing all of it
+/// (DWM's shadow would double one of zgui's, past the panel).
+///
+/// Not with a menu's acrylic: DWM draws a never-activated window's system
+/// backdrop as a flat colour, and a popup must not take activation (its
+/// window keeps the keyboard).
+fn corner_of(scene: &Scene, root: NodeId, rect: Rect) -> DWM_WINDOW_CORNER_PREFERENCE {
+    let Some(&panel) = scene.children(root).first() else {
+        return DWMWCP_DONOTROUND;
+    };
+    let (NodeKind::Quad(quad) | NodeKind::Panel { quad, .. }) = scene.kind(panel) else {
+        return DWMWCP_DONOTROUND;
+    };
+    let bounds = scene.bounds(panel);
+    if (bounds.width - rect.width).abs() > 1. || (bounds.height - rect.height).abs() > 1. {
+        return DWMWCP_DONOTROUND;
+    }
+    // DWM's two radii: 8 and 4 pixels at 100%.
+    match quad.radius {
+        r if r >= 6. => DWMWCP_ROUND,
+        r if r > 0. => DWMWCP_ROUNDSMALL,
+        _ => DWMWCP_DONOTROUND,
+    }
 }
 impl Panel {
     fn new() -> Result<Self, String> {
@@ -367,8 +401,24 @@ impl Panel {
                 rect: None,
                 screen: None,
                 revision: None,
+                corner: None,
             })
         }
+    }
+    /// Have DWM round it as `corner` (`corner_of`).
+    fn set_corner(&mut self, corner: DWM_WINDOW_CORNER_PREFERENCE) {
+        if self.corner.replace(corner) == Some(corner) {
+            return;
+        }
+        // SAFETY: an attribute of our own window, from a local of its type.
+        let _ = unsafe {
+            DwmSetWindowAttribute(
+                self.hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &corner as *const _ as *const _,
+                size_of_val(&corner) as u32,
+            )
+        };
     }
     /// Its renderer, made for `scale` (again for a new one).
     fn renderer(&mut self, context: &GpuContext, scale: f32) -> Result<&mut GpuRenderer, GpuError> {
@@ -840,6 +890,7 @@ impl PopupHost {
                 renderer.present()?;
             }
             panel.place(origin, parent_scale, rect);
+            panel.set_corner(corner_of(scene, root, rect));
             if new {
                 // Its first frame is in its visual before it shows.
                 // SAFETY: our device, on its thread.
@@ -917,5 +968,60 @@ impl Drop for PopupHost {
         if let Some(parent) = self.parent {
             PARENTS.with(|parents| parents.borrow_mut().retain(|entry| entry.hwnd != parent));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zgui::scene::{Layout, QuadStyle, Style};
+
+    /// A popup root holding one panel `size` points square, rounded `radius`.
+    fn popup(size: f32, radius: f32) -> (Scene, NodeId) {
+        let mut scene = Scene::new(400., 300.);
+        let root = scene.append(
+            scene.root(),
+            NodeKind::Container(Layout::Column),
+            Style::default(),
+        );
+        scene.append(
+            root,
+            NodeKind::Quad(QuadStyle {
+                radius,
+                ..Default::default()
+            }),
+            Style {
+                width: Some(size),
+                height: Some(size),
+                ..Default::default()
+            },
+        );
+        let _ = scene.flush();
+        (scene, root)
+    }
+
+    #[test]
+    fn a_rounded_panel_filling_its_window_takes_dwm_s_corners() {
+        let window = Rect::new(0., 0., 100., 100.);
+        let (scene, root) = popup(100., 8.);
+        assert_eq!(corner_of(&scene, root, window), DWMWCP_ROUND);
+        let (scene, root) = popup(100., 4.);
+        assert_eq!(corner_of(&scene, root, window), DWMWCP_ROUNDSMALL);
+        let (scene, root) = popup(100., 0.);
+        assert_eq!(corner_of(&scene, root, window), DWMWCP_DONOTROUND);
+        // Painting past its panel (a shadow of its own), zgui draws it all.
+        let (scene, root) = popup(80., 8.);
+        assert_eq!(corner_of(&scene, root, window), DWMWCP_DONOTROUND);
+    }
+
+    #[test]
+    fn a_popup_window_s_pixels_are_its_parent_s_points() {
+        let target = Target::default();
+        target.origin.set((16., 428.));
+        target.scale.set(1.5);
+        // Its client pixel (30, 45) is 20 by 30 points into the popup.
+        assert_eq!(target.point((30, 45)), (36., 458.));
+        // Dragged out above it (captured), past its edge.
+        assert_eq!(target.point((-15, -30)), (6., 408.));
     }
 }

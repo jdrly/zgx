@@ -58,7 +58,12 @@ def main():
                 rect = (left, top, right - left, bottom - top)
             elif line in ("SHOT_OPEN", "SHOT_CLOSED") and rect:
                 shots[line] = win.capture_rect(*rect)
-                win.save_png(shots[line], args.output / f"popup-{line[5:].lower()}.png")
+                name = line[5:].lower()
+                win.save_png(shots[line], args.output / f"popup-{name}.png")
+                # With what is around it (DWM's rim and shadow), to look at.
+                x, y, w, h = rect
+                win.save_png(win.capture_rect(x - 24, y - 24, w + 48, h + 48),
+                             args.output / f"popup-{name}-around.png")
         proc.wait(timeout=30)
     finally:
         if proc.poll() is None:
