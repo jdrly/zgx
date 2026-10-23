@@ -3309,9 +3309,7 @@ fn close_element(ui: &mut Ui, opened: Opened) -> NodeId {
                 return;
             }
             ui.scene.borrow_mut().set_text(root, value.as_str());
-            ui.semantics
-                .borrow_mut()
-                .update(root, |node| node.label = value.clone());
+            ui.semantics.borrow_mut().set_label(root, &value);
             update_button_labels(&ui, root);
         });
     }
@@ -4054,9 +4052,7 @@ fn update_button_labels(ui: &Ui, node: NodeId) {
                 pending.extend(scene.children(child).iter().rev().copied());
             }
             let label = parts.join(" ");
-            ui.semantics
-                .borrow_mut()
-                .update(id, |node| node.label = label);
+            ui.semantics.borrow_mut().set_label(id, &label);
         }
         current = scene.parent(id);
     }

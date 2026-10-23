@@ -796,7 +796,7 @@ impl Ui {
         self.bind(n, move || {
             value.with(|v| {
                 scene.borrow_mut().set_text(n, v.as_str());
-                a.borrow_mut().update(n, |s| s.label = v.clone());
+                a.borrow_mut().set_label(n, v);
             });
         });
         n

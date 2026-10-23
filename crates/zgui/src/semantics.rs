@@ -217,6 +217,19 @@ impl Semantics {
         self.revision = self.revision.wrapping_add(1);
         entry.revision = self.revision;
     }
+    /// Set a node's label in place: an equal one changes nothing, and a new
+    /// one reuses the old one's room (a label bound to changing text).
+    pub fn set_label(&mut self, id: NodeId, label: &str) {
+        let Some(entry) = self.nodes.get_mut(&id) else {
+            return;
+        };
+        if entry.node.label == label {
+            return;
+        }
+        label.clone_into(&mut entry.node.label);
+        self.revision = self.revision.wrapping_add(1);
+        entry.revision = self.revision;
+    }
     /// Set a text input's placeholder; an equal one changes nothing.
     pub fn set_placeholder(&mut self, id: NodeId, placeholder: Option<&str>) {
         let Some(entry) = self.nodes.get_mut(&id) else {
