@@ -1089,6 +1089,28 @@ pub enum Direction {
     Ltr,
     Rtl,
 }
+impl Direction {
+    /// The way a language's script runs, from its BCP 47 tag (`"ar"`,
+    /// `"he-IL"`, `"fa_IR.UTF-8"`, `"ku-Arab"`): right to left for Arabic,
+    /// Hebrew, Persian, Urdu and the others written in their scripts.
+    pub fn of_language(tag: &str) -> Direction {
+        let lower = tag.to_ascii_lowercase();
+        let mut parts = lower.split(['-', '_', '.', '@']);
+        let language = parts.next().unwrap_or_default();
+        // A script subtag decides where one is given (Kurdish, Punjabi).
+        if let Some(script) = parts.find(|p| p.len() == 4) {
+            return match script {
+                "arab" | "hebr" | "thaa" | "syrc" | "nkoo" | "adlm" | "rohg" => Direction::Rtl,
+                _ => Direction::Ltr,
+            };
+        }
+        match language {
+            "ar" | "arc" | "ckb" | "dv" | "fa" | "he" | "iw" | "ks" | "nqo" | "ps" | "sd"
+            | "syr" | "ug" | "ur" | "yi" => Direction::Rtl,
+            _ => Direction::Ltr,
+        }
+    }
+}
 /// Which way a node runs (`own`: its padding and what it holds) and the
 /// parent it sits in (`parent`: its margins and insets, which place it
 /// there).

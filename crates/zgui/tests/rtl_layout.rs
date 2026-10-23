@@ -168,3 +168,13 @@ fn a_left_to_right_part_keeps_its_margins_where_given() {
     assert_eq!(rect(&ui, &view, "ltr").x, 96.);
     assert_eq!(rect(&ui, &view, "digit").x, 96.);
 }
+
+#[test]
+fn a_languages_way_from_its_tag() {
+    for tag in ["ar", "he-IL", "fa_IR.UTF-8", "ur", "ku-Arab", "ckb"] {
+        assert_eq!(Direction::of_language(tag), Direction::Rtl, "{tag}");
+    }
+    for tag in ["en-US", "ja", "zh-Hans", "C", "", "ku-Latn", "az-Latn"] {
+        assert_eq!(Direction::of_language(tag), Direction::Ltr, "{tag}");
+    }
+}

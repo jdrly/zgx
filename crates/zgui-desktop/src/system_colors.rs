@@ -344,6 +344,53 @@ fn preference_tokens(preferences: SystemPreferences) -> Vec<(TokenId, TokenInput
     tokens
 }
 
+/// The way the user's language runs (`ZGUI_DIRECTION=rtl` or `ltr`
+/// overrides it): macOS's first preferred language, Windows' display
+/// locale's reading layout, the Linux environment's `LC_ALL`,
+/// `LC_MESSAGES` or `LANG`.
+pub(crate) fn locale_direction() -> zgui::scene::Direction {
+    use zgui::scene::Direction;
+    match std::env::var("ZGUI_DIRECTION").as_deref() {
+        Ok("rtl") => return Direction::Rtl,
+        Ok("ltr") => return Direction::Ltr,
+        _ => {}
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSLocale, NSLocaleLanguageDirection};
+        let languages = NSLocale::preferredLanguages();
+        if let Some(first) = languages.firstObject() {
+            return if NSLocale::characterDirectionForLanguage(&first)
+                == NSLocaleLanguageDirection::RightToLeft
+            {
+                Direction::Rtl
+            } else {
+                Direction::Ltr
+            };
+        }
+        Direction::Ltr
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_IREADINGLAYOUT};
+        let mut buffer = [0_u16; 4];
+        // 1: right to left (Arabic, Hebrew, Persian, Urdu).
+        let written = unsafe { GetLocaleInfoEx(None, LOCALE_IREADINGLAYOUT, Some(&mut buffer)) };
+        if written > 0 && buffer[0] == u16::from(b'1') {
+            Direction::Rtl
+        } else {
+            Direction::Ltr
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+            .map_or(Direction::Ltr, |tag| Direction::of_language(&tag))
+    }
+}
+
 /// Read the system's values again and give them to `ui`'s themes: at startup,
 /// and when the system's appearance or settings or the window's activity
 /// change (the user may have picked another accent meanwhile).
@@ -354,6 +401,17 @@ pub(crate) fn sync(ui: &zgui::widgets::Ui) {
         ui.theme().set_system_appearance(scheme);
     }
     let preferences = preferences();
+    // The window runs the way the user's language does; an app's own
+    // `direction` (`dir`) on its views decides from there.
+    {
+        let mut scene = ui.scene.borrow_mut();
+        let root = scene.root();
+        let direction = locale_direction();
+        scene.set_direction(
+            root,
+            (direction == zgui::scene::Direction::Rtl).then_some(direction),
+        );
+    }
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut tokens = tokens();
     #[cfg(target_os = "macos")]
