@@ -1473,14 +1473,20 @@ impl GpuRenderer {
             .find(|mode| caps.alpha_modes.contains(mode))
             .unwrap_or(c.alpha_mode);
             c.present_mode = wgpu::PresentMode::AutoVsync;
+            // Windows: a present replaces one the compositor has not taken
+            // yet (DXGI's flip model at sync interval 0 composes the newest,
+            // without tearing), so input drawn between refreshes shows on
+            // the next; frames are paced by the compositor's clock instead.
+            if cfg!(windows) && caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                c.present_mode = wgpu::PresentMode::Mailbox;
+            }
             // Two drawables: measured no frame-rate or CPU cost against three
             // on Apple silicon, and one fewer window-sized buffer (~13 MB at
             // 5K) while animating. Resizing keeps a third (`widen_drawables`).
-            // Windows: DXGI then keeps two buffers and lets one frame wait
-            // for the compositor; at the default two, frames paced by a timer
-            // filled the queue (three behind the one shown, four refreshes
-            // from render to screen) and acquire blocked the UI thread.
-            if cfg!(any(target_os = "macos", windows)) {
+            // Windows keeps the default two: its presents replace one another
+            // (above), and a second within a refresh must not wait for the
+            // compositor to take the first.
+            if cfg!(target_os = "macos") {
                 c.desired_maximum_frame_latency = 1;
             }
             // The retained target already holds sRGB-encoded bytes, which the

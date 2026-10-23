@@ -51,7 +51,7 @@ impl PresentStats {
     }
 }
 
-/// The display refresh now: refreshes since the performance counter started,
+/// The display refresh nearest now: refreshes since the performance counter started,
 /// on the grid of the compositor's last reported refresh. (DWM's own count
 /// is of compositions, which some displays make only on demand.)
 fn dwm_refresh() -> u64 {
@@ -70,8 +70,10 @@ fn dwm_refresh() -> u64 {
         let _ = DwmGetCompositionTimingInfo(Default::default(), &mut info);
         let _ = QueryPerformanceCounter(&mut now);
     }
+    // The nearest refresh: presents follow the compositor's ticks closely,
+    // and rounding down there counted some refreshes twice and some not.
     let period = (info.qpcRefreshPeriod as i64).max(1);
-    ((now - (info.qpcVBlank as i64).rem_euclid(period)) / period) as u64
+    ((now - (info.qpcVBlank as i64).rem_euclid(period) + period / 2) / period) as u64
 }
 
 /// The performance counter's ticks a second.

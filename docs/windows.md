@@ -18,17 +18,20 @@ No additional Windows-only dependency is needed.
 
 wgpu runs on Direct3D 12 alone; Vulkan stands in only where Direct3D 12 has
 no adapter (`WGPU_BACKEND` still overrides). Swap chains use DXGI's flip model
-with one frame of latency. While a window animates, frames start as the
+at sync interval 0: a present replaces one the compositor has not taken yet,
+without tearing, so input draws at once and shows on the next refresh even
+while an animation runs. Animation frames start half a refresh after the
 compositor's clock ticks (`DCompositionWaitForCompositorClock` on Windows 11,
-`DwmFlush` on Windows 10), on one thread that parks while nothing animates; a
-window at rest wakes for nothing. Measured on an RTX 4090 at 60 Hz:
+`DwmFlush` on Windows 10), far from the point where it takes them, on one
+thread that parks while nothing animates; a window at rest wakes for nothing.
+Measured on an RTX 4090 at 60 Hz:
 
 | | before | now |
 | --- | --- | --- |
 | Gallery at rest | 10.6 M cycles/s, Vulkan and D3D12 drivers loaded | 2.7 M cycles/s (the driver's own threads) |
 | Keystroke to composed screen, at rest | 12–14 ms median | 12–14 ms median |
-| Keystroke to composed screen, animating | 47 ms median | 27 ms median |
-| Animation at the display's rate | 57.7–60 fps, timer drifting against refreshes | every refresh, 0 repeated |
+| Keystroke to composed screen, animating | 47 ms median | 12 ms median |
+| Animation at the display's rate | 57.7–60 fps, timer drifting against refreshes | every refresh, none repeated or dropped |
 
 `ZGUI_PRESENT_LOG=1` logs each shown present as DXGI reports it. The probes
 measure the same things on any machine:

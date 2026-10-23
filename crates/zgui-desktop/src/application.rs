@@ -713,7 +713,7 @@ fn sleep_until(at: std::time::Instant) {
 const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 /// How long after input frames stay at the display's full rate: a press's
 /// release spring or a hover fade that follows input keeps its frames too.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const INPUT_FULL_RATE: std::time::Duration = std::time::Duration::from_millis(250);
 /// The refresh point steady frames present at (see `Host::refresh_grid`),
 /// and when they render before it.
@@ -940,8 +940,12 @@ struct Host {
     native_occluded: bool,
     frame_paced: bool,
     /// Until when input keeps frames at the display's full rate (`INPUT_FULL_RATE`).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     input_until: Option<std::time::Instant>,
+    /// Input changed the scene since the last frame: Windows draws it at once
+    /// rather than at the next tick (see `tick`).
+    #[cfg(windows)]
+    input_arrived: bool,
     present_ready: bool,
     frames: FrameClock,
     #[cfg(any(target_os = "macos", windows))]
@@ -1123,8 +1127,10 @@ impl Host {
             presentation: Presentation::default(),
             native_occluded: false,
             frame_paced: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             input_until: None,
+            #[cfg(windows)]
+            input_arrived: false,
             present_ready: false,
             gpu_stats: crate::gpu_stats::GpuStatsLog::from_env(),
             damage_check: std::env::var_os("ZGUI_DAMAGE_CHECK").map(|_| 0),
@@ -1178,9 +1184,13 @@ impl Host {
     ) -> Result<bool, zgui::widgets::LayoutFeedbackError> {
         // Input shows on the next refresh even while the only animations run at a
         // reduced rate (a 12 fps dither): see `sync_frames`.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.input_until = Some(std::time::Instant::now() + INPUT_FULL_RATE);
+        }
+        #[cfg(windows)]
+        {
+            self.input_arrived = true;
         }
         let result = self
             .context
@@ -2383,11 +2393,15 @@ impl Host {
                 .display_link
                 .as_ref()
                 .is_some_and(|link| link.running());
+        // Input draws at once: presents replace one another until the
+        // compositor takes the newest (`present_mode`), so a key typed
+        // mid-refresh shows on the next, as it does at rest.
         #[cfg(windows)]
-        let paced = self
-            .display_link
-            .as_ref()
-            .is_some_and(|link| link.running());
+        let paced = !std::mem::take(&mut self.input_arrived)
+            && self
+                .display_link
+                .as_ref()
+                .is_some_and(|link| link.running());
         #[cfg(not(any(target_os = "macos", windows)))]
         let paced = false;
         // Scene damage accumulates until the refresh paints it in one frame.
@@ -2571,11 +2585,13 @@ impl Host {
             }
             if let Some(link) = &mut self.display_link {
                 let refresh = 1. / self.frame_interval.as_secs_f64();
-                // Scrolling always runs at the display's full rate.
+                // Scrolling, and frames just after input, run at the
+                // display's full rate.
+                let inputting = self.input_until.is_some_and(|until| now < until);
                 let rate = self
                     .frames
                     .demanded_rate(refresh)
-                    .filter(|rate| !scrolling && *rate < refresh - 0.5);
+                    .filter(|rate| !scrolling && !inputting && *rate < refresh - 0.5);
                 link.set_preferred_rate(rate);
                 link.set_running(wanted);
                 if wanted {

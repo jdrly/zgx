@@ -489,9 +489,11 @@ mod compositor_clock {
     //! and with DXGI's queue a frame ahead the drift is hidden by blocking:
     //! the UI thread spent most of each animated refresh waiting in acquire,
     //! so a key typed meanwhile showed about three refreshes later (47 ms at
-    //! 60 Hz, against 12 ms at rest). Frames started as the compositor ticks
-    //! find a free buffer, render and present at once, and leave the thread
-    //! free for input in between.
+    //! 60 Hz, against 12 ms at rest). Frames started half a refresh after the
+    //! compositor ticks render and present at once, a refresh apart, and
+    //! leave the thread free for input in between; input draws at once (the
+    //! swap chain composes the newest present), so a key shows on the next
+    //! refresh, animating or not (12 ms).
     //!
     //! One thread waits on the compositor's clock (`DCompositionWaitFor
     //! CompositorClock`, Windows 11; on Windows 10 `DwmFlush`, the next
@@ -639,8 +641,19 @@ mod compositor_clock {
             let phase = vblank.rem_euclid(period);
             let ticked = ((now - phase) as f64 / period as f64).round() as i64;
             let index = (ticked + 1) as u64;
-            let ahead = (phase + (ticked + 1) * period - now).max(0);
             let nanos = |ticks: i64| (ticks as u128 * 1_000_000_000 / frequency as u128) as u64;
+            // Delivered half a refresh on: a frame presented just after the
+            // tick meets the compositor taking the last one, and by a hair
+            // either way two presents share a refresh (the newest replaces
+            // the other: 7% of an animation's frames never showed) or none
+            // does. Mid-refresh, presents are a refresh apart, each taken at
+            // the next, half a refresh sooner than from the tick.
+            let middle = phase + ticked * period + period / 2;
+            if middle > now {
+                std::thread::sleep(Duration::from_nanos(nanos(middle - now)));
+            }
+            let now = qpc().0;
+            let ahead = (phase + (ticked + 1) * period - now).max(0);
             let interval = Duration::from_nanos(nanos(period));
             let frame = Frame {
                 index,
