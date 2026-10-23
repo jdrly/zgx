@@ -79,6 +79,9 @@ window whatever its title bar:
   it, 100% to 225%, and spacing and icons keep their size. A subtree whose
   layout depends on fixed text, like a terminal grid, opts out with
   `ThemeOverride::fixed_text_size`.
+- Always show scrollbars off (Accessibility, Visual effects; the default):
+  scrollbars hide at rest and show while the user scrolls
+  (`Ui::set_overlay_scrollbars`), as Edge's and WinUI's do.
 
 An app theme or `theme_scope` that sets a colour or duration token itself
 keeps its own value; the text size scales the font tokens of every theme.

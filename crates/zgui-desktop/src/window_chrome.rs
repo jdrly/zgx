@@ -619,6 +619,7 @@ mod win {
         pub(crate) fn sync(&mut self, ui: &mut Ui) {
             if self.caption.settings_changed.take() {
                 crate::system_colors::sync(ui);
+                crate::scrollers::sync(ui);
             }
             if !self.caption.buttons {
                 return;
