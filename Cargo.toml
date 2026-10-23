@@ -4,6 +4,7 @@ exclude = [
     "comparisons/gpui",
     "comparisons/quickgui",
     "vendor/accesskit_macos",
+    "vendor/accesskit_windows",
     "vendor/cosmic-text",
     "vendor/taffy",
 ]
@@ -45,3 +46,6 @@ taffy = { path = "vendor/taffy" }
 # AccessKit 0.26 on macOS with headings VoiceOver finds: see
 # vendor/accesskit_macos/ZGUI_PATCH.md.
 accesskit_macos = { path = "vendor/accesskit_macos" }
+# AccessKit 0.34 on Windows with headings Narrator navigates by: see
+# vendor/accesskit_windows/ZGUI_PATCH.md.
+accesskit_windows = { path = "vendor/accesskit_windows" }

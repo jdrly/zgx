@@ -1,11 +1,12 @@
 # Print a window's UI Automation tree as screen readers (Narrator) see it:
 # one line per element of the control view, with its control type, name,
-# value and text selection where it has them.
+# value, selection, heading level and text selection where it has them.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows_uia_dump.ps1 -Hwnd 123456
 param([Parameter(Mandatory = $true)][long]$Hwnd, [int]$Depth = 12, [switch]$Rects, [switch]$Raw)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+$HeadingLevel = [System.Windows.Automation.AutomationProperty]::LookupById(30173)
 # The control view is what screen readers walk; `-Raw` shows every element.
 $walker = if ($Raw) { [System.Windows.Automation.TreeWalker]::RawViewWalker } else { [System.Windows.Automation.TreeWalker]::ControlViewWalker }
 
@@ -21,6 +22,14 @@ function Describe($element) {
     }
     if ($element.TryGetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern, [ref]$pattern)) {
         $line += " range=" + $pattern.Current.Value
+    }
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+        $line += " selected=" + $pattern.Current.IsSelected
+    }
+    # HeadingLevel (30173), which heading navigation goes by: "Level2".
+    $heading = $element.GetCurrentPropertyValue($HeadingLevel, $true)
+    if ($heading -is [int] -or ($heading -is [enum] -and "$heading" -ne "None")) {
+        $line += " heading=" + $heading
     }
     if ($element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
         $selected = @($pattern.GetSelection() | ForEach-Object { $_.GetText(-1) }) -join "|"
