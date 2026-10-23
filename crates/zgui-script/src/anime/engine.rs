@@ -253,7 +253,19 @@ pub(crate) struct Clip {
     pub is_timeline: Cell<bool>,
     /// What lives as long as the clip (a scroll observer's effect).
     pub keep: RefCell<Vec<Box<dyn std::any::Any>>>,
+    /// The script line that made it (`anime.animate`), for warnings.
+    pub site: RefCell<Option<Rc<Site>>>,
 }
+
+/// A script line that makes animations, and how many times in a row its
+/// newest one replaced its previous one before that finished.
+pub(crate) struct Site {
+    at: String,
+    warnings: Option<crate::SharedWarnings>,
+    restarts: Cell<u32>,
+}
+/// Replacements in a row before a site's restarts are reported.
+const RESTARTS: u32 = 20;
 
 impl Clip {
     pub fn new(
@@ -281,6 +293,7 @@ impl Clip {
             defaults: RefCell::default(),
             is_timeline: Cell::new(false),
             keep: RefCell::default(),
+            site: RefCell::default(),
         })
     }
     pub fn engine(&self) -> Option<Rc<Engine>> {
@@ -412,6 +425,9 @@ impl Clip {
             }
             s.completed = true;
             s.playing = false;
+        }
+        if let Some(site) = &*self.site.borrow() {
+            site.restarts.set(0);
         }
         self.queue(Event::Complete);
     }
@@ -829,6 +845,7 @@ pub(crate) struct Engine {
     calls: RefCell<Vec<(mlua::Function, Rc<Clip>)>>,
     /// Owners of state and table properties; elements keep their own.
     owners: RefCell<HashMap<(usize, Key), Owner>>,
+    sites: RefCell<HashMap<String, Rc<Site>>>,
     adds: RefCell<HashMap<(usize, Key), AddSlot>>,
     pub(crate) next_id: Cell<u64>,
     /// `engine.speed`, `engine.fps`, `engine.timeUnit` (seconds when true).
@@ -866,6 +883,7 @@ impl Engine {
             child_queue: RefCell::default(),
             calls: RefCell::default(),
             owners: RefCell::default(),
+            sites: RefCell::default(),
             adds: RefCell::default(),
             next_id: Cell::new(0),
             speed: Cell::new(1.),
@@ -1135,6 +1153,73 @@ impl Engine {
             && previous.clip != clip
         {
             previous.track.set(true);
+            self.overridden(previous.clip, clip);
+        }
+    }
+    /// The site (script line) `at`, shared by every clip it makes.
+    pub(crate) fn site(&self, at: String, warnings: Option<crate::SharedWarnings>) -> Rc<Site> {
+        self.sites
+            .borrow_mut()
+            .entry(at.clone())
+            .or_insert_with(|| {
+                Rc::new(Site {
+                    at,
+                    warnings,
+                    restarts: Cell::new(0),
+                })
+            })
+            .clone()
+    }
+    /// A later clip (`by`) took a property of `previous`. Once every one of
+    /// its tracks is taken it has nothing left to write: as in anime.js, it
+    /// is cancelled (a timeline pauses), so it neither keeps frames coming
+    /// (a replaced loop otherwise ran on unseen) nor calls back. A line
+    /// that keeps replacing its own unfinished animation is reported: what
+    /// drives it changes faster than it plays, so the value only chases.
+    fn overridden(&self, previous: u64, by: u64) {
+        let find = |id| self.clips.borrow().iter().find(|c| c.id == id).cloned();
+        let Some(previous) = find(previous) else {
+            return;
+        };
+        let spent = {
+            let tracks = previous.tracks.borrow();
+            !tracks.is_empty()
+                && tracks
+                    .iter()
+                    .all(|t| t.composition == Composition::Replace && t.overridden.get())
+        };
+        if !spent || !previous.is_playing() {
+            return;
+        }
+        if previous.is_timeline.get() {
+            previous.pause();
+        } else {
+            previous.cancel();
+        }
+        let site = previous.site.borrow().clone();
+        if let Some(site) = site
+            && find(by).is_some_and(|by| {
+                by.site
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|s| Rc::ptr_eq(s, &site))
+            })
+        {
+            site.restarts.set(site.restarts.get() + 1);
+            if site.restarts.get() == RESTARTS {
+                crate::warning(
+                    site.warnings.as_ref(),
+                    format!(
+                        "{}: this `anime.animate` replaced its own animation before it \
+                         finished {RESTARTS} times in a row: what drives it changes faster \
+                         than the animation plays, so the value only chases its target. \
+                         Keep one `anime.createAnimatable` and set its value, or bind the \
+                         property to `ui.tween(state)` or `ui.spring(state)`, which retarget \
+                         in Rust.",
+                        site.at
+                    ),
+                );
+            }
         }
     }
     fn release(&self, target: &Target, key: &Key, clip: u64) {

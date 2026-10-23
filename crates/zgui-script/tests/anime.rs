@@ -215,6 +215,86 @@ fn removing_targets_stops_their_animations_and_leaves_timers() {
 }
 
 #[test]
+fn an_animation_whose_every_property_is_replaced_stops() {
+    // A loop replaced on its only property: it neither runs on unseen,
+    // keeping frames coming, nor calls back (as anime.js cancels it).
+    let mut h = Harness::inline(&script(
+        r##"anime.animate("#box", { x = { 0, 100 }, duration = 400, loop = true, ease = "linear",
+            onUpdate = function() log:set("first") end,
+            onLoop = function() log:set("looped") end })
+        anime.createTimer({ duration = 100, onComplete = function()
+            anime.animate("#box", { x = 0, duration = 100, ease = "linear",
+                onComplete = function() log:set("second") end })
+        end })"##,
+    ));
+    h.frame();
+    h.run_ms(1000.);
+    assert_eq!(
+        h.text("log"),
+        "second",
+        "the replaced loop no longer calls back"
+    );
+    close(h.x("box"), 0., "the replacement finished");
+    assert!(
+        !h.clock.wants_frame(),
+        "nothing plays: the replaced loop stopped"
+    );
+
+    // A property left to it keeps it playing.
+    let mut h = Harness::inline(&script(
+        r##"anime.animate("#box", { x = 100, opacity = 0.5, duration = 400, ease = "linear" })
+        anime.createTimer({ duration = 100, onComplete = function()
+            anime.animate("#box", { x = 0, duration = 100, ease = "linear" })
+        end })"##,
+    ));
+    h.frame();
+    h.run_ms(250.);
+    close(h.opacity("box"), 1. - 0.5 * 0.625, "opacity still runs");
+    h.run_ms(300.);
+    close(h.opacity("box"), 0.5, "and finishes");
+    close(h.x("box"), 0., "x is the replacement's");
+}
+
+#[test]
+fn a_line_restarting_its_unfinished_animation_is_reported() {
+    // An effect tweening to each new value of a stream faster than the
+    // tween plays: it only ever chases.
+    let mut h = Harness::inline(&script(
+        r##"local value = ui.state("value", 0)
+        ui.effect(function()
+            anime.animate("#box", { x = value:get(), duration = 500 })
+        end)
+        anime.createTimer({ duration = 2000, frameRate = 20, onUpdate = function()
+            value:set(value:peek() + 1)
+        end })"##,
+    ));
+    h.frame();
+    h.run_ms(500.);
+    assert!(h.host.warnings().is_empty(), "{:?}", h.host.warnings());
+    h.run_ms(1000.);
+    let warnings = h.host.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("app:4: this `anime.animate` replaced its own animation"),
+        "{warnings:?}"
+    );
+
+    // One that finishes before the next change is fine.
+    let mut h = Harness::inline(&script(
+        r##"local value = ui.state("value", 0)
+        ui.effect(function()
+            anime.animate("#box", { x = value:get(), duration = 30 })
+        end)
+        anime.createTimer({ duration = 2000, frameRate = 20, onUpdate = function()
+            value:set(value:peek() + 1)
+        end })"##,
+    ));
+    h.frame();
+    h.run_ms(2000.);
+    assert!(h.host.warnings().is_empty(), "{:?}", h.host.warnings());
+}
+
+#[test]
 fn keyframes_in_value_and_percentage_forms() {
     let mut h = Harness::inline(&script(
         r##"anime.animate("#box", { x = { 0, 100, 50 }, duration = 200, ease = "linear" })"##,

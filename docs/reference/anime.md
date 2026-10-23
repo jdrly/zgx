@@ -32,7 +32,7 @@ ui.loop(opts: LoopOptions?) -> Binding
 | `duration` | `AnimNumber` | `1000` | ms; a number, a stagger, or a function of `(target, index, total)` |
 | `delay` | `AnimNumber` | `0` | ms |
 | `ease` | `Ease` | `"out(2)"` | a name, an anime ease, or a function of progress |
-| `composition` | `"replace" \| "none" \| "add"` | `"replace"` | what happens to another animation of the same property: it stops, both write, or values add |
+| `composition` | `"replace" \| "none" \| "add"` | `"replace"` | what happens to another animation of the same property: it stops writing it (and an animation left with nothing to write is cancelled, calling nothing more, as in anime.js), both write, or values add |
 | `modifier` | `Modifier` | none | maps each value: a function or `anime.utils.round(n)` |
 | `loop` | `number \| boolean` | `0` | repeats; `true` forever |
 | `loopDelay` | `number` | `0` | ms between loops |

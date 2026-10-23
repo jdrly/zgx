@@ -186,6 +186,12 @@ pub(crate) fn animate(
     if let mlua::Value::String(id) = id {
         *clip.label.borrow_mut() = Some(id.to_string_lossy());
     }
+    if let Some(at) = crate::call_site(lua) {
+        let warnings = lua
+            .app_data_ref::<crate::node::Env>()
+            .map(|env| env.warnings.clone());
+        *clip.site.borrow_mut() = Some(ctx.engine.site(at, warnings));
+    }
     if autoplay {
         clip.start();
         clip.prime();

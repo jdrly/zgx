@@ -332,13 +332,7 @@ pub(crate) fn warning(warnings: Option<&SharedWarnings>, message: String) {
 /// A warning about the script code calling into Rust, once per call site
 /// (across reloads), with its file and line.
 pub(crate) fn warn(lua: &Lua, message: &str) {
-    let site = lua
-        .inspect_stack(1, |d| {
-            let source = d.source().short_src.map(|s| s.into_owned());
-            (source, d.current_line())
-        })
-        .and_then(|(source, line)| Some(format!("{}:{}", source?, line?)));
-    let message = match site {
+    let message = match call_site(lua) {
         Some(site) => format!("{site}: {message}"),
         None => message.to_owned(),
     };
@@ -346,6 +340,14 @@ pub(crate) fn warn(lua: &Lua, message: &str) {
         .app_data_ref::<node::Env>()
         .map(|env| env.warnings.clone());
     warning(warnings.as_ref(), message);
+}
+/// The script line calling into Rust (`app.luau:12`), if it has one.
+pub(crate) fn call_site(lua: &Lua) -> Option<String> {
+    lua.inspect_stack(1, |d| {
+        let source = d.source().short_src.map(|s| s.into_owned());
+        (source, d.current_line())
+    })
+    .and_then(|(source, line)| Some(format!("{}:{}", source?, line?)))
 }
 /// Durations are milliseconds everywhere: warn about one that reads as
 /// seconds (fractional and under 10) or that runs over a minute once.
