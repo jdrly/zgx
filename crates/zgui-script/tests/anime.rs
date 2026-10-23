@@ -188,6 +188,33 @@ fn a_later_animation_replaces_a_property_and_add_composes() {
 }
 
 #[test]
+fn removing_targets_stops_their_animations_and_leaves_timers() {
+    // `utils.remove` (and a layout box snapping on a reflow) drops the
+    // targets' tracks: an animation left with none stops, while a timer,
+    // which never animated a target, plays on.
+    let mut h = Harness::inline(&script(
+        r##"local ticks = 0
+        anime.createTimer({ duration = 300, onUpdate = function() ticks += 1 end,
+            onComplete = function() log:set("timer " .. ticks) end })
+        anime.animate("#box", { x = 100, duration = 300, ease = "linear",
+            onComplete = function() log:set("animation completed") end })
+        anime.createTimer({ duration = 50, onComplete = function() anime.utils.remove("#box") end })"##,
+    ));
+    h.frame();
+    h.run_ms(400.);
+    let log = h.text("log");
+    assert!(
+        log.starts_with("timer "),
+        "the timer ran to its end: {log:?}"
+    );
+    assert!(
+        h.x("box") < 50.,
+        "the removed animation stopped: x = {}",
+        h.x("box")
+    );
+}
+
+#[test]
 fn keyframes_in_value_and_percentage_forms() {
     let mut h = Harness::inline(&script(
         r##"anime.animate("#box", { x = { 0, 100, 50 }, duration = 200, ease = "linear" })"##,
