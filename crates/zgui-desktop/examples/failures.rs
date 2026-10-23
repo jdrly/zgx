@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let window = cx.window.clone();
             let tasks = cx.tasks.clone();
-            let ticker = cx.tasks.spawn_scoped(async move {
+            cx.tasks.spawn(async move {
                 let mut tick = 0u32;
                 loop {
                     tick += 1;
@@ -54,6 +54,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             });
-            std::mem::forget(ticker);
         })
 }

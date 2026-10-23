@@ -1381,6 +1381,14 @@ mod macos {
             for (_, panel) in self.shown.drain(..) {
                 release(panel);
             }
+            // A window closed with its popups showing: forget it, or its
+            // host (and what that holds) stays registered for good, and a
+            // later window given its number hears its dismissals.
+            let _ = PARENTS.try_with(|parents| {
+                parents
+                    .borrow_mut()
+                    .retain(|(_, send)| !Rc::ptr_eq(send, &self.send));
+            });
         }
     }
 }

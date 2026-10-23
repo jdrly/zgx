@@ -36,7 +36,7 @@ cargo build --release -p zgui-desktop --example desktop_soak
 python3 scripts/desktop_soak.py target/release/examples/desktop_soak --cycles 300
 ```
 
-It opens windows for the whole run (a cycle a second); leave the machine to it.
+It opens windows for the whole run (a cycle a second); leave the machine to it. `desktop_soak 400 --pause 100` pauses with its windows closed every 100 cycles, a still moment to compare the heap (`heap -s`, or with `MallocStackLogging=1` and a binary signed with `get-task-allow`, `malloc_history -allBySize`). That found two leaks per closed window, both fixed: its popup host stayed registered with the popup windows' watcher when it closed with a menu open, and its Metal layer, freed after the view it observes, left AppKit's records of the observation behind. Measured after the fixes on macOS, 600 cycles: descriptors, ports and threads flat, the footprint's quarter means 290.5, 303.7, 303.9 and 305.6 MB (warm-up, then within 2 MB); the live heap, paused, 17.4 MB at cycles 100, 200 and 300 within 0.3 MB, what grows being libdispatch's own cached blocks.
 
 `examples/failures.rs` fails twice while it animates, for `scripts/failures_smoke.py` (a Linux native smoke): a task panics, which the host contains and shows in a banner, then its GPU device is lost (`WindowHandle::debug_lose_gpu`), and it makes a new renderer and draws on. `crates/zgui-gpu/tests/device_loss.rs` checks the renderer's side; `crates/zgui-script/tests/failures.rs` a script's runtime error, a missing image and a missing font.
 

@@ -3628,6 +3628,47 @@ impl Drop for Host {
         if let Some(callback) = self.context.closed.take() {
             callback();
         }
+        // The renderer's surface first, while its window still is (fields
+        // drop in order, and `window` comes before `renderer`); then its
+        // Metal layer leaves the view. The layer (raw-window-metal's)
+        // observes the view's layer, which holds it as a sublayer, and
+        // stops observing only as it goes: freed after the view's layer,
+        // it would leave AppKit's records of the observation behind, a
+        // few hundred bytes for every window ever closed.
+        self.renderer = None;
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &self.window {
+            detach_metal_layers(window);
+        }
+    }
+}
+/// Take the Metal layers a renderer put in `window`'s view out of it, so
+/// they go now, while what they observe is still there.
+#[cfg(target_os = "macos")]
+fn detach_metal_layers(window: &Window) {
+    use objc2::runtime::{AnyClass, NSObjectProtocol};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    let Some(metal) = AnyClass::get(c"CAMetalLayer") else {
+        return;
+    };
+    // SAFETY: winit's handle names its window's live view, on the main
+    // thread (hosts are dropped there).
+    let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+    let Some(layer) = view.layer() else {
+        return;
+    };
+    // SAFETY: CALayer's own sublayer list; removing one only detaches it.
+    let sublayers = unsafe { layer.sublayers() };
+    for sublayer in sublayers.iter().flat_map(|list| list.iter()) {
+        if sublayer.isKindOfClass(metal) {
+            sublayer.removeFromSuperlayer();
+        }
     }
 }
 struct WindowManager {

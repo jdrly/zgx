@@ -6,7 +6,9 @@
 //! sheet), and prints the process's footprint, file descriptors, Mach ports
 //! and threads.
 //!
-//! `desktop_soak [cycles]` (default 50) runs that many, then quits.
+//! `desktop_soak [cycles] [--pause N]` (default 50 cycles) runs that many,
+//! then quits. `--pause N` waits 20 seconds every N cycles, its windows
+//! closed, saying so: a still moment to snapshot the heap (`heap -s`).
 use std::time::Duration;
 use zgui::{compose::prelude::*, input::InputEvent};
 use zgui_desktop::{Application, PromptOptions, WindowOptions};
@@ -155,7 +157,8 @@ fn soaked(cx: &mut zgui_desktop::WindowContext, index: usize, sheet: bool) {
     let ui = cx.ui.downgrade();
     let dialogs = cx.dialogs.clone();
     let tasks = cx.tasks.clone();
-    let shown = cx.tasks.spawn_scoped(async move {
+    // The window's own task: closing it cancels it.
+    cx.tasks.spawn(async move {
         zgui::timer::sleep(Duration::from_millis(120)).await;
         menu_open.set(true);
         pop_open.set(true);
@@ -174,14 +177,15 @@ fn soaked(cx: &mut zgui_desktop::WindowContext, index: usize, sheet: bool) {
             });
         }
     });
-    std::mem::forget(shown);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cycles: usize = std::env::args()
-        .nth(1)
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(50);
+    let args: Vec<String> = std::env::args().collect();
+    let cycles: usize = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(50);
+    let pause: Option<usize> = args
+        .iter()
+        .position(|a| a == "--pause")
+        .and_then(|i| args.get(i + 1)?.parse().ok());
     Application::new()
         .window(WindowOptions {
             title: "Desktop soak".into(),
@@ -197,13 +201,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             let windows = cx.windows.clone();
             let main = cx.window.clone();
-            let driver = cx.tasks.spawn_scoped(async move {
+            cx.tasks.spawn(async move {
                 for cycle in 0..cycles {
                     let opened: Vec<_> = (0..3)
                         .map(|index| {
                             windows.open(
                                 WindowOptions {
-                                    title: format!("Soak {cycle}.{index}"),
+                                    // The same three titles every cycle:
+                                    // AppKit caches each title it measures.
+                                    title: format!("Soak {index}"),
                                     width: 420.,
                                     height: 360.,
                                     ..Default::default()
@@ -222,9 +228,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "soak cycle {cycle} footprint={} fds={} ports={} threads={}",
                         p.footprint, p.fds, p.ports, p.threads
                     );
+                    if pause.is_some_and(|every| every > 0 && (cycle + 1) % every == 0) {
+                        println!("soak pause after cycle {cycle}");
+                        zgui::timer::sleep(Duration::from_secs(20)).await;
+                    }
                 }
                 main.close();
             });
-            std::mem::forget(driver);
         })
 }
