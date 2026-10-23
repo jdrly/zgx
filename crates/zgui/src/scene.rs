@@ -1074,12 +1074,15 @@ fn min_content_lines(text: &str) -> String {
     lines
 }
 /// `Node::reads`: known, reads the available width, the height; has a
-/// width or height percentage in its subtree.
+/// width or height percentage in its subtree; resolves its own against the
+/// width or height basis its parent passes (`Scene::percent_bases`).
 const READS_KNOWN: u8 = 1;
 const READS_WIDTH: u8 = 2;
 const READS_HEIGHT: u8 = 4;
 const PERCENT_WIDTH: u8 = 8;
 const PERCENT_HEIGHT: u8 = 16;
+const OWN_PERCENT_WIDTH: u8 = 32;
+const OWN_PERCENT_HEIGHT: u8 = 64;
 /// Which way a node's lines run (CSS's `direction`), inherited by its
 /// subtree: rows run from the right, text starts at the right, and the
 /// arrows read the other way.
@@ -2169,19 +2172,18 @@ impl Scene {
         let mut total = 0_f32;
         let mut count = 0;
         for child in children {
-            // A `contents` child's style is the one it lays out with.
-            let style = self.node(child).style.clone();
-            if style.absolute {
+            // A `contents` child's style is the one it lays out with. What
+            // this reads of it, copied (measuring it needs the scene).
+            let style = &self.node(child).style;
+            let (absolute, width, height, margin) =
+                (style.absolute, style.width, style.height, style.margin);
+            if absolute {
                 continue;
             }
             let need = if clips(&self.node(self.laid_out_as(child)).style) {
                 0.
             } else {
-                let own = if horizontal {
-                    style.width
-                } else {
-                    style.height
-                };
+                let own = if horizontal { width } else { height };
                 match own {
                     Some(size) => size,
                     // Down a column, at the width it is laid out at, so
@@ -2198,9 +2200,9 @@ impl Scene {
                 }
             };
             let margins = if horizontal {
-                style.margin.left + style.margin.right
+                margin.left + margin.right
             } else {
-                style.margin.top + style.margin.bottom
+                margin.top + margin.bottom
             };
             let need = (need + margins).max(0.);
             total = if along { total + need } else { total.max(need) };
@@ -3984,11 +3986,12 @@ impl Scene {
     /// against, and available sizes a leaf never reads (text lays out at
     /// its available width only when it wraps).
     fn relevant(&self, id: NodeId, mut constraints: Constraints) -> Constraints {
-        let (widths, heights) = self.percent_bases(id);
-        if !widths {
+        // Every probe asks, cache hits too: the answers are cached together.
+        let bits = self.reads_bits(id);
+        if bits & OWN_PERCENT_WIDTH == 0 {
             constraints.percent_width = None;
         }
-        if !heights {
+        if bits & OWN_PERCENT_HEIGHT == 0 {
             constraints.percent_height = None;
         }
         // Scroll content is as large as its content along an axis nothing
@@ -4003,11 +4006,10 @@ impl Scene {
                 constraints.height = None;
             }
         }
-        let (reads_width, reads_height) = self.reads_available(id);
-        if constraints.force_width.is_some() || !reads_width {
+        if constraints.force_width.is_some() || bits & READS_WIDTH == 0 {
             constraints.width = constraints.force_width;
         }
-        if constraints.force_height.is_some() || !reads_height {
+        if constraints.force_height.is_some() || bits & READS_HEIGHT == 0 {
             constraints.height = constraints.force_height;
         }
         constraints
@@ -4122,7 +4124,8 @@ impl Scene {
             return cached;
         }
         // Percentages anywhere below, or its own.
-        let (mut percent_w, mut percent_h) = self.percent_bases(id);
+        let (own_w, own_h) = self.percent_bases(id);
+        let (mut percent_w, mut percent_h) = (own_w, own_h);
         for child in &node.children {
             let (w, h) = self.percentages_within(*child);
             percent_w |= w;
@@ -4179,7 +4182,9 @@ impl Scene {
             | if width { READS_WIDTH } else { 0 }
             | if height { READS_HEIGHT } else { 0 }
             | if percent_w { PERCENT_WIDTH } else { 0 }
-            | if percent_h { PERCENT_HEIGHT } else { 0 };
+            | if percent_h { PERCENT_HEIGHT } else { 0 }
+            | if own_w { OWN_PERCENT_WIDTH } else { 0 }
+            | if own_h { OWN_PERCENT_HEIGHT } else { 0 };
         node.reads.set(bits);
         bits
     }
@@ -4678,7 +4683,7 @@ impl Scene {
                     _ => (0.0, 0.0),
                 };
                 for (i, child) in ids.iter().enumerate() {
-                    let s = self.node(*child).style.clone();
+                    let s = &self.node(*child).style;
                     let m = s.margin;
                     let (w, h) = sizes[i];
                     let cross_free = if horizontal {
@@ -4709,7 +4714,7 @@ impl Scene {
                     };
                     children.push((*child, Rect::new(cx + padding.left, cy + padding.top, w, h)));
                     child_constraints.push(Some(asked[i]));
-                    cursor += main(sizes[i]) + main_margin(&s) + style.gap + extra_gap;
+                    cursor += main(sizes[i]) + main_margin(s) + style.gap + extra_gap;
                 }
                 for &child in &absolute {
                     let margin = self.node(child).style.margin;

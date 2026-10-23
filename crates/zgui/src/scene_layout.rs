@@ -650,17 +650,16 @@ impl Scene {
             };
             let mut natural = (0_f32, 0_f32);
             for child in &ids {
-                let child_style = self.node(*child).style.clone();
-                if child_style.absolute {
+                let (absolute, margin) = {
+                    let style = &self.node(*child).style;
+                    (style.absolute, style.margin)
+                };
+                if absolute {
                     continue;
                 }
                 let size = self.measure(*child, natural_constraints);
-                natural.0 = natural
-                    .0
-                    .max(size.0 + child_style.margin.left + child_style.margin.right);
-                natural.1 = natural
-                    .1
-                    .max(size.1 + child_style.margin.top + child_style.margin.bottom);
+                natural.0 = natural.0.max(size.0 + margin.left + margin.right);
+                natural.1 = natural.1.max(size.1 + margin.top + margin.bottom);
             }
             if mapped.size.width.is_auto() {
                 mapped.size.width = dim(Length::Px(natural.0 + inset_w));
