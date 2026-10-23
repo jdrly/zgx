@@ -6,8 +6,13 @@
 //! rather than over it. It also joins AppKit's window tabs as `Tabbing`
 //! says.
 //!
-//! todo(windows): `GetCursorPos` for the pointer, then `SetWindowPos` before
-//! the window shows; `CW_USEDEFAULT` cascades; frames saved by the app.
+//! Windows (`win32`): placed nowhere in particular, a window opens where
+//! Windows puts it (`CW_USEDEFAULT`: each new window a step on from the last,
+//! as Notepad's). A saved frame is its placement (`GetWindowPlacement`: the
+//! restored frame, and whether it was maximized), kept in the registry under
+//! `HKCU\Software\zgui\<executable>\Frames`, and reopened only where a monitor
+//! still shows its title bar. AppKit's window tabs have no Windows
+//! counterpart: `Tabbing` does nothing there.
 //! todo(x11): `XQueryPointer` could place it; the window manager may still
 //! move it. todo(wayland): the compositor places new windows, and the app
 //! cannot.
@@ -27,6 +32,15 @@ pub enum Tabbing {
     Disallowed,
 }
 
+/// How `place` left a window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Placed {
+    /// Its saved frame: its size is that, not its options'.
+    pub restored: bool,
+    /// It was left maximized: it opens so.
+    pub maximized: bool,
+}
+
 /// Place `window` (not shown yet): `under_pointer` is the content point
 /// (logical) to put under the pointer; `placed`, whether its options gave it
 /// a position already.
@@ -36,23 +50,23 @@ pub(crate) fn place(
     under_pointer: Option<(f64, f64)>,
     placed: bool,
     options: &crate::WindowOptions,
-) {
+) -> Placed {
     use objc2::{MainThreadOnly, rc::Retained};
     use objc2_app_kit::{NSApplication, NSEvent, NSView, NSWindowTabbingMode};
     use objc2_foundation::{NSPoint, NSString};
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = window.window_handle() else {
-        return;
+        return Placed::default();
     };
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return;
+        return Placed::default();
     };
     // SAFETY: winit's content view, alive while its window is.
     let Some(view) = (unsafe { Retained::<NSView>::retain(handle.ns_view.as_ptr().cast()) }) else {
-        return;
+        return Placed::default();
     };
     let Some(window) = view.window() else {
-        return;
+        return Placed::default();
     };
     window.setTabbingMode(match options.tabbing {
         Tabbing::Automatic => NSWindowTabbingMode::Automatic,
@@ -80,10 +94,10 @@ pub(crate) fn place(
             pointer.x - x - (content.origin.x - frame.origin.x),
             pointer.y + y + title,
         ));
-        return;
+        return Placed::default();
     }
     if placed {
-        return;
+        return Placed::default();
     }
     // Cascaded from the app's front window: placed at its top-left, then
     // one step on (AppKit's offset, kept on its screen).
@@ -105,13 +119,20 @@ pub(crate) fn place(
         let next = window.cascadeTopLeftFromPoint(top_left);
         window.cascadeTopLeftFromPoint(next);
     }
+    Placed::default()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+pub(crate) use win32::place;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub(crate) fn place(
     _: &winit::window::Window,
     _: Option<(f64, f64)>,
     _: bool,
     _: &crate::WindowOptions,
-) {
+) -> Placed {
+    Placed::default()
 }

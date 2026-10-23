@@ -373,7 +373,7 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe --example window_probe
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
@@ -382,6 +382,7 @@ python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe --
 python scripts/windows_touch_smoke.py target/debug/examples
 python scripts/windows_popup_smoke.py target/debug/examples
 python scripts/windows_drag_smoke.py target/debug/examples
+python scripts/windows_window_smoke.py target/debug/examples
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -436,6 +437,12 @@ python scripts/windows_drag_smoke.py target/debug/examples
   probe's other window, and torn off past both. It never lets go over any
   window but its own and the target's: it checks the way is clear before each
   drag, and cancels with Escape if another window covers the target.
+
+- `windows_window_smoke.py` (`window_probe`): a second window opens a step
+  on from the first (`CW_USEDEFAULT`); a window with `frame_autosave` moved and
+  closed reopens there at its size, left maximized reopens maximized, and at a
+  saved frame no monitor shows opens on a monitor instead; `under_pointer`
+  puts its point under the pointer. It leaves nothing in the registry.
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range

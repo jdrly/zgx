@@ -159,7 +159,11 @@ On macOS every zgui app has a Window menu: the app's own if it has a menu titled
 
 A window opened with no position (`WindowOptions::bounds` without one, and no `display`) cascades from the app's front window, as AppKit's document windows do, rather than opening over it. `WindowOptions::frame_autosave = Some(name)` saves its frame under that name as it moves and resizes, and opens it where it was left. `WindowOptions::tabbing` joins AppKit's window tabs as the user's setting says (`Tabbing::Automatic`), always (`Preferred`), or never (`Disallowed`, for windows with tabs of their own, as Safari's), and `tabbing_identifier` keeps windows of different kinds apart. `WindowOptions::under_pointer` opens a window with a point of its content under the pointer, for a tab torn off its window ([drag and drop](drag-drop.md)).
 
-`cargo run --release -p zgui-desktop --example window_probe` checks the Window menu, the cascade and the autosave with events posted to its own windows. ⌘` is a system hotkey AppKit hears from the window server, not a key event an app can post itself, so it is checked by hand. Elsewhere windows open where the platform puts them; see `window_place.rs` for what Windows and X11 would need.
+`cargo run --release -p zgui-desktop --example window_probe` checks the Window menu, the cascade and the autosave with events posted to its own windows. ⌘` is a system hotkey AppKit hears from the window server, not a key event an app can post itself, so it is checked by hand.
+
+On Windows a window opened with no position opens where Windows puts it (`CW_USEDEFAULT`: each new window a step on from the last, as Notepad's). `frame_autosave` keeps the window's placement (its restored frame, and whether it was maximized) in the registry under `HKCU\Software\zgui\<executable>\Frames`, as it moves, resizes, snaps and closes, and reopens it there, maximized if it was left so, unless no monitor still shows its title bar (a monitor since unplugged): then it opens where Windows puts it. `under_pointer` works as on macOS. Windows has no window tabs: `tabbing` and `tabbing_identifier` do nothing there, and there is no Window menu. `python scripts/windows_window_smoke.py target/debug/examples` runs `window_probe` there.
+
+Elsewhere windows open where the platform puts them; see `window_place.rs` for what X11 would need.
 
 ## Ownership, tasks, and disposal
 

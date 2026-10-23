@@ -66,16 +66,19 @@ pub struct WindowOptions {
     /// Mica): the window is then transparent, whatever `transparent` says.
     pub glass: Option<crate::Glass>,
     /// Open with this point of the content (logical) under the pointer
-    /// (macOS): a tab torn off its window (`View::on_drag_outside`) opens
-    /// where it was dropped, the tab under the pointer.
+    /// (macOS, Windows): a tab torn off its window (`View::on_drag_outside`)
+    /// opens where it was dropped, the tab under the pointer.
     pub under_pointer: Option<(f64, f64)>,
     /// AppKit's window tabs (macOS): as the user's setting says unless set.
+    /// Windows has no window tabs: there it does nothing.
     pub tabbing: crate::Tabbing,
     /// Windows with the same identifier tab together (macOS); by default,
-    /// all of the app's.
+    /// all of the app's. Nothing elsewhere.
     pub tabbing_identifier: Option<String>,
     /// Save the window's frame under this name as it moves and resizes, and
-    /// open where it was left (macOS's frame autosave).
+    /// open where it was left (macOS's frame autosave; on Windows its
+    /// placement, maximized or not, in the registry, reopened only where a
+    /// monitor still shows its title bar).
     pub frame_autosave: Option<String>,
 }
 impl WindowOptions {
@@ -1953,15 +1956,18 @@ impl Host {
             mouse_down::watch();
         }
         let sized = self.options.bounds;
-        crate::window_place::place(
+        let placed = crate::window_place::place(
             &window,
             self.options.under_pointer.take(),
             sized.is_some_and(|bounds| bounds.position.is_some()) || self.options.display.is_some(),
             &self.options,
         );
+        // Left maximized, it opens so (`frame_autosave`).
+        self.state.maximized |= placed.maximized;
         let radius =
             crate::window_chrome::apply(&window, self.options.titlebar, self.options.glass);
-        if self.options.titlebar != crate::Titlebar::Standard {
+        // A saved frame keeps its size.
+        if self.options.titlebar != crate::Titlebar::Standard && !placed.restored {
             // Content now spans the title bar: the window shrinks to give
             // it the size asked for.
             let _ = match sized {
