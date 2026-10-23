@@ -14,6 +14,40 @@ pickers and message boxes. Both file pickers and prompts receive their owning
 native window. Application menus use `cx.app_menu_bar()` and Control shortcuts.
 No additional Windows-only dependency is needed.
 
+### ARM64
+
+`aarch64-pc-windows-msvc` builds too (`cargo check --workspace --all-targets
+--locked` passes; no CI job runs it). Install the target
+(`rustup target add aarch64-pc-windows-msvc`) and Build Tools' ARM64 compiler
+("MSVC … ARM64 build tools"). A Developer prompt for ARM64 sets everything;
+otherwise point the C code built for the target at the ARM64 compiler and
+keep the host's environment for build scripts:
+
+```powershell
+$env:CC_aarch64_pc_windows_msvc = "...\VC\Tools\MSVC\<version>\bin\Hostx64\arm64\cl.exe"
+$env:AR_aarch64_pc_windows_msvc = "...\VC\Tools\MSVC\<version>\bin\Hostx64\arm64\lib.exe"
+cargo build --release --target aarch64-pc-windows-msvc
+```
+
+### Allocator
+
+zgui leaves the global allocator to the application. Windows' default heap
+is slower than mimalloc under zgui's allocation patterns. On an
+i7-12700KF, release builds, with mimalloc as `#[global_allocator]`:
+- `heavy_headless` takes 13% less time a tick: 1.77–1.97 ms down to
+  1.51–1.54 ms;
+- `anime_bench`'s build, mount and layout take 15–45% less time;
+- its steady animation frames, which barely allocate, are unchanged;
+- each process commits about 40 MiB more private memory, with about the same
+  working set.
+
+An application that mounts large trees often can opt in:
+
+```rust
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+```
+
 ## Presentation
 
 wgpu runs on Direct3D 12 alone; Vulkan stands in only where Direct3D 12 has
