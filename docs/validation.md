@@ -40,6 +40,21 @@ It opens windows for the whole run (a cycle a second); leave the machine to it. 
 
 `examples/failures.rs` fails twice while it animates, for `scripts/failures_smoke.py` (a Linux native smoke): a task panics, which the host contains and shows in a banner, then its GPU device is lost (`WindowHandle::debug_lose_gpu`), and it makes a new renderer and draws on. `crates/zgui-gpu/tests/device_loss.rs` checks the renderer's side; `crates/zgui-script/tests/failures.rs` a script's runtime error, a missing image and a missing font.
 
+### NVIDIA on Windows: devices made and released concurrently
+
+On an RTX 4090 with NVIDIA's driver 32.0.16.1742 (Windows 11), Direct3D 12 devices made and released on many threads at once can hang the process or crash it. This is the driver's, not zgui's:
+- **The crash.** The pixels tests, four processes at a time, crashed once in eight runs: an access violation reading freed memory on one of the driver's own threads (`nvwgf2umx!OpenAdapter10+0xfe306`). No zgui, wgpu or Direct3D frame is on that stack.
+- **The hang.** `independent_device_lifecycle_stress` (opt-in, 24 threads) sometimes hangs. Every blocked thread is in the driver, on its own locks, or in the kernel releasing an allocation (`NtGdiDdDDIDestroyAllocation2`); no zgui or wgpu lock is held.
+- **Without zgui or wgpu.** `crates/zgui-gpu/examples/d3d12_device_churn.rs` uses Direct3D 12 alone: 24 threads each make a device, a queue, a target and a readback buffer, draw, wait and release, ten times. It hangs within a few runs, with the same stacks, and one driver thread waits in the routine the crash was in.
+
+Apps never do this: a zgui process shares one device among its windows (`GpuContext`). Only tests make devices on many threads (`independent_devices_render_concurrently_with_bounded_workers`, four of them, and the opt-in stress), and CI's Windows runners draw with WARP, which is unaffected. To check a newer driver:
+
+```powershell
+cargo run --release -p zgui-gpu --example d3d12_device_churn
+```
+
+It prints the GPU and driver, then each run's time; a run that hangs is reported and the process exits with 2.
+
 ## Linux native checks
 
 Native examples run under Xvfb with Openbox, using llvmpipe Vulkan:
