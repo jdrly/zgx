@@ -97,7 +97,13 @@ VK = {
 EXTENDED = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x5B}
 
 
-def _send(*inputs):
+# The window `activate` last brought to the front: input goes nowhere else.
+_target = None
+
+
+def _send(*inputs, guard=True):
+    if guard and _target is not None:
+        require_foreground(_target)
     array = (INPUT * len(inputs))(*inputs)
     if user32.SendInput(len(inputs), array, ctypes.sizeof(INPUT)) != len(inputs):
         raise OSError(ctypes.get_last_error(), "SendInput was blocked (is the desktop locked?)")
@@ -183,18 +189,35 @@ def title(hwnd):
     return buffer.value
 
 
+def _handle(hwnd):
+    return getattr(hwnd, "value", hwnd)
+
+
+def is_foreground(hwnd):
+    return user32.GetForegroundWindow() == _handle(hwnd)
+
+
 def activate(hwnd):
-    """Bring `hwnd` to the front with keyboard focus, past the foreground lock."""
+    """Bring `hwnd` to the front with keyboard focus, past the foreground lock.
+    From then on, input is sent only while it stays in front."""
+    global _target
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     for _ in range(20):
         # A key event from this process lifts the foreground lock for it.
-        _send(_vk(VK["alt"]), _vk(VK["alt"], up=True))
+        _send(_vk(VK["alt"]), _vk(VK["alt"], up=True), guard=False)
         user32.SetForegroundWindow(hwnd)
-        if user32.GetForegroundWindow() == hwnd:
+        if is_foreground(hwnd):
+            _target = _handle(hwnd)
             time.sleep(0.15)
             return
         time.sleep(0.05)
     raise RuntimeError(f"could not activate {title(hwnd)!r}")
+
+
+def require_foreground(hwnd):
+    """Fail rather than type into whatever window the user has in front."""
+    if not is_foreground(hwnd):
+        raise RuntimeError(f"{title(hwnd)!r} is not in front: input would go elsewhere")
 
 
 def client_size(hwnd):

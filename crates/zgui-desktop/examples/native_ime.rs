@@ -7,6 +7,9 @@ use zgui::{
 };
 use zgui_desktop::{Application, WindowOptions};
 
+/// A composition has started (`--open-ime` stops opening the input method).
+static COMPOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn observe_native_focus(tick: usize) {
     #[cfg(target_os = "macos")]
     {
@@ -27,8 +30,52 @@ fn observe_native_focus(tick: usize) {
     let _ = tick;
 }
 
+/// Windows (`--open-ime`): open the focused window's input method in its
+/// native mode (hiragana for Japanese), as its on/off key would. Input
+/// methods ignore that key when it is synthesized; the composition itself
+/// still comes from real keystrokes.
+#[cfg(windows)]
+fn open_input_method() {
+    use std::ffi::c_void;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetFocus() -> *mut c_void;
+    }
+    #[link(name = "imm32")]
+    unsafe extern "system" {
+        fn ImmGetContext(window: *mut c_void) -> *mut c_void;
+        fn ImmSetOpenStatus(context: *mut c_void, open: i32) -> i32;
+        fn ImmGetConversionStatus(
+            context: *mut c_void,
+            conversion: *mut u32,
+            sentence: *mut u32,
+        ) -> i32;
+        fn ImmSetConversionStatus(context: *mut c_void, conversion: u32, sentence: u32) -> i32;
+        fn ImmReleaseContext(window: *mut c_void, context: *mut c_void) -> i32;
+    }
+    // SAFETY: the UI thread's own focus window and its input context,
+    // released after use.
+    unsafe {
+        let window = GetFocus();
+        let context = ImmGetContext(window);
+        if context.is_null() {
+            println!("IME_OPEN none");
+            return;
+        }
+        let (mut conversion, mut sentence) = (0, 0);
+        ImmGetConversionStatus(context, &mut conversion, &mut sentence);
+        // IME_CMODE_NATIVE: hiragana, hangul, zhuyin.
+        let open = ImmSetOpenStatus(context, 1) != 0
+            && ImmSetConversionStatus(context, conversion | 0x1, sentence) != 0;
+        println!("IME_OPEN {open}");
+        ImmReleaseContext(window, context);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let observe = std::env::args().any(|arg| arg == "--native-observe");
+    #[cfg(windows)]
+    let open_ime = std::env::args().any(|arg| arg == "--open-ime");
     Application::new()
         .window(WindowOptions {
             title: "zgui native IME".into(),
@@ -55,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if event.phase == EventPhase::Target {
                             match &event.event {
                                 InputEvent::ImePreedit { text, cursor } => {
+                                    COMPOSED.store(true, std::sync::atomic::Ordering::Relaxed);
                                     println!("PREEDIT {label} {text:?} {cursor:?}")
                                 }
                                 InputEvent::ImeCommit(text) => println!("COMMIT {label} {text:?}"),
@@ -98,6 +146,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     zgui::timer::sleep(Duration::from_millis(500)).await;
                     if observe {
                         observe_native_focus(tick);
+                    }
+                    // Until composition starts: the test may switch the window
+                    // to the input method's language only after it shows.
+                    #[cfg(windows)]
+                    if open_ime && !COMPOSED.load(std::sync::atomic::Ordering::Relaxed) {
+                        open_input_method();
                     }
                     println!(
                         "MODEL {tick} first={:?} second={:?} focus={:?}",

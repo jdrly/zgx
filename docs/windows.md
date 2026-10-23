@@ -64,6 +64,24 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
+python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
+python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
 ```
+
+- `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
+  Tab focus, resize and close in the gallery.
+- `windows_dpi_smoke.py`: the display's scale goes 100% to 150% and back while
+  `dpi_transition` runs (as Settings changes it, for the signed-in user, and
+  restored after). Each scale must reach the window as per-monitor DPI, scale
+  its physical size, keep its layout in logical pixels and take pointer and
+  typing at the scaled positions.
+- `windows_ime_smoke.py`: the Microsoft Korean IME composes hangul from real
+  keystrokes (preedit, commit), and a click into another editor mid-composition
+  commits it where it began. Korean composes without a dictionary, so it works
+  on any install; `--install-korean` adds it to the user's input methods for the
+  run and restores the list after. The Japanese and Chinese IMEs need their
+  language's typing features (an administrator install) before they compose.
+  `native_ime --open-ime` opens the IME itself: input methods ignore a
+  synthesized on/off key.
