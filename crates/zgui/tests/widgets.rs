@@ -150,8 +150,9 @@ fn removing_subtree_disposes_subscriptions_and_editors() {
     ui.label_signal(group, value.clone(), fixed(100., 30.));
     let editor = ui.text_input(group, "Text", value.clone(), 200., false);
     ui.input.focus(&ui.scene, Some(editor.node));
-    // The label, the editor, and the editor's themed background.
-    assert_eq!(ui.runtime.effect_count(), 3);
+    // The label, the editor, the editor's themed background and the colour
+    // of its selection.
+    assert_eq!(ui.runtime.effect_count(), 4);
     ui.remove(group);
     assert_eq!(ui.runtime.effect_count(), 0);
     assert!(ui.focused_editor().is_none());

@@ -1798,6 +1798,21 @@ impl Ui {
         let draw_window_blurred = window_blurred.clone();
         let scroll = Rc::new(RefCell::new((0f32, 0f32)));
         let selection_nodes = Rc::new(RefCell::new(Vec::new()));
+        // A selection showing when the theme (or the system's accent)
+        // changes takes the new colour, as one drawn after it would.
+        {
+            let (nodes, scene, theme) =
+                (selection_nodes.clone(), self.scene.clone(), theme.clone());
+            self.bind(root, move || {
+                let color = theme.color(tok::SELECTION);
+                let mut s = scene.borrow_mut();
+                for id in nodes.borrow().iter() {
+                    if s.contains(*id) {
+                        s.set_kind(*id, NodeKind::Rect(color));
+                    }
+                }
+            });
+        }
         self.semantics.borrow_mut().set(
             root,
             SemanticNode::new(
