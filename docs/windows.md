@@ -199,6 +199,84 @@ and URLs to the running one as `ApplicationEvent::OpenUrls`, or with none an
 `ApplicationEvent::Reopen`, and exits. The ID is also the AppUserModelID the
 taskbar groups windows under. See [platform services](platform-services.md).
 
+## Shipping a zgui app on Windows
+
+zgui adds no packaging tooling; these are the pieces a Windows build needs,
+and how they fit what zgui does at run time.
+
+**The executable.**
+- Build with `cargo build --release`.
+- Mark the binary as a GUI app so no console window opens with it:
+  `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` at the
+  top of `main.rs`. Its standard output then goes nowhere, so log to a file
+  if you need one.
+- Rust's MSVC binaries link the C runtime dynamically (`vcruntime140.dll`),
+  which not every machine has. Either link it statically
+  (`-C target-feature=+crt-static`, e.g. in `.cargo/config.toml` under
+  `[target.x86_64-pc-windows-msvc] rustflags`) or have the installer add the
+  Visual C++ Redistributable.
+- ARM64 machines run x64 builds emulated. Build `aarch64-pc-windows-msvc`
+  as well for native speed (see ARM64 above).
+
+**Resources.** Embed them from a build script, for example with
+`winresource`:
+- An icon: zgui's windows take the executable's first icon group for the
+  title bar, taskbar and Alt+Tab. Without one, Windows' default shows.
+- Version information (product name, company, version): Explorer's
+  Properties and Task Manager show it.
+- An application manifest that declares the Common Controls 6 dependency.
+  Without it, the system message boxes zgui's prompts use draw in the old
+  style. zgui sets per-monitor DPI awareness itself at startup, so the
+  manifest needn't, though declaring `PerMonitorV2` there does no harm.
+
+**Identity and single instance.** Give the app an
+`Application::application_id` (reverse DNS, `com.example.Mail`):
+- It becomes the process's AppUserModelID, which the taskbar groups and pins
+  windows by. The Start menu shortcut your installer makes must carry the
+  same ID (the shortcut's `System.AppUserModel.ID` property; WiX's
+  `ShortcutProperty`, Inno Setup's `AppUserModelID`), or pinning the running
+  app and launching it from Start count as two apps.
+- It also makes the app one instance a session: a second launch hands its
+  files and URLs to the first (`ApplicationEvent::OpenUrls`) and exits.
+  Register file associations and URL schemes to launch the executable with
+  the file or URL as an argument (`"C:\…\app.exe" "%1"`). zgui reads existing
+  paths and URLs from the arguments and leaves the rest to the app.
+- Persisted script state (`ui.persist`) lives in `%APPDATA%\<app_id>`.
+
+**Code signing.**
+- Sign the executable, and the installer or package, with an Authenticode
+  certificate (`signtool sign /fd sha256 /tr <timestamp URL> /td sha256`).
+  Timestamping keeps the signature valid after the certificate expires.
+- Unsigned downloads meet SmartScreen's "Windows protected your PC" warning
+  until they build reputation. A signed one builds reputation by its
+  publisher. A cloud signing service (Microsoft's Trusted Signing, or a
+  certificate authority's) avoids keeping a hardware key yourself.
+
+**Web views.** Apps built with the `webview2` feature need the WebView2
+runtime:
+- Windows 11 includes it, and most Windows 10 machines have it with Edge.
+- An installer can make sure with Microsoft's Evergreen Bootstrapper or
+  Standalone Installer.
+- Or ship a Fixed Version runtime beside the app and point the
+  `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` environment variable at it.
+- The loader is linked into the executable, so there is no
+  `WebView2Loader.dll` to ship.
+- Without a runtime, web views show their placeholder and the rest of the
+  app works.
+
+**MSIX or a plain installer.**
+- A plain executable, as a zip or with an MSI (WiX), Inno Setup or NSIS
+  installer, is the simplest: the installer writes the Start menu shortcut
+  (with the app ID above), the file associations and URL schemes (under
+  `HKEY_CURRENT_USER\Software\Classes` for a per-user install), and the
+  uninstall entry.
+- MSIX gives a clean install and uninstall, updates through App Installer or
+  the Store, and declares associations and schemes in its manifest
+  (`uap:FileTypeAssociation`, `uap:Protocol`). The package gives the app an
+  identity of its own. zgui still sets the application ID as the process's
+  explicit AppUserModelID, so check that pinning and the taskbar behave as
+  you expect in your package; zgui's CI does not build MSIX packages.
+
 ## Limitations
 
 - Cancelling a file-picker or prompt future invalidates result delivery but
