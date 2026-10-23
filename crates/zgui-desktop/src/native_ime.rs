@@ -166,7 +166,10 @@ pub(crate) fn dispatch(
             text: String::new(),
             cursor: None,
         },
-        Ime::Preedit(text, cursor) => InputEvent::ImePreedit { text, cursor },
+        Ime::Preedit(text, cursor) => InputEvent::ImePreedit {
+            cursor: preedit_cursor(&text, cursor),
+            text,
+        },
         Ime::Commit(text) => InputEvent::ImeCommit(text),
     };
     let result = ui.try_dispatch(event)?;
@@ -175,6 +178,25 @@ pub(crate) fn dispatch(
     Ok(Some(
         !result.focus_changed && composition_target(ui) == session_target,
     ))
+}
+
+/// Where the caret sits in a composition. Windows' Korean IME reports the
+/// syllable it composes with the cursor at its start (`GCS_CURSORPOS` 0),
+/// and zgui drew the caret before it; Windows' own fields, and browsers,
+/// show it after the syllable.
+fn preedit_cursor(text: &str, cursor: Option<(usize, usize)>) -> Option<(usize, usize)> {
+    #[cfg(windows)]
+    if cursor == Some((0, 0)) && !text.is_empty() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+        // SAFETY: reads this (the UI) thread's keyboard layout.
+        let language = unsafe { GetKeyboardLayout(0) }.0 as usize & 0x3ff;
+        // LANG_KOREAN: the primary language of the layout's language id.
+        if language == 0x12 {
+            return Some((text.len(), text.len()));
+        }
+    }
+    let _ = text;
+    cursor
 }
 
 #[cfg(test)]

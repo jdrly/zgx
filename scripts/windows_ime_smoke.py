@@ -114,8 +114,9 @@ def main():
         if input_methods() != saved:
             restore(saved)
     output = "".join(lines)
-    for expected in ['PREEDIT first "ㅎ"', 'PREEDIT first "한"', 'COMMIT first "한"', 'COMMIT first "글"',
-                     'PREEDIT first "안"']:
+    # The caret after the composing syllable, as in Windows' own fields.
+    for expected in ['PREEDIT first "ㅎ" Some((3, 3))', 'PREEDIT first "한" Some((3, 3))', 'COMMIT first "한"',
+                     'COMMIT first "글"', 'PREEDIT first "안"']:
         if expected not in output:
             raise AssertionError(f"missing {expected!r}:\n{output}")
     final = next(line for line in lines if line.startswith("FINAL"))
