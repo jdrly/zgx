@@ -63,6 +63,12 @@ measured the same as a window's own swap chain: every frame shown, the same
 keystroke latency and idle cost.
 `scripts/windows_chrome_smoke.py` checks the buttons and the resize bands.
 
+Windows take the executable's own icon (its first icon group, the one
+Explorer shows) for the title bar, the taskbar and Alt+Tab, sized for the
+window's DPI. Embed one as a resource from the app's build script, for
+example with the `winresource` crate (`WindowsResource::new().set_icon("app.ico")`);
+without one, Windows' default shows.
+
 ## System settings
 
 The built-in themes take these from Windows, read at startup and again when

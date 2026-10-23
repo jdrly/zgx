@@ -290,6 +290,85 @@ mod win {
         }
     }
 
+    /// The executable's own icon (its first icon group, the one Explorer
+    /// shows) on the window's title bar, taskbar button and Alt+Tab: winit's
+    /// windows have none, and Windows drew a blank page. An executable
+    /// without one keeps that. Sized for the window's DPI.
+    fn icon(hwnd: HWND) {
+        use windows::{
+            Win32::{
+                Foundation::{HMODULE, LPARAM, WPARAM},
+                System::LibraryLoader::{EnumResourceNamesW, GetModuleHandleW},
+                UI::{
+                    HiDpi::GetSystemMetricsForDpi,
+                    WindowsAndMessaging::{
+                        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
+                        RT_GROUP_ICON, SM_CXICON, SM_CXSMICON, SendMessageW, WM_SETICON,
+                    },
+                },
+            },
+            core::{BOOL, PCWSTR},
+        };
+        /// The first icon group's name: an integer ID, or a string copied out.
+        enum Name {
+            Id(usize),
+            Text(Vec<u16>),
+        }
+        unsafe extern "system" fn first(_: HMODULE, _: PCWSTR, name: PCWSTR, found: isize) -> BOOL {
+            // SAFETY: `found` is the `Option<Name>` below, for this call;
+            // a string name is valid during it.
+            unsafe {
+                let found = &mut *(found as *mut Option<Name>);
+                *found = Some(if (name.0 as usize) >> 16 == 0 {
+                    Name::Id(name.0 as usize)
+                } else {
+                    let mut text = name.as_wide().to_vec();
+                    text.push(0);
+                    Name::Text(text)
+                });
+            }
+            false.into()
+        }
+        // SAFETY: this executable's resources; the callback writes `found`
+        // only while it runs.
+        unsafe {
+            let Ok(module) = GetModuleHandleW(None) else {
+                return;
+            };
+            let mut found: Option<Name> = None;
+            let _ = EnumResourceNamesW(
+                Some(module),
+                RT_GROUP_ICON,
+                Some(first),
+                &mut found as *mut _ as isize,
+            );
+            let name = match &found {
+                Some(Name::Id(id)) => PCWSTR(*id as *const u16),
+                Some(Name::Text(text)) => PCWSTR(text.as_ptr()),
+                None => return,
+            };
+            let dpi = GetDpiForWindow(hwnd);
+            for (size, which) in [(SM_CXICON, ICON_BIG), (SM_CXSMICON, ICON_SMALL)] {
+                let side = GetSystemMetricsForDpi(size, dpi);
+                if let Ok(icon) = LoadImageW(
+                    Some(module.into()),
+                    name,
+                    IMAGE_ICON,
+                    side,
+                    side,
+                    LR_DEFAULTCOLOR,
+                ) {
+                    SendMessageW(
+                        hwnd,
+                        WM_SETICON,
+                        Some(WPARAM(which as usize)),
+                        Some(LPARAM(icon.0 as isize)),
+                    );
+                }
+            }
+        }
+    }
+
     /// Windows' own menu for the window (Alt+Space, a right click on its
     /// title bar) follows the system's dark mode, as Explorer's and
     /// Terminal's do; winit darkens only the title bar. Called as the window
@@ -358,6 +437,7 @@ mod win {
             return 0.;
         };
         menu_theme(window);
+        icon(hwnd);
         if let Some(glass) = glass {
             frost(
                 hwnd,
