@@ -70,31 +70,26 @@ impl Clipboard {
         Ok(())
     }
 
-    /// The primary selection: the text last selected anywhere, which a middle
-    /// click pastes. None where the platform has no such selection.
-    pub(crate) fn get_primary_text(&mut self) -> Result<Option<String>> {
+    /// The primary selection (X11, Wayland): the text last selected
+    /// anywhere, which a middle click pastes.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn get_primary_text(&mut self) -> Result<String> {
         match &mut self.backend {
-            #[cfg(target_os = "linux")]
             Backend::Native(clipboard) => {
                 use arboard::{GetExtLinux, LinuxClipboardKind};
-                Ok(Some(
-                    clipboard
-                        .get()
-                        .clipboard(LinuxClipboardKind::Primary)
-                        .text()?,
-                ))
+                Ok(clipboard
+                    .get()
+                    .clipboard(LinuxClipboardKind::Primary)
+                    .text()?)
             }
-            #[cfg(not(target_os = "linux"))]
-            Backend::Native(_) => Ok(None),
-            #[cfg(target_os = "linux")]
-            Backend::Wayland(clipboard) => Ok(Some(clipboard.load(true)?)),
+            Backend::Wayland(clipboard) => Ok(clipboard.load(true)?),
         }
     }
 
-    /// Publish the primary selection; a no-op where the platform has none.
+    /// Publish the primary selection (X11, Wayland).
+    #[cfg(target_os = "linux")]
     pub(crate) fn set_primary_text(&mut self, text: String) -> Result<()> {
         match &mut self.backend {
-            #[cfg(target_os = "linux")]
             Backend::Native(clipboard) => {
                 use arboard::{LinuxClipboardKind, SetExtLinux};
                 clipboard
@@ -102,11 +97,6 @@ impl Clipboard {
                     .clipboard(LinuxClipboardKind::Primary)
                     .text(text)?;
             }
-            #[cfg(not(target_os = "linux"))]
-            Backend::Native(_) => {
-                let _ = text;
-            }
-            #[cfg(target_os = "linux")]
             Backend::Wayland(clipboard) => clipboard.store(true, text)?,
         }
         Ok(())

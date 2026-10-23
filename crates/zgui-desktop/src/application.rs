@@ -1546,7 +1546,7 @@ impl Host {
             .clipboard
             .borrow_mut()
             .as_mut()
-            .and_then(|clipboard| clipboard.get_primary_text().ok().flatten());
+            .and_then(|clipboard| clipboard.get_primary_text().ok());
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             self.context
                 .ui
