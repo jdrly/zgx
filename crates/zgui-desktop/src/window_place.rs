@@ -76,13 +76,34 @@ pub(crate) fn place(
     if let Some(identifier) = &options.tabbing_identifier {
         window.setTabbingIdentifier(&NSString::from_str(identifier));
     }
-    // Where it was last left, if it was: kept from now on.
-    let mut placed = placed;
+    // Where it was last left, if it was: kept from now on, its size too.
+    let mut restored = false;
     if let Some(name) = &options.frame_autosave {
         let name = NSString::from_str(name);
-        placed |= under_pointer.is_none() && window.setFrameUsingName(&name);
+        restored = under_pointer.is_none() && window.setFrameUsingName(&name);
         window.setFrameAutosaveName(&name);
     }
+    // The window takes content under its title bar after this
+    // (`window_chrome::apply`), and its frame becomes its content rect
+    // then: a saved frame (that content, as it was saved) is restored a
+    // title bar taller, its content being the saved frame, so the window
+    // ends as it was saved.
+    if restored && options.titlebar != crate::Titlebar::Standard {
+        let frame = window.frame();
+        let content = window.contentRectForFrameRect(frame);
+        let title = frame.size.height - content.size.height;
+        window.setFrame_display(
+            objc2_foundation::NSRect::new(
+                frame.origin,
+                objc2_foundation::NSSize::new(frame.size.width, frame.size.height + title),
+            ),
+            false,
+        );
+    }
+    let restored = Placed {
+        restored,
+        maximized: false,
+    };
     let frame = window.frame();
     let content = window.contentRectForFrameRect(frame);
     if let Some((x, y)) = under_pointer {
@@ -96,8 +117,8 @@ pub(crate) fn place(
         ));
         return Placed::default();
     }
-    if placed {
-        return Placed::default();
+    if placed || restored.restored {
+        return restored;
     }
     // Cascaded from the app's front window: placed at its top-left, then
     // one step on (AppKit's offset, kept on its screen).

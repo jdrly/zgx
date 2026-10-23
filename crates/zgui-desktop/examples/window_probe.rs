@@ -16,7 +16,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let second = options("Second");
+    // A window with content under its title bar, reopening a frame saved
+    // larger than its options ask: the saved size stands.
+    #[cfg(target_os = "macos")]
+    macos::save_frame();
+    let restored = WindowOptions {
+        titlebar: zgui_desktop::Titlebar::Inset,
+        frame_autosave: Some("zgui window_probe restored".into()),
+        ..options("Restored")
+    };
+    let standard = WindowOptions {
+        frame_autosave: Some("zgui window_probe standard".into()),
+        ..options("Standard")
+    };
+    let hidden = WindowOptions {
+        titlebar: zgui_desktop::Titlebar::Hidden,
+        frame_autosave: Some("zgui window_probe hidden".into()),
+        ..options("Hidden")
+    };
     Application::new().window(options("First")).run(move |cx| {
+        cx.windows.open(restored, |cx| {
+            cx.render(div().p(20.).child(text("Restored")));
+        });
+        cx.windows.open(standard, |cx| {
+            cx.render(div().p(20.).child(text("Standard")));
+        });
+        cx.windows.open(hidden, |cx| {
+            cx.render(div().p(20.).child(text("Hidden")));
+        });
         cx.render(div().p(20.).child(text("First")));
         cx.windows.open(second, |cx| {
             cx.render(div().p(20.).child(text("Second")));
@@ -281,8 +308,64 @@ mod macos {
         .unwrap();
         app().sendEvent(&event);
     }
+    /// The standard defaults (a method send: no NSUserDefaults binding).
+    fn defaults() -> Retained<objc2::runtime::AnyObject> {
+        // SAFETY: NSUserDefaults' class method.
+        unsafe { objc2::msg_send![objc2::class!(NSUserDefaults), standardUserDefaults] }
+    }
+    const RESTORED: &str = "NSWindow Frame zgui window_probe restored";
+    /// A frame saved for the restored window: 600 by 340 points, larger
+    /// than its options' 420 by 200.
+    pub fn save_frame() {
+        for key in [RESTORED, STANDARD, HIDDEN] {
+            // SAFETY: NSUserDefaults' string setter.
+            unsafe {
+                let _: () = objc2::msg_send![
+                    &*defaults(),
+                    setObject: &*NSString::from_str("300 300 600 340 0 0 3200 1770 "),
+                    forKey: &*NSString::from_str(key)
+                ];
+            }
+        }
+    }
+    const STANDARD: &str = "NSWindow Frame zgui window_probe standard";
+    const HIDDEN: &str = "NSWindow Frame zgui window_probe hidden";
     pub async fn run() {
         sleep(2000).await;
+        for title in ["Standard", "Hidden"] {
+            if let Some(window) = window(title) {
+                let frame = window.frame();
+                println!(
+                    "RESTORED {title} frame=({:.0}, {:.0}, {:.0}, {:.0})",
+                    frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
+                );
+                window.close();
+            }
+        }
+        for key in [STANDARD, HIDDEN] {
+            // SAFETY: as `save_frame`.
+            unsafe {
+                let _: () = objc2::msg_send![
+                    &*defaults(),
+                    removeObjectForKey: &*NSString::from_str(key)
+                ];
+            }
+        }
+        if let Some(restored) = window("Restored") {
+            let frame = restored.frame();
+            println!(
+                "RESTORED Inset frame=({:.0}, {:.0}, {:.0}, {:.0})",
+                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
+            );
+            restored.close();
+        }
+        // SAFETY: as `save_frame`; the probe leaves no default behind.
+        unsafe {
+            let _: () = objc2::msg_send![
+                &*defaults(),
+                removeObjectForKey: &*NSString::from_str(RESTORED)
+            ];
+        }
         let app = app();
         let menu = app.windowsMenu().map(|menu| {
             menu.itemArray()
