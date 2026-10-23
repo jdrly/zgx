@@ -66,6 +66,28 @@ local function helper() return ui.text "hi" end
 
 An unused local that a text template uses (`local count = ui.state("count", 0)` shown as `"{count}"`) is not reported. luau-lsp comes from its [releases](https://github.com/JohnnyMorganz/luau-lsp/releases) (put it on the `PATH`, or set `LUAU_LSP` to it); without it, `zgui check` says how to install it. A hot-reloading host runs the same check after every reload and shows the errors in the window's banner: in a debug build `host.watch` turns it on when luau-lsp is installed (a release build, or a machine without luau-lsp, does nothing). `host.check_on_reload(true | false)` or `ZGUI_CHECK=1` / `0` decides instead. The check runs luau-lsp in its own process from another thread, after a reload rather than per frame, and costs about 0.1 s of that process's CPU for a twenty-module app; results arrive through `host.watch`.
 
+### Best practice: `zgui lint`
+
+```sh
+zgui lint app.luau           # a file
+zgui lint examples/notes     # every .luau file under a directory
+zgui lint --rules            # what it looks for
+```
+
+`zgui check` asks whether a script is right; `zgui lint` asks whether it is written the way zgui runs fast. It reads the source only (no luau-lsp, nothing run), takes milliseconds for a large app, prints `file:line:col: warning[rule]: …` with the cheaper way to say the same thing, and exits 1 when it finds anything. CI lints every example with it. Run it, with `zgui check`, before handing a script over:
+
+| Rule | What it finds | Instead |
+| --- | --- | --- |
+| `untracked-get` | `state:get()` while an element is built (`ui.text { "n: " .. n:get() }`, `ui.show(open:get(), …)`): the interface is built once, untracked, so it shows that moment's value forever | the state itself, a template (`"n: {n}"`) or a function (`function() return n:get() end`) |
+| `state-in-builder` | `ui.state("key", …)` inside a component, `each` row or `list` row: one script-wide state that every instance shares | `ui.use_state(initial)`, or a key naming the instance (`` `file:{pane}` ``) when sharing by key is the point |
+| `timer-interval` | `ui.every(ms)` under 16 ms: more script calls than display frames | `anime` or `ui.tween` (Rust, paced by the display), or the rate the value really changes |
+| `per-frame-state` | `onUpdate`/`onRender`/`onBeforeUpdate` writing state with no `frameRate`: the script and every reader of the state run each display frame | animate the property, or the state as a target (`anime.animate(state, { value = 1 })`); or cap it (`frameRate = 8` for a clock) |
+| `update-copy` | `state:update(fn)` that only inserts, removes or sets one path: it copies the whole value through Luau | `push`, `insert`, `remove`, `set_key(path, v)`, `patch` |
+
+`-- zgui-lint: allow(rule)` on the finding's line or the line above accepts a deliberate exception (`allow(rule-a, rule-b)` for several).
+
+Some costs the engine removes instead of asking scripts to avoid them: `ui.tween`, `ui.spring`, `ui.loop`, text templates and animations of states or elements run without calling the script at all.
+
 ## Diagnostics
 
 **Errors in the window.** When a script fails to load or reload, or a handler, computed property or effect raises, a banner over the bottom of the window shows the file and line (`app.luau:12`, in monospace), the message and as much of the traceback as fits. A failed reload keeps the previous interface running under it; the next good reload clears it, and × dismisses it. The banner is mounted only while there is an error (`View::child_when`), so without one it costs no nodes and no per-frame work. `host.error()` is the same message as a signal.

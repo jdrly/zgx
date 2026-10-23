@@ -35,6 +35,7 @@ mod element;
 #[cfg(target_os = "macos")]
 mod file_events;
 mod io;
+pub mod lint;
 mod lower;
 pub mod markdown;
 mod motion;
