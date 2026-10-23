@@ -60,6 +60,14 @@ pub struct WindowOptions {
     /// (macOS): a tab torn off its window (`View::on_drag_outside`) opens
     /// where it was dropped, the tab under the pointer.
     pub under_pointer: Option<(f64, f64)>,
+    /// AppKit's window tabs (macOS): as the user's setting says unless set.
+    pub tabbing: crate::Tabbing,
+    /// Windows with the same identifier tab together (macOS); by default,
+    /// all of the app's.
+    pub tabbing_identifier: Option<String>,
+    /// Save the window's frame under this name as it moves and resizes, and
+    /// open where it was left (macOS's frame autosave).
+    pub frame_autosave: Option<String>,
 }
 impl WindowOptions {
     /// Whether the window is transparent where zgui paints nothing.
@@ -84,6 +92,9 @@ impl Default for WindowOptions {
             titlebar: crate::Titlebar::Standard,
             glass: None,
             under_pointer: None,
+            tabbing: crate::Tabbing::Automatic,
+            tabbing_identifier: None,
+            frame_autosave: None,
         }
     }
 }
@@ -661,11 +672,9 @@ impl Application {
             muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
                 let _ = wake.send_event(Event::NativeMenuAction(crate::MenuAction(event.id.0)));
             }));
-            if self.menus.is_empty() {
-                None
-            } else {
-                Some(crate::app_menu::NativeMenu::new(&self.menus)?)
-            }
+            // With none of the app's own, still the application and Window
+            // menus every Mac app has.
+            Some(crate::app_menu::NativeMenu::new(&self.menus)?)
         };
         let factory = WindowFactory {
             fonts: Rc::new(self.fonts),
@@ -1894,10 +1903,13 @@ impl Host {
             content_never_moves_window();
             mouse_down::watch();
         }
-        if let Some(point) = self.options.under_pointer.take() {
-            crate::window_place::under_pointer(&window, point);
-        }
         let sized = self.options.bounds;
+        crate::window_place::place(
+            &window,
+            self.options.under_pointer.take(),
+            sized.is_some_and(|bounds| bounds.position.is_some()) || self.options.display.is_some(),
+            &self.options,
+        );
         let radius =
             crate::window_chrome::apply(&window, self.options.titlebar, self.options.glass);
         if self.options.titlebar != crate::Titlebar::Standard {

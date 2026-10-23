@@ -237,6 +237,8 @@ fn options(title: &str, under_pointer: Option<(f64, f64)>) -> WindowOptions {
         width: 520.,
         height: 300.,
         under_pointer,
+        // Tabs of its own, so none of AppKit's (as Safari's).
+        tabbing: zgui_desktop::Tabbing::Disallowed,
         ..Default::default()
     }
 }

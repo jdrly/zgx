@@ -153,6 +153,14 @@ Windows and Linux, where they would need owned tool windows (Windows),
 override-redirect windows (X11) or `xdg_popup` (Wayland; winit has no way to
 make one).
 
+## Windows as AppKit keeps them
+
+On macOS every zgui app has a Window menu: the app's own if it has a menu titled "Window", else a standard one (Minimize, Zoom, Bring All to Front) after its menus. AppKit lists the app's windows in it, adds its tab and tiling commands, and ⌘` cycles through them.
+
+A window opened with no position (`WindowOptions::bounds` without one, and no `display`) cascades from the app's front window, as AppKit's document windows do, rather than opening over it. `WindowOptions::frame_autosave = Some(name)` saves its frame under that name as it moves and resizes, and opens it where it was left. `WindowOptions::tabbing` joins AppKit's window tabs as the user's setting says (`Tabbing::Automatic`), always (`Preferred`), or never (`Disallowed`, for windows with tabs of their own, as Safari's), and `tabbing_identifier` keeps windows of different kinds apart. `WindowOptions::under_pointer` opens a window with a point of its content under the pointer, for a tab torn off its window ([drag and drop](drag-drop.md)).
+
+`cargo run --release -p zgui-desktop --example window_probe` checks the Window menu, the cascade and the autosave with events posted to its own windows. ⌘` is a system hotkey AppKit hears from the window server, not a key event an app can post itself, so it is checked by hand. Elsewhere windows open where the platform puts them; see `window_place.rs` for what Windows and X11 would need.
+
 ## Ownership, tasks, and disposal
 
 A mounted component owns its local state, bindings, child components and tasks

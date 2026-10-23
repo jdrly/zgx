@@ -521,6 +521,9 @@ pub(crate) fn show_context_menu(
 #[cfg(target_os = "macos")]
 pub(crate) struct NativeMenu {
     menu: muda::Menu,
+    /// The Window menu AppKit keeps: the app's own (titled "Window"), else
+    /// a standard one after the app's menus.
+    window: Option<muda::Submenu>,
     /// The standard edit items it has, whose shortcuts zgui's view takes.
     standard: Vec<StandardItem>,
 }
@@ -546,9 +549,30 @@ impl NativeMenu {
             .map_err(|e| AppMenuError(e.to_string()))?;
         menu.append(&application)
             .map_err(|e| AppMenuError(e.to_string()))?;
+        let mut window = None;
         for model in menus {
-            menu.append(&native_submenu(model)?)
+            let submenu = native_submenu(model)?;
+            menu.append(&submenu)
                 .map_err(|e| AppMenuError(e.to_string()))?;
+            if model.label == "Window" {
+                window = Some(submenu);
+            }
+        }
+        // Every Mac app has a Window menu: AppKit lists the app's windows in
+        // it (with its tabs' commands, and tiling), and ⌘` cycles them.
+        if window.is_none() {
+            let standard = muda::Submenu::new("Window", true);
+            standard
+                .append_items(&[
+                    &muda::PredefinedMenuItem::minimize(None),
+                    &muda::PredefinedMenuItem::maximize(Some("Zoom")),
+                    &muda::PredefinedMenuItem::separator(),
+                    &muda::PredefinedMenuItem::bring_all_to_front(None),
+                ])
+                .map_err(|e| AppMenuError(e.to_string()))?;
+            menu.append(&standard)
+                .map_err(|e| AppMenuError(e.to_string()))?;
+            window = Some(standard);
         }
         fn standard_items(model: &AppMenu, out: &mut Vec<StandardItem>) {
             for entry in &model.entries {
@@ -563,10 +587,17 @@ impl NativeMenu {
         for model in menus {
             standard_items(model, &mut standard);
         }
-        Ok(Self { menu, standard })
+        Ok(Self {
+            menu,
+            window,
+            standard,
+        })
     }
     pub(crate) fn install(&self) {
         self.menu.init_for_nsapp();
+        if let Some(window) = &self.window {
+            window.set_as_windows_menu_for_nsapp();
+        }
         edit_keys::watch(&self.standard);
     }
 }

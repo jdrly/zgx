@@ -44,6 +44,7 @@ mod wayland_data;
 mod window_chrome;
 mod window_info;
 mod window_place;
+pub use window_place::Tabbing;
 #[cfg(target_os = "linux")]
 mod x11_nudge;
 #[cfg(target_os = "linux")]
