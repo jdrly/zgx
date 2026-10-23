@@ -493,6 +493,8 @@ fn shape_run_cached(
         }
     }
     if let Some(cache_glyphs) = font_system.shape_run_cache.get(&key) {
+        // zgui patch: room for them at once, not a glyph at a time.
+        glyphs.reserve(cache_glyphs.len());
         for mut glyph in cache_glyphs.iter().cloned() {
             // Adjust glyph start and end to match run position
             glyph.start += start_run;
@@ -1523,6 +1525,20 @@ impl ShapeLine {
         self.spans = spans;
         self.metrics_opt = attrs_list.defaults().metrics_opt.map(Into::into);
 
+        // Return the buffer for later reuse.
+        font_system.shape_buffer.spans = cached_spans;
+    }
+
+    /// zgui patch: the ellipsis is shaped when a layout ellipsizes
+    /// (`BufferLine::layout`), not for every line shaped: most never are,
+    /// and shaping it cost each a font lookup and allocations.
+    pub fn ensure_ellipsis(
+        &mut self,
+        font_system: &mut FontSystem,
+        attrs_list: &AttrsList,
+        shaping: Shaping,
+    ) {
+        let rtl = self.rtl;
         self.ellipsis_span.get_or_insert_with(|| {
             let attrs = if attrs_list.spans.is_empty() {
                 attrs_list.defaults()
@@ -1553,8 +1569,6 @@ impl ShapeLine {
             }
         });
 
-        // Return the buffer for later reuse.
-        font_system.shape_buffer.spans = cached_spans;
     }
 
     // A modified version of first part of unicode_bidi::bidi_info::visual_run
@@ -1612,6 +1626,14 @@ impl ShapeLine {
 
     // A modified version of second part of unicode_bidi::bidi_info::visual run
     fn reorder(&self, line_range: &[VlRange]) -> Vec<Range<usize>> {
+        // zgui patch: a line all at one left-to-right level stays in order
+        // (L2 reverses only odd levels), without collecting its levels.
+        let level = line_range.first().map(|range| range.level);
+        if level.is_some_and(|level| {
+            level.is_ltr() && line_range.iter().all(|range| range.level == level)
+        }) {
+            return (0..line_range.len()).map(|i| i..i + 1).collect();
+        }
         let line: Vec<unicode_bidi::Level> = line_range.iter().map(|range| range.level).collect();
         let count = line.len();
         if count == 0 {

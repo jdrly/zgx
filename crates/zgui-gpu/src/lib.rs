@@ -475,6 +475,8 @@ fn glyphs_of<'a>(
 ) -> Vec<Glyph> {
     let mut glyphs = Vec::new();
     for run in runs {
+        // Most texts are one line: one allocation at its size.
+        glyphs.reserve(run.glyphs.len());
         for glyph in run.glyphs {
             let p = glyph.physical((0., 0.), scale);
             let run_index = rich.map_or(0, |rich| {
@@ -3288,6 +3290,7 @@ impl GpuRenderer {
                                 .filter(|d| d.background)
                                 .map(rich_decoration_quad),
                         );
+                        shaped.quads.reserve(shaped.glyphs.len());
                         for glyph in &shaped.glyphs {
                             if let Some(a) = self.glyph(glyph.key, &mut stats)? {
                                 shaped.quads.push(Quad {

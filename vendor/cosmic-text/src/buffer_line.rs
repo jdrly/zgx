@@ -259,7 +259,12 @@ impl BufferLine {
                 .layout_opt
                 .take_unused()
                 .unwrap_or_else(|| Vec::with_capacity(1));
-            let shape = self.shape(font_system, tab_width);
+            self.shape(font_system, tab_width);
+            let shape = self.shape_opt.get_mut().expect("shaped");
+            // zgui patch: shaped only for a layout that ellipsizes.
+            if !matches!(ellipsize, Ellipsize::None) {
+                shape.ensure_ellipsis(font_system, &self.attrs_list, self.shaping);
+            }
             shape.layout_to_buffer(
                 &mut font_system.shape_buffer,
                 font_size,

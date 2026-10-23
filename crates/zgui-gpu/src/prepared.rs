@@ -132,26 +132,44 @@ struct Word {
 struct Compact {
     words: Vec<Word>,
     glyphs: Vec<f32>,
-    /// Per line: its spans as ranges of `words`, and the height it takes
+    /// Every line's spans, as ranges of `words`.
+    spans: Vec<Range<u32>>,
+    /// Per line: its spans, as a range of `spans`, and the height it takes
     /// when empty.
-    lines: Vec<(Vec<Range<u32>>, Option<f32>)>,
+    lines: Vec<(Range<u32>, Option<f32>)>,
 }
 impl Compact {
     /// The measurements of shaped `lines`, or None where arithmetic over them
     /// would not match cosmic-text: right-to-left or mixed-direction lines,
     /// justified lines, or a word whose glyphs set different line heights.
     fn of(lines: &[BufferLine], font_size: f32) -> Option<Self> {
-        let mut compact = Self {
-            words: Vec::new(),
-            glyphs: Vec::new(),
-            lines: Vec::with_capacity(lines.len()),
-        };
+        // Counted first, each list is allocated once at its size: a text
+        // changing every frame (a stream's) is prepared every frame.
+        let (mut spans, mut words, mut glyphs) = (0, 0, 0);
         for line in lines {
             let shape = line.shape_opt()?;
             if shape.rtl || line.align() == Some(Align::Justified) {
                 return None;
             }
-            let mut spans = Vec::with_capacity(shape.spans.len());
+            spans += shape.spans.len();
+            for span in &shape.spans {
+                words += span.words.len();
+                glyphs += span
+                    .words
+                    .iter()
+                    .map(|word| word.glyphs.len())
+                    .sum::<usize>();
+            }
+        }
+        let mut compact = Self {
+            words: Vec::with_capacity(words),
+            glyphs: Vec::with_capacity(glyphs),
+            spans: Vec::with_capacity(spans),
+            lines: Vec::with_capacity(lines.len()),
+        };
+        for line in lines {
+            let shape = line.shape_opt()?;
+            let first_span = compact.spans.len() as u32;
             for span in &shape.spans {
                 if span.level.is_rtl() {
                     return None;
@@ -177,24 +195,20 @@ impl Compact {
                         line_height,
                     });
                 }
-                spans.push(first..compact.words.len() as u32);
+                compact.spans.push(first..compact.words.len() as u32);
             }
-            compact
-                .lines
-                .push((spans, shape.metrics_opt.map(|metrics| metrics.line_height)));
+            compact.lines.push((
+                first_span..compact.spans.len() as u32,
+                shape.metrics_opt.map(|metrics| metrics.line_height),
+            ));
         }
-        compact.words.shrink_to_fit();
-        compact.glyphs.shrink_to_fit();
         Some(compact)
     }
     fn bytes(&self) -> usize {
         self.words.len() * size_of::<Word>()
             + self.glyphs.len() * size_of::<f32>()
-            + self
-                .lines
-                .iter()
-                .map(|(spans, _)| 40 + spans.len() * 8)
-                .sum::<usize>()
+            + self.spans.len() * size_of::<Range<u32>>()
+            + self.lines.len() * size_of::<(Range<u32>, Option<f32>)>()
     }
     fn advances(&self, word: usize) -> &[f32] {
         let end = self
@@ -210,6 +224,7 @@ impl Compact {
         let limit = crate::text::wrap_width(width).unwrap_or(f32::INFINITY);
         let (mut widest, mut height) = (0_f32, 0_f32);
         for (spans, empty) in &self.lines {
+            let spans = &self.spans[spans.start as usize..spans.end as usize];
             let mut line = Visual::default();
             let mut any = false;
             let mut push = |line: &mut Visual| {
