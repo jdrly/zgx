@@ -14,10 +14,11 @@
 //! }
 //! ```
 //!
-//! The page is the platform's own view (WKWebView on macOS), laid out,
-//! clipped, moved and faded as the node is; zgui content painted after it
-//! (menus, popovers, a composer) draws above it, and glass over it blurs the
-//! page (see [`crate::native_view`]). Without a platform backend (headless,
+//! The page is the platform's own view (WKWebView on macOS; WebView2 on
+//! Windows, with `zgui-desktop`'s `webview2` feature), laid out, clipped,
+//! moved and faded as the node is; zgui content painted after it (menus,
+//! popovers, a composer) draws above it, and glass over it blurs the page on
+//! macOS (see [`crate::native_view`]). Without a platform backend (headless,
 //! the software renderer, other platforms for now) the node renders a
 //! labelled placeholder box.
 //!

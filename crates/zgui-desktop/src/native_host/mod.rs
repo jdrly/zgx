@@ -5,8 +5,12 @@
 //! window renderer, under native views) and the overlay plane (a second
 //! renderer presenting into a layer above them, sized to the overlay paint);
 //! then present both planes and move the native views and the platform
-//! backdrops under overlay glass in one Core Animation transaction, so they
-//! never drift a frame apart. A window without native views does none of it.
+//! backdrops under overlay glass in one Core Animation transaction (macOS)
+//! or DirectComposition commit (Windows, with the `webview2` feature), so
+//! they never drift a frame apart. A window without native views does none
+//! of it.
+#[cfg(all(windows, feature = "webview2"))]
+mod dcomp;
 #[cfg(all(target_os = "macos", feature = "ghostty"))]
 mod ghostty;
 #[cfg(all(target_os = "macos", feature = "ghostty"))]
@@ -15,6 +19,8 @@ pub(crate) use ghostty::processes_changed;
 mod macos;
 #[cfg(target_os = "macos")]
 mod webkit;
+#[cfg(all(windows, feature = "webview2"))]
+mod webview2;
 
 use std::rc::Rc;
 use zgui::{
@@ -32,6 +38,11 @@ pub(crate) type NativeDiagnosticsHandle = NativeDiagnostics;
 #[cfg(not(target_os = "macos"))]
 pub(crate) type NativeDiagnosticsHandle = Rc<()>;
 
+#[cfg(all(windows, feature = "webview2"))]
+use dcomp as platform;
+#[cfg(target_os = "macos")]
+use macos as platform;
+
 /// How long frames keep to the plain layer after native views move (see
 /// `GpuRenderer::present_plain_for`): long enough to cover a scroll's
 /// momentum or an animation's frames in between.
@@ -43,26 +54,38 @@ pub(crate) struct NativeHost {
     /// Shared with the window's context (`WindowContext::native_diagnostics`).
     pub diagnostics: NativeDiagnosticsHandle,
     split: Rc<PlaneSplit>,
-    #[cfg(target_os = "macos")]
-    surfaces: Option<macos::Surfaces>,
-    #[cfg(target_os = "macos")]
+    /// The window's DirectComposition tree, made with its renderer.
+    #[cfg(all(windows, feature = "webview2"))]
+    composition: Option<Rc<dcomp::Composition>>,
+    #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+    surfaces: Option<platform::Surfaces>,
+    #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
     overlay: Option<zgui_gpu::GpuRenderer>,
     /// The overlay renderer drew this frame (present it).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
     overlay_drawn: bool,
     /// The scale the overlay renderer and its layer were made for.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
     overlay_scale: f32,
     /// The overlay layer shows its plane (it had paint at the last present).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
     overlay_live: bool,
     /// Native geometry changed and has not been applied yet.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", all(windows, feature = "webview2"))),
+        allow(dead_code)
+    )]
     pending: bool,
     /// What clip views' hit tests consult (macOS's clip views).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", all(windows, feature = "webview2"))),
+        allow(dead_code)
+    )]
     scene: std::rc::Weak<std::cell::RefCell<Scene>>,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", all(windows, feature = "webview2"))),
+        allow(dead_code)
+    )]
     input: zgui::input::InputDispatcher,
     _waker: zgui::native_view::WakerGuard,
 }
@@ -70,25 +93,66 @@ pub(crate) struct NativeHost {
 impl NativeHost {
     pub fn new(ui: &Ui, wake: impl Fn() + 'static) -> Self {
         let natives = NativeViews::new();
-        natives.set_supported(cfg!(target_os = "macos"));
+        #[cfg(all(windows, feature = "webview2"))]
+        let supported = webview2::available();
+        #[cfg(not(all(windows, feature = "webview2")))]
+        let supported = cfg!(target_os = "macos");
+        natives.set_supported(supported);
         Self {
             natives,
             diagnostics: Default::default(),
             split: Rc::new(PlaneSplit::default()),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(windows, feature = "webview2"))]
+            composition: None,
+            #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
             surfaces: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
             overlay: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
             overlay_drawn: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
             overlay_scale: 0.,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
             overlay_live: false,
             pending: false,
             scene: Rc::downgrade(&ui.scene),
             input: ui.input.clone(),
             _waker: zgui::native_view::set_waker(wake),
+        }
+    }
+    /// The window's renderer, sharing `context` when given. On Windows with
+    /// web views, it presents into the base visual of a DirectComposition
+    /// tree of the window's own, so pages and the overlay plane can go above it.
+    pub fn renderer_for(
+        &mut self,
+        window: std::sync::Arc<winit::window::Window>,
+        context: Option<&zgui_gpu::GpuContext>,
+    ) -> Result<zgui_gpu::GpuRenderer, zgui_gpu::GpuError> {
+        // A window takes one target: the last one goes first.
+        #[cfg(all(windows, feature = "webview2"))]
+        if self.natives.supported() {
+            self.surfaces = None;
+            self.composition = None;
+            match dcomp::Composition::new(&window) {
+                Ok(composition) => {
+                    let renderer = zgui_gpu::GpuRenderer::for_window_visual(
+                        window,
+                        composition.base.clone(),
+                        composition.device.clone(),
+                        context,
+                    )?;
+                    self.composition = Some(Rc::new(composition));
+                    return Ok(renderer);
+                }
+                Err(error) => {
+                    eprintln!("zgui: native views unavailable: {error}");
+                    self.natives.set_supported(false);
+                }
+            }
+        }
+        match context {
+            Some(context) => zgui_gpu::GpuRenderer::for_window_with_context(window, context),
+            None => zgui_gpu::GpuRenderer::for_window(window),
         }
     }
     /// Whether this window has native views to keep up (now or last frame).
@@ -104,7 +168,7 @@ impl NativeHost {
     /// what zgui hears of it (see `NativePointer`). `held`: a press of
     /// zgui's follows the pointer.
     pub fn pointer_moved(&self, x: f32, y: f32, held: bool) -> PointerStep {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
         if let Some(surfaces) = &self.surfaces {
             let (step, report) = surfaces.router().track(x, y, held);
             report.apply();
@@ -115,7 +179,7 @@ impl NativeHost {
     }
     /// The pointer left the window, or the window went to the back.
     pub fn pointer_left(&self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
         if let Some(surfaces) = &self.surfaces {
             surfaces.router().pointer.left().apply();
         }
@@ -123,7 +187,7 @@ impl NativeHost {
     /// Whether the pointer is over a native view taking input (it shows
     /// its own cursor).
     pub fn pointer_over_native(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
         if let Some(surfaces) = &self.surfaces {
             return surfaces.router().pointer.over().is_some();
         }
@@ -140,19 +204,23 @@ impl NativeHost {
     }
     /// The native views went away with the window (suspend/recreate).
     pub fn suspend(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
         {
             self.overlay = None;
             self.surfaces = None;
             self.overlay_live = false;
             self.overlay_drawn = false;
         }
+        #[cfg(all(windows, feature = "webview2"))]
+        {
+            self.composition = None;
+        }
         self.split = Rc::new(PlaneSplit::default());
         self.natives.set_split(self.split.clone());
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
 impl NativeHost {
     /// After the scene's flush: split this frame's paint around native views
     /// and give each plane's renderer its part. Returns damage the split adds
@@ -166,19 +234,29 @@ impl NativeHost {
     ) -> Result<Vec<Rect>, zgui_gpu::GpuError> {
         // Frames go with native geometry, in one transaction, while there is any.
         renderer.present_with_native_views(self.active());
-        if !self.active() {
+        // Unsupported (no runtime, no surfaces): native nodes paint placeholders.
+        if !self.active() || !self.natives.supported() {
             return Ok(Vec::new());
         }
         if self.surfaces.is_none() {
-            let router = macos::Router {
+            let router = platform::Router {
                 scene: self.scene.clone(),
                 input: self.input.clone(),
                 natives: self.natives.clone(),
                 pointer: Default::default(),
+                #[cfg(target_os = "macos")]
                 unheard: Default::default(),
             };
-            match macos::Surfaces::new(window, router) {
+            #[cfg(target_os = "macos")]
+            let surfaces = macos::Surfaces::new(window, router);
+            #[cfg(all(windows, feature = "webview2"))]
+            let surfaces = match &self.composition {
+                Some(composition) => dcomp::Surfaces::new(window, composition.clone(), router),
+                None => Err("the window presents through no visual of zgui's".into()),
+            };
+            match surfaces {
                 Ok(surfaces) => {
+                    #[cfg(target_os = "macos")]
                     surfaces.report_to(&self.diagnostics);
                     self.surfaces = Some(surfaces);
                 }
@@ -194,12 +272,14 @@ impl NativeHost {
         let surfaces = self.surfaces.as_mut().expect("made above");
         if surfaces.differs(&split, &self.split) {
             self.pending = true;
+            #[cfg(target_os = "macos")]
             renderer.present_plain_for(SYNCED);
         }
         if split.is_empty() {
             renderer.clear_plane();
         } else {
             renderer.set_plane(split.clone(), zgui::native_view::Plane::Base);
+            #[cfg(target_os = "macos")]
             if split.has_overlay() {
                 // Base and overlay frames show together, in the transaction.
                 renderer.present_plain_for(SYNCED);
@@ -213,18 +293,21 @@ impl NativeHost {
         }
         if split.has_overlay() && self.overlay.is_none() {
             self.overlay_scale = scale;
+            #[cfg(target_os = "macos")]
             let overlay = zgui_gpu::GpuRenderer::for_overlay_layer(
                 surfaces.overlay_host(scale),
                 &renderer.context(),
                 scale,
             )?;
+            #[cfg(all(windows, feature = "webview2"))]
+            let overlay = surfaces.overlay_renderer(&renderer.context(), scale)?;
             self.overlay = Some(overlay);
         }
         if let Some(overlay) = &mut self.overlay {
             overlay.set_plane(split.clone(), zgui::native_view::Plane::Overlay);
             if let Some(needed) = split.overlay_bounds() {
                 let viewport = scene.bounds(scene.root());
-                let rect = surfaces.plane_rect(overlay.plane_rect(), needed, viewport);
+                let rect = plane_rect(overlay.plane_rect(), needed, viewport);
                 overlay.set_plane_rect(rect);
                 if !self.overlay_live {
                     overlay.repaint_all();
@@ -247,8 +330,15 @@ impl NativeHost {
         Ok(())
     }
     /// Open the transaction a frame's planes and native geometry commit in.
-    pub fn begin(&self) -> Option<macos::Transaction> {
-        self.active().then(macos::Transaction::begin)
+    pub fn begin(&self) -> Option<platform::Transaction> {
+        #[cfg(target_os = "macos")]
+        return self.active().then(macos::Transaction::begin);
+        #[cfg(all(windows, feature = "webview2"))]
+        return self
+            .composition
+            .as_ref()
+            .filter(|_| self.active())
+            .map(|composition| dcomp::Transaction::begin(composition.clone()));
     }
     /// Within `begin`'s transaction: show the overlay plane's frame (before
     /// the base plane's, which waits for its refresh point).
@@ -296,7 +386,7 @@ impl NativeHost {
     /// (a native node moved, painting nothing), in a transaction of its own.
     pub fn flush(&mut self) {
         if self.pending {
-            let transaction = macos::Transaction::begin();
+            let transaction = self.begin();
             self.apply();
             drop(transaction);
         }
@@ -318,7 +408,7 @@ impl NativeHost {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", all(windows, feature = "webview2"))))]
 impl NativeHost {
     pub fn plan(
         &mut self,
@@ -342,4 +432,62 @@ impl NativeHost {
     pub fn flush(&mut self) {}
     pub fn sync_focus(&mut self, _: &Ui) {}
     pub fn trim(&mut self) {}
+}
+
+/// The overlay surface's box for overlay paint covering `needed`: the
+/// current one while it holds `needed` without being much larger, else
+/// `needed` with a margin to grow and move into (an animating popover
+/// keeps its surfaces), within the window.
+#[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+fn plane_rect(current: Option<Rect>, needed: Rect, viewport: Rect) -> Rect {
+    let needed = needed
+        .intersection(viewport)
+        .unwrap_or(Rect::new(viewport.x, viewport.y, 1., 1.));
+    if let Some(current) = current
+        && contains(current, needed)
+        && current.width * current.height <= 3. * (needed.width * needed.height).max(64. * 64.)
+    {
+        return current;
+    }
+    let margin = 24f32.max(needed.width.max(needed.height) * 0.1);
+    needed
+        .expand(margin)
+        .intersection(viewport)
+        .unwrap_or(needed)
+}
+
+#[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+fn contains(outer: Rect, inner: Rect) -> bool {
+    outer.x <= inner.x + 0.01
+        && outer.y <= inner.y + 0.01
+        && outer.x + outer.width >= inner.x + inner.width - 0.01
+        && outer.y + outer.height >= inner.y + inner.height - 0.01
+}
+
+/// One shape a native view's cut masks it to, in window coordinates.
+#[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shape {
+    Rect(Rect),
+    Round(zgui::scene::RoundRect),
+}
+/// The shapes cutting a box: `clip`, unless every rounded shape lies inside
+/// it, then each rounded rectangle; `None` where a level cuts nothing.
+#[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+fn shapes(clip: Rect, rounded: &[zgui::scene::RoundRect], levels: usize) -> Vec<Option<Shape>> {
+    let rounded: Vec<zgui::scene::RoundRect> = rounded
+        .iter()
+        .copied()
+        .filter(|round| round.radii.iter().any(|r| *r > 0.))
+        .collect();
+    let mut shapes = Vec::with_capacity(levels);
+    if rounded.is_empty() || !rounded.iter().all(|round| contains(clip, round.rect)) {
+        shapes.push(Some(Shape::Rect(clip)));
+    }
+    shapes.extend(rounded.iter().map(|round| Some(Shape::Round(*round))));
+    // Deeper nesting than the levels: the outermost go (zgui's own paint
+    // keeps two rounded clips too).
+    shapes.truncate(levels);
+    shapes.resize(levels, None);
+    shapes
 }

@@ -25,7 +25,7 @@
 //! layer-backed views' layers upright), so a layer's space is top-down when
 //! an odd number of it and its superlayers are flipped. Cuts recheck it
 //! every frame (AppKit may settle it after a view first shows).
-use super::webkit;
+use super::{Shape, shapes, webkit};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::Retained,
@@ -47,7 +47,7 @@ use zgui::{
         BackdropPlacement, NativeContent, NativePlacement, NativeViews, PageReport, PlaneSplit,
         PointerRoute, PointerStep,
     },
-    scene::{NodeId, Rect, RoundRect, Scene},
+    scene::{NodeId, Rect, Scene},
     widgets::Ui,
 };
 
@@ -483,12 +483,6 @@ fn rounded_path(size: (f32, f32), radii: [f32; 4], top_down: bool) -> CFRetained
     CGMutablePath::close_subpath(Some(&path));
     path
 }
-fn contains(outer: Rect, inner: Rect) -> bool {
-    outer.x <= inner.x + 0.01
-        && outer.y <= inner.y + 0.01
-        && outer.x + outer.width >= inner.x + inner.width - 0.01
-        && outer.y + outer.height >= inner.y + inner.height - 0.01
-}
 fn black() -> CFRetained<CGColor> {
     CGColor::new_srgb(0., 0., 0., 1.)
 }
@@ -520,12 +514,6 @@ fn no_actions(layer: &CALayer) {
     }
 }
 
-/// One shape a cut masks to, in window coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Shape {
-    Rect(Rect),
-    Round(RoundRect),
-}
 /// A cut view and its mask.
 struct Cut {
     view: Retained<CutView>,
@@ -617,26 +605,6 @@ impl Cut {
         }
     }
 }
-/// The shapes cutting a box: `clip`, unless every rounded shape lies inside
-/// it, then each rounded rectangle; `None` where a level cuts nothing.
-fn shapes(clip: Rect, rounded: &[RoundRect], levels: usize) -> Vec<Option<Shape>> {
-    let rounded: Vec<RoundRect> = rounded
-        .iter()
-        .copied()
-        .filter(|round| round.radii.iter().any(|r| *r > 0.))
-        .collect();
-    let mut shapes = Vec::with_capacity(levels);
-    if rounded.is_empty() || !rounded.iter().all(|round| contains(clip, round.rect)) {
-        shapes.push(Some(Shape::Rect(clip)));
-    }
-    shapes.extend(rounded.iter().map(|round| Some(Shape::Round(*round))));
-    // Deeper nesting than the levels: the outermost go (zgui's own paint
-    // keeps two rounded clips too).
-    shapes.truncate(levels);
-    shapes.resize(levels, None);
-    shapes
-}
-
 struct Clip {
     cuts: Vec<Cut>,
     /// The native view it holds, and the controller when a page or a terminal.
@@ -846,26 +814,6 @@ impl Surfaces {
         self.overlay_host.setContentsScale(scale as CGFloat);
         self.overlay_root.setContentsScale(scale as CGFloat);
         self.overlay_host.clone()
-    }
-    /// The overlay surface's box for overlay paint covering `needed`: the
-    /// current one while it holds `needed` without being much larger, else
-    /// `needed` with a margin to grow and move into (an animating popover
-    /// keeps its surfaces), within the window.
-    pub fn plane_rect(&self, current: Option<Rect>, needed: Rect, viewport: Rect) -> Rect {
-        let needed = needed
-            .intersection(viewport)
-            .unwrap_or(Rect::new(viewport.x, viewport.y, 1., 1.));
-        if let Some(current) = current
-            && contains(current, needed)
-            && current.width * current.height <= 3. * (needed.width * needed.height).max(64. * 64.)
-        {
-            return current;
-        }
-        let margin = 24f32.max(needed.width.max(needed.height) * 0.1);
-        needed
-            .expand(margin)
-            .intersection(viewport)
-            .unwrap_or(needed)
     }
     /// Whether `split` moves anything native relative to `previous`.
     pub fn differs(&self, split: &PlaneSplit, previous: &PlaneSplit) -> bool {

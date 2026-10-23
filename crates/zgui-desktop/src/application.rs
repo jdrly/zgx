@@ -1757,7 +1757,7 @@ impl Host {
         let contexts = self.context.windows.gpu_contexts.borrow().clone();
         let mut shared_renderer = None;
         for context in contexts {
-            match GpuRenderer::for_window_with_context(window.clone(), &context) {
+            match self.native.renderer_for(window.clone(), Some(&context)) {
                 Ok(renderer) => {
                     shared_renderer = Some(renderer);
                     break;
@@ -1769,7 +1769,7 @@ impl Host {
         let mut renderer = match shared_renderer {
             Some(renderer) => renderer,
             None => {
-                let renderer = GpuRenderer::for_window(window.clone())?;
+                let renderer = self.native.renderer_for(window.clone(), None)?;
                 for font in self.context.windows.fonts.iter() {
                     font.install(&mut renderer.text_system().borrow_mut());
                 }
