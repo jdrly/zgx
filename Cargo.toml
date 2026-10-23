@@ -6,6 +6,7 @@ exclude = [
     "vendor/accesskit_macos",
     "vendor/accesskit_windows",
     "vendor/cosmic-text",
+    "vendor/mlua",
     "vendor/taffy",
     "vendor/winit",
 ]
@@ -77,3 +78,7 @@ accesskit_windows = { path = "vendor/accesskit_windows" }
 # winit 0.30.13 with a window's `xdg_surface`, the parent of Wayland popups:
 # see vendor/winit/ZGUI_PATCH.md.
 winit = { path = "vendor/winit" }
+# mlua 0.12.2 with a table walk that borrows keys and values from the stack
+# and userdata made without a protected call: building a script's interface
+# converted and referenced every key it read. See vendor/mlua/ZGUI_PATCH.md.
+mlua = { path = "vendor/mlua" }

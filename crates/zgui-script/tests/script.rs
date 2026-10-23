@@ -162,6 +162,35 @@ fn runaway_scripts_hit_their_time_budget() {
 }
 
 #[test]
+fn nodes_a_script_keeps_mount_again_after_collections() {
+    // Nodes made once and kept in variables are shown, hidden and shown
+    // again, with garbage collected while they are away: a node lives as
+    // long as the script or the interface holds it.
+    let mut h = Harness::inline(
+        r#"local open = ui.state("open", true)
+        local kept = ui.text { "kept", id = "kept" }
+        local rows = {}
+        for i = 1, 3 do rows[i] = ui.text { "row " .. i, id = "row" .. i } end
+        return ui.column {
+            ui.show(function() return open:get() end, kept),
+            ui.show(function() return open:get() end, ui.column { rows }),
+            ui.button { id = "toggle", w = 4, h = 4, on_click = function()
+                for _ = 1, 5000 do local _ = { 1, 2, 3 } end
+                open:set(not open:get())
+            end },
+        }"#,
+    );
+    for _ in 0..3 {
+        assert_eq!(h.text("kept"), "kept");
+        assert_eq!(h.text("row3"), "row 3");
+        h.click("toggle");
+        assert!(h.find("kept").is_none(), "hidden");
+        h.click("toggle");
+    }
+    assert_eq!(h.host.error().get(), None);
+}
+
+#[test]
 fn garbage_from_builtins_is_collected_before_the_memory_limit() {
     // `table.clone` allocates without giving the collector a turn, and
     // setting an equal value allocates nothing in Lua: before, this filled
@@ -196,6 +225,29 @@ fn garbage_from_builtins_is_collected_before_the_memory_limit() {
     )
     .limits(limits);
     let error = keep.reload().unwrap_err();
+    assert!(error.contains("memory"), "{error}");
+}
+
+#[test]
+fn a_script_keeping_nodes_meets_the_memory_limit() {
+    // Nodes are made with the limit set aside for their one allocation
+    // (vendor/mlua/ZGUI_PATCH.md): a script that keeps making them still
+    // fails at the limit, not past it.
+    let runtime = Runtime::new();
+    let limits = Limits {
+        memory: 4 << 20,
+        load: Duration::from_secs(20),
+        ..Limits::default()
+    };
+    let host = ScriptHost::inline(
+        &runtime,
+        "nodes",
+        r#"local kept = {}
+        for i = 1, 1000000 do kept[i] = ui.div { w = 1 } end
+        return ui.div {}"#,
+    )
+    .limits(limits);
+    let error = host.reload().unwrap_err();
     assert!(error.contains("memory"), "{error}");
 }
 

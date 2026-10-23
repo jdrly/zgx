@@ -1180,7 +1180,9 @@ fn node_ud(lua: &Lua, mut node: Node) -> mlua::Result<mlua::AnyUserData> {
     if node.owner.upgrade().is_some_and(|vm| vm.locate.get()) {
         node.source = location(lua);
     }
-    lua.create_userdata(NodeUd(Rc::new(node)))
+    // Every `ui.*` call makes one: without the memory limit's protected
+    // call around each (see vendor/mlua/ZGUI_PATCH.md).
+    lua.create_userdata_relaxed(NodeUd(Rc::new(node)))
 }
 /// The script line calling the `ui` function running now: `app.luau:12`.
 fn location(lua: &Lua) -> Option<Rc<str>> {
@@ -1389,15 +1391,26 @@ fn source_linted(
                     })?
                 }
             };
-            if !raw
-                && lint.unwrap_or_else(|| crate::design::mode(lua)) != crate::DesignLint::Off
-                && let Some(prop) = Prop::parse(name)
-            {
-                crate::design::check(lua, prop, name, &lit)?;
+            if !raw {
+                lint_literal(lua, name, &lit, lint)?;
             }
             Ok(Source::Lit(lit))
         }
     }
+}
+/// The design lint's check of a literal `name` is set to (`source_linted`).
+fn lint_literal(
+    lua: &Lua,
+    name: &str,
+    lit: &Lit,
+    lint: Option<crate::DesignLint>,
+) -> mlua::Result<()> {
+    if lint.unwrap_or_else(|| crate::design::mode(lua)) != crate::DesignLint::Off
+        && let Some(prop) = Prop::parse(name)
+    {
+        crate::design::check(lua, prop, name, lit)?;
+    }
+    Ok(())
 }
 
 fn handler(value: mlua::Value) -> mlua::Result<Handler> {
@@ -1527,11 +1540,42 @@ pub(crate) fn array_items(table: &Table) -> mlua::Result<Vec<mlua::Value>> {
 }
 /// Array entries by index: the array part comes in order, so this is one
 /// pass unless the table has holes.
-fn in_order(mut items: Vec<(i64, mlua::Value)>) -> Vec<mlua::Value> {
+fn in_order<T>(mut items: Vec<(i64, T)>) -> Vec<T> {
     if !items.is_sorted_by_key(|(i, _)| *i) {
         items.sort_unstable_by_key(|(i, _)| *i);
     }
     items.into_iter().map(|(_, v)| v).collect()
+}
+
+/// A child as its table holds it: a node, read where it lies (no
+/// reference to it is made), or any other value.
+enum Child {
+    Node(Rc<Node>),
+    Value(mlua::Value),
+}
+impl Child {
+    fn of(value: &mlua::StackValue<'_>) -> mlua::Result<Self> {
+        if value.type_name() == "userdata"
+            && let Ok(node) = value.get::<mlua::UserDataRef<NodeUd>>()
+        {
+            return Ok(Child::Node(node.0.clone()));
+        }
+        Ok(Child::Value(value.to_value()?))
+    }
+}
+
+/// `array_items`, each entry a `Child`.
+fn child_items(table: &Table) -> mlua::Result<Vec<Child>> {
+    let mut items = Vec::with_capacity(table.raw_len());
+    table.for_each_borrowed(|key, value| {
+        if let mlua::Value::Integer(i) = key.to_value()?
+            && i >= 1
+        {
+            items.push((i, Child::of(&value)?));
+        }
+        Ok(())
+    })?;
+    Ok(in_order(items))
 }
 
 /// Appends children from a table's array part: nodes, strings (text),
@@ -1539,10 +1583,17 @@ fn in_order(mut items: Vec<(i64, mlua::Value)>) -> Vec<mlua::Value> {
 fn children(
     lua: &Lua,
     owner: &Weak<Vm>,
-    items: Vec<mlua::Value>,
+    items: Vec<Child>,
     out: &mut Vec<Rc<Node>>,
 ) -> mlua::Result<()> {
     for child in items {
+        let child = match child {
+            Child::Node(node) => {
+                out.push(node);
+                continue;
+            }
+            Child::Value(value) => value,
+        };
         match child {
             mlua::Value::UserData(ud) if ud.is::<NodeUd>() => {
                 out.push(ud.borrow::<NodeUd>()?.0.clone())
@@ -1555,7 +1606,7 @@ fn children(
                 owner.clone(),
                 Kind::Text(Text::Computed(f)),
             ))),
-            mlua::Value::Table(nested) => children(lua, owner, array_items(&nested)?, out)?,
+            mlua::Value::Table(nested) => children(lua, owner, child_items(&nested)?, out)?,
             mlua::Value::Nil | mlua::Value::Boolean(false) => {}
             other => {
                 return Err(mlua::Error::runtime(format!(
@@ -1807,30 +1858,48 @@ fn fill_from(
     let mut items = Vec::new();
     let keys = lua.app_data_ref::<StyleKeys>();
     let lint = Some(crate::design::mode(lua));
-    table.for_each(|key: mlua::Value, value: mlua::Value| {
-        let string = match key {
-            mlua::Value::String(key) => key,
-            mlua::Value::Integer(1) if let Some(text) = text.as_deref_mut() => {
-                text.content = value;
-                return Ok(());
+    // Keys are read where they lie on the stack (a string key's identity
+    // finds its property): no reference is made for them.
+    table.for_each_borrowed(|borrowed, value| {
+        if borrowed.as_bytes().is_none() {
+            match borrowed.to_value()? {
+                mlua::Value::Integer(1) if let Some(text) = text.as_deref_mut() => {
+                    text.content = value.to_value()?;
+                }
+                mlua::Value::Integer(i) if i >= 1 => items.push((i, Child::of(&value)?)),
+                _ => {}
             }
-            mlua::Value::Integer(i) if i >= 1 => {
-                items.push((i, value));
-                return Ok(());
-            }
-            _ => return Ok(()),
-        };
-        let address = string.to_pointer() as usize;
+            return Ok(());
+        }
+        let address = borrowed.to_pointer() as usize;
         let known = keys
             .as_ref()
             .and_then(|keys| keys.0.borrow().get(&address).map(|(_, prop)| *prop));
         if let Some(prop) = known {
-            node.props
-                .push((prop, source_linted(lua, prop.ty(), prop.name(), value, lint)?));
+            // A colour written out, the commonest string a style takes, is
+            // read where it lies (as `source_linted` reads it).
+            let written = (prop.ty() == Ty::Color)
+                .then(|| value.as_str())
+                .flatten()
+                .filter(|s| !s.starts_with('$'))
+                .and_then(parse_color);
+            let source = match written {
+                Some(color) => {
+                    let lit = Lit::Color(color);
+                    lint_literal(lua, prop.name(), &lit, lint)?;
+                    Source::Lit(lit)
+                }
+                None => source_linted(lua, prop.ty(), prop.name(), value.to_value()?, lint)?,
+            };
+            node.props.push((prop, source));
             return Ok(());
         }
-        let key = string.to_str()?;
-        let key: &str = &key;
+        let value = value.to_value()?;
+        let key = borrowed.as_str().ok_or_else(|| mlua::Error::FromLuaConversionError {
+            from: "string",
+            to: "&str".into(),
+            message: Some("invalid utf-8 encoding".into()),
+        })?;
         if key == "literal"
             && let Some(text) = text.as_deref_mut()
         {
@@ -2243,7 +2312,9 @@ fn fill_from(
                 let prop = Prop::parse(name)
                     .ok_or_else(|| mlua::Error::runtime(format!("unknown property `{name}`")))?;
                 if let Some(keys) = &keys {
-                    keys.0.borrow_mut().insert(address, (string.clone(), prop));
+                    // The key kept alive while its address names it.
+                    let string = borrowed.get::<mlua::LuaString>()?;
+                    keys.0.borrow_mut().insert(address, (string, prop));
                 }
                 node.props
                     .push((prop, source_linted(lua, prop.ty(), name, value, lint)?));
