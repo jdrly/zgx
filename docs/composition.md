@@ -152,8 +152,10 @@ mounted (the visible rows and overscan); rows out of view are not copied.
 A secondary press (a control-click on macOS) on selected text opens a menu
 with Copy and Select All, unless the region has a `context_menu` of its own;
 elsewhere the press goes on to an enclosing view's menu. Copy uses the
-`PlatformService` clipboard the desktop host provides. `Ui::is_selecting_text`
-says whether a pointer gesture is still making the selection.
+`PlatformService` clipboard the desktop host provides. On Linux the host also
+makes the selection the primary selection (middle-click paste), on X11 and
+Wayland, once a gesture ends (`Ui::is_selecting_text` says whether one is
+still making it).
 
 The highlight paints under the glyphs in the theme's `selection` colour, or
 `selection.inactive` while the window is in the background (desktop hosts call

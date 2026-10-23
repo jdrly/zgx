@@ -988,6 +988,9 @@ struct Host {
     focus_memory: crate::focus_memory::FocusMemory,
     last_accessibility: Option<(u64, Option<NodeId>)>,
     accessibility_geometry_dirty: bool,
+    /// The display text selection last published as the primary selection.
+    #[cfg(target_os = "linux")]
+    primary_revision: u64,
     native_cursor: Option<CursorIcon>,
     /// The window's cursor rects are off (see `disable_cursor_rects`).
     #[cfg(target_os = "macos")]
@@ -1151,6 +1154,8 @@ impl Host {
             focus_memory: crate::focus_memory::FocusMemory::default(),
             last_accessibility: None,
             accessibility_geometry_dirty: true,
+            #[cfg(target_os = "linux")]
+            primary_revision: 0,
             native_cursor: None,
             #[cfg(target_os = "macos")]
             cursor_rects_off: false,
@@ -1184,7 +1189,27 @@ impl Host {
         if result.focus_changed {
             self.ime_active = false;
         }
+        #[cfg(target_os = "linux")]
+        self.publish_primary();
         Ok(result.default_prevented)
+    }
+    /// Selected display text becomes the primary selection (what a middle
+    /// click pastes) once a gesture settles, as X11 and Wayland apps do.
+    #[cfg(target_os = "linux")]
+    fn publish_primary(&mut self) {
+        let ui = &self.context.ui;
+        let revision = ui.text_selection_revision();
+        if revision == self.primary_revision || ui.is_selecting_text() {
+            return;
+        }
+        self.primary_revision = revision;
+        if !ui.has_text_selection() {
+            return;
+        }
+        let text = ui.selected_text();
+        if let Some(clipboard) = self.clipboard.borrow_mut().as_mut() {
+            let _ = clipboard.set_primary_text(text);
+        }
     }
     fn sync_accessibility(&mut self) {
         let state = (

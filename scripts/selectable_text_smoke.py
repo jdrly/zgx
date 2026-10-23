@@ -12,6 +12,16 @@ import time
 from platform_smoke import stop
 
 
+# Reads the X11 primary selection (what a middle click pastes) through GTK.
+PRIMARY = """
+import gi, sys
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gdk, Gtk
+text = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).wait_for_text()
+sys.stdout.write(text or "")
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=pathlib.Path)
@@ -97,6 +107,10 @@ def main():
                 assert text.startswith("Selectable text\n\nDrag across"), reports
                 assert "Double-press a word" in text and "Press me" in text, reports
                 assert "left out of copies" not in text, reports
+                # Once the drag ends, the selection is the primary selection.
+                primary = subprocess.run(["python3", "-c", PRIMARY], env=env, text=True, capture_output=True, timeout=10)
+                assert primary.returncode == 0 and primary.stdout == text, (primary.stdout, primary.stderr, text)
+                reports["primary"] = primary.stdout
                 capture("drag")
                 click(heading[0] + 20, heading[1] + heading[3] / 2, 2)
                 reports["word"] = report()
