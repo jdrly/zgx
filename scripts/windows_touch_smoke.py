@@ -10,7 +10,8 @@ this checks what zgui makes of them:
   lift and comes to rest;
 - a finger held, then lifted, opens the context menu (an editor's);
 - a finger held on selectable text selects the word, a drag extends it by
-  words, and the lift opens the selection's menu;
+  words, and the lift opens the selection's menu; held on a button in the
+  text, it selects and does not press it;
 - a pen is a mouse: its stroke over the list does not pan it.
 
     cargo build -p zgui-desktop --example gallery --example workbench --example form --example selectable_text
@@ -230,6 +231,19 @@ def main():
                                 capture_output=True, text=True).stdout.strip()
         check(copied == "Drag across this paragraph",
               f"the hold selected the word and the drag extended it by words ({copied!r})")
+        # Held on the "Press me" button in the text: its word, and no click.
+        win.key("escape")
+        before = win.capture(window)
+        hold(window, 55, 240, 0.8)
+        time.sleep(0.6)
+        win.key("escape")
+        time.sleep(0.2)
+        win.key("ctrl+c")
+        time.sleep(0.3)
+        copied = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                                capture_output=True, text=True).stdout.strip()
+        check(copied == "Press" and region(before, 123, 230, 230, 250) == region(win.capture(window), 123, 230, 230, 250),
+              "a finger held on a button in the text selects its word and does not press it")
     finally:
         finish(proc, window)
     print("touch smoke passed")

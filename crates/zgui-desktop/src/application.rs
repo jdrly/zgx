@@ -2743,6 +2743,9 @@ impl Host {
             && self.context.ui.select_word_at(x, y)
         {
             self.touch.selecting();
+            // A link or button under the finger gives the press up now, so
+            // lifting there selects rather than clicks.
+            self.dispatch(InputEvent::PointerMove { x, y })?;
         }
         // A fling coasts a step each refresh, and stops at the end of what
         // it scrolls.

@@ -191,6 +191,47 @@ fn a_word_selected_during_a_press_extends_by_words_as_the_press_moves() {
 }
 
 #[test]
+fn a_long_press_on_a_button_in_text_selects_its_word_and_never_clicks_it() {
+    let mut ui = Ui::new(400., 300.);
+    let clicks = Rc::new(Cell::new(0));
+    let counted = clicks.clone();
+    document(
+        &mut ui,
+        vec![
+            text("Before"),
+            button()
+                .child(text("Press"))
+                .on_click(move || counted.set(counted.get() + 1)),
+            text("After"),
+        ],
+    );
+    let label = ui.scene.borrow().bounds(texts(&ui)[1]);
+    let (x, y) = (label.x + 1., label.y + label.height / 2.);
+    // Held, then lifted where it was (the host moves the pointer in place
+    // as the hold selects): the word, and no click.
+    press(&mut ui, x, y, false);
+    assert!(ui.select_word_at(x, y));
+    move_to(&mut ui, x, y);
+    assert_eq!(ui.selected_text(), "Press");
+    release(&mut ui, x, y);
+    assert_eq!(clicks.get(), 0);
+    assert_eq!(ui.selected_text(), "Press");
+    // Held, then dragged on: the word stays the start, extended by words.
+    move_to(&mut ui, 200., 200.);
+    press(&mut ui, x, y, false);
+    assert!(ui.select_word_at(x, y));
+    move_to(&mut ui, x, y);
+    move_to(&mut ui, 200., 290.);
+    release(&mut ui, 200., 290.);
+    assert_eq!(clicks.get(), 0);
+    assert_eq!(
+        ui.selected_text(),
+        "Press
+After"
+    );
+}
+
+#[test]
 fn shift_press_extends_from_the_anchor() {
     let mut ui = Ui::new(400., 300.);
     document(&mut ui, vec![text("abcdefghij"), text("klmnopqrst")]);

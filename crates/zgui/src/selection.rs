@@ -186,6 +186,10 @@ pub(crate) struct State {
     layouts: Vec<Shaped>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    /// A long press selected a word over a control (a link, a button) that
+    /// held the press: the region takes the pointer from it at the next
+    /// move, so it hears a cancel and never activates.
+    take_from: Option<NodeId>,
     /// The region last pressed in: what select-all selects.
     active_root: Option<NodeId>,
     /// The window is in the background: highlights take the inactive colour.
@@ -441,6 +445,14 @@ pub(crate) fn mount_root(ui: &mut Ui, root: NodeId, mut style: SelectionStyle) {
                 }
             }
             InputEvent::PointerMove { x, y } => {
+                let take = ui
+                    .selection_state()
+                    .borrow_mut()
+                    .take_from
+                    .take_if(|from| *from == root);
+                if take.is_some() {
+                    cx.take_pointer();
+                }
                 let pending = ui.selection_state().borrow().pending;
                 if let Some(pending) = pending.filter(|p| p.root == root) {
                     let (dx, dy) = (x - pending.x, y - pending.y);
@@ -1233,10 +1245,13 @@ impl Ui {
             let mut state = self.selection_state().borrow_mut();
             state.active_root = Some(root);
             // During a press there (a finger held on the text: its press
-            // began a gesture), moving on extends the selection by words, as
-            // after a double press; the release keeps it rather than
-            // clicking.
-            let held = state.gesture.as_ref().is_some_and(|g| g.root == root);
+            // began a gesture, or a control in the text holds it), moving on
+            // extends the selection by words, as after a double press; the
+            // release keeps it rather than clicking. A control gives the
+            // pointer up at the next move.
+            let control = state.pending.take_if(|p| p.root == root).is_some();
+            let held = control || state.gesture.as_ref().is_some_and(|g| g.root == root);
+            state.take_from = control.then_some(root);
             state.gesture = held.then_some(Gesture {
                 root,
                 unit: Unit::Word,
