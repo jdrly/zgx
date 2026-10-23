@@ -1133,6 +1133,11 @@ impl GpuContext {
         for &backends in attempts {
             let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
             descriptor.backends = backends;
+            // Windows: swap chains present through a DirectComposition
+            // visual, whose alpha the compositor blends (transparent and
+            // glass windows), where a window's own swap chain is opaque.
+            descriptor.backend_options.dx12.presentation_system =
+                wgpu::Dx12SwapchainKind::DxgiFromVisual;
             // zgui draws nothing indirect; the validation would compile a compute
             // shader while creating the device, a few milliseconds of startup.
             descriptor

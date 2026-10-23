@@ -52,6 +52,14 @@ top right, drawn by zgui and reported to Windows as its own (`WM_NCHITTEST`),
 so they get the system's tooltips and the maximize button's snap layouts; the
 buttons minimize, maximize, restore and close through the system's commands.
 The title bar follows the system's light or dark mode.
+
+Windows present through a DirectComposition visual, so `WindowOptions::transparent`
+windows are transparent where zgui paints nothing, and `WindowOptions::glass`
+puts the Windows 11 system backdrop behind them: Acrylic for the heads-up and
+transient materials, Mica for window and page backgrounds, Mica Alt for title
+bars (see [window controls](window-controls.md)). Presentation through the visual
+measured the same as a window's own swap chain: every frame shown, the same
+keystroke latency and idle cost.
 `scripts/windows_chrome_smoke.py` checks the buttons and the resize bands.
 
 ## Limitations

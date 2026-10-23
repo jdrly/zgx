@@ -164,9 +164,15 @@ pub(crate) fn attributes(
     // Windows: a title bar of the app's own is a frameless window keeping
     // the frame's shadow (the rest is `window_chrome`).
     #[cfg(windows)]
-    if options.titlebar != crate::Titlebar::Standard {
+    {
         use winit::platform::windows::WindowAttributesExtWindows;
-        attrs = attrs.with_decorations(false).with_undecorated_shadow(true);
+        if options.titlebar != crate::Titlebar::Standard {
+            attrs = attrs.with_decorations(false).with_undecorated_shadow(true);
+        }
+        // Frames show through a DirectComposition visual (`zgui_gpu`), not
+        // a surface Windows keeps for the window, which would sit under the
+        // visual, opaque, where zgui paints nothing.
+        attrs = attrs.with_no_redirection_bitmap(true);
     }
     if let Some((w, h)) = options.min_size {
         if !w.is_finite() || !h.is_finite() || w <= 0. || h <= 0. {

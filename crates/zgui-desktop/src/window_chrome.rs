@@ -1,7 +1,7 @@
 //! Window chrome from `WindowOptions`: the title bar's style and a frosted
-//! glass behind a translucent window. Applied when the window is made: title
-//! bars on macOS and Windows, glass on macOS; elsewhere windows keep their
-//! own title bars and draw no glass.
+//! glass behind a translucent window. Applied when the window is made, on
+//! macOS and Windows; elsewhere windows keep their own title bars and draw no
+//! glass.
 
 /// How a window's title bar looks (macOS and Windows; elsewhere the
 /// platform's own).
@@ -24,7 +24,8 @@ pub enum Titlebar {
 }
 
 /// A blurred desktop behind a translucent window (macOS's behind-window
-/// `NSVisualEffectView`, cut to the window's rounded corners). The window is
+/// `NSVisualEffectView`, cut to the window's rounded corners; on Windows 11
+/// the system backdrop nearest its material, Acrylic or Mica). The window is
 /// transparent where zgui paints nothing (or translucent colour).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Glass {
@@ -109,8 +110,7 @@ pub(crate) fn apply(
     }
     #[cfg(windows)]
     {
-        let _ = glass;
-        win::apply(window, titlebar)
+        win::apply(window, titlebar, glass)
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -133,7 +133,7 @@ mod win {
     //! (`WM_NCHITTEST`), so it shows the maximize button's snap layouts and
     //! the buttons' tooltips. Windows' own handling of a press on them draws
     //! classic buttons into the window, so the subclass handles them itself.
-    use super::Titlebar;
+    use super::{Glass, GlassMaterial, Titlebar};
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
@@ -142,10 +142,16 @@ mod win {
     use windows::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
-            Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
+            Dwm::{
+                DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_TABBEDWINDOW,
+                DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmExtendFrameIntoClientArea,
+                DwmSetWindowAttribute,
+            },
             Gdi::ScreenToClient,
         },
         UI::{
+            Controls::MARGINS,
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
@@ -222,10 +228,73 @@ mod win {
         }
     }
 
-    pub(super) fn apply(window: &Window, titlebar: Titlebar) -> f64 {
+    /// The system backdrop nearest a glass material: Acrylic (a blur, as
+    /// macOS's materials are) for the transient and heads-up ones, Mica (the
+    /// wallpaper's tint) under a window's or page's background, Mica Alt
+    /// under title bars and headers.
+    fn backdrop(material: GlassMaterial) -> DWM_SYSTEMBACKDROP_TYPE {
+        match material {
+            GlassMaterial::UnderWindowBackground
+            | GlassMaterial::UnderPageBackground
+            | GlassMaterial::WindowBackground
+            | GlassMaterial::ContentBackground
+            | GlassMaterial::Sidebar => DWMSBT_MAINWINDOW,
+            GlassMaterial::Titlebar | GlassMaterial::HeaderView => DWMSBT_TABBEDWINDOW,
+            GlassMaterial::Hud
+            | GlassMaterial::Menu
+            | GlassMaterial::Popover
+            | GlassMaterial::ToolTip
+            | GlassMaterial::Sheet
+            | GlassMaterial::FullScreenUi
+            | GlassMaterial::Selection => DWMSBT_TRANSIENTWINDOW,
+        }
+    }
+
+    /// Put the system's backdrop behind the window: the frame, and its
+    /// material, extended under the whole client, which shows it where zgui
+    /// paints nothing. Windows 11 (22H2) only; elsewhere the window is
+    /// transparent alone. `Glass::plain` has no Windows equivalent.
+    fn frost(hwnd: HWND, glass: Glass, dark: bool) {
+        // From the bottom, over the whole client: extended from the top, the
+        // frame brings Windows' own caption buttons into the client, under
+        // zgui's (or under nothing, where it paints none).
+        let margins = MARGINS {
+            cxLeftWidth: 0,
+            cxRightWidth: 0,
+            cyTopHeight: 0,
+            cyBottomHeight: i32::from(u16::MAX),
+        };
+        let kind = backdrop(glass.material);
+        let dark = i32::from(dark);
+        // SAFETY: our own window; each attribute is given its own size.
+        unsafe {
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &dark as *const _ as *const _,
+                size_of_val(&dark) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                &kind as *const _ as *const _,
+                size_of_val(&kind) as u32,
+            );
+        }
+    }
+
+    pub(super) fn apply(window: &Window, titlebar: Titlebar, glass: Option<Glass>) -> f64 {
         let Some(hwnd) = hwnd(window) else {
             return 0.;
         };
+        if let Some(glass) = glass {
+            frost(
+                hwnd,
+                glass,
+                window.theme() != Some(winit::window::Theme::Light),
+            );
+        }
         if titlebar == Titlebar::Standard {
             return 0.;
         }

@@ -53,8 +53,8 @@ pub struct WindowOptions {
     pub max_frame_rate: Option<f64>,
     /// The title bar's style (macOS and Windows; other platforms keep theirs).
     pub titlebar: crate::Titlebar,
-    /// A frosted desktop behind the window (macOS): the window is then
-    /// transparent, whatever `transparent` says.
+    /// A frosted desktop behind the window (macOS; Windows 11 as Acrylic or
+    /// Mica): the window is then transparent, whatever `transparent` says.
     pub glass: Option<crate::Glass>,
 }
 impl WindowOptions {
