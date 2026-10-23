@@ -2764,6 +2764,16 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                         "ui.{name}: a number of milliseconds"
                     )));
                 }
+                if repeat && ms < 16. {
+                    crate::warn(
+                        lua,
+                        &format!(
+                            "`ui.every({ms})` calls the script more often than a display \
+                             refreshes; animate with anime or ui.tween (run in Rust, paced by \
+                             the display), or tick at the rate the value changes"
+                        ),
+                    );
+                }
                 let vm = env.vm.clone();
                 let period = std::time::Duration::from_secs_f64((ms / 1000.).max(0.001));
                 let stop = env.timers.start(period, repeat, move || {

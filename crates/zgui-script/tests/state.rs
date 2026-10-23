@@ -497,6 +497,23 @@ return ui.column {
 }
 
 #[test]
+fn timers_faster_than_a_frame_warn_once() {
+    let h = Harness::inline(
+        r#"local rate = 4
+        ui.every(rate, function() return false end)
+        ui.every(16, function() return false end)
+        ui.after(1, function() end)
+        return ui.column {}"#,
+    );
+    let warnings = h.host.warnings();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("app:2:") && warnings[0].contains("`ui.every(4)`"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn timers_fire_on_their_clock_and_stop() {
     let mut h = Harness::inline(
         r#"local n = ui.state("n", 0)
