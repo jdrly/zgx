@@ -1,0 +1,278 @@
+# Getting started
+
+From nothing to a window, then a list, selectable text, a settings window and a shipped app: first in Rust, then in Luau with `zgui-run`. Every snippet here is compiled (Rust) or run headless (Luau) by the repository's tests, so they work as written.
+
+zgui runs on macOS, Windows and Linux. On Linux, install the fontconfig, xkbcommon and D-Bus development packages and `pkg-config`; on Windows, use the MSVC toolchain ([notes](windows.md)).
+
+## In Rust
+
+Add the crates (they are not on crates.io yet):
+
+```toml
+[dependencies]
+zgui = { git = "https://github.com/zeronsh/zgui" }
+zgui-desktop = { git = "https://github.com/zeronsh/zgui" }
+```
+
+### A window
+
+`Application` opens windows; `render` mounts a view in one. Views are built once: `column`, `row` and `div` lay out their children as CSS's flexbox does (children stretch across and shrink to fit), and styles are methods.
+
+```rust,no_run
+use zgui::compose::prelude::*;
+use zgui_desktop::{Application, WindowOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Application::new()
+        .window(WindowOptions {
+            title: "Hello".into(),
+            width: 480.,
+            height: 320.,
+            ..Default::default()
+        })
+        .run(|cx| {
+            cx.render(column().p(24.).gap(12.).child(text("Hello, zgui")));
+        })
+}
+```
+
+### State
+
+A signal holds a value; what reads it updates when it changes, and nothing else does. `text_signal` follows the signals it reads; a button's `on_click` writes one.
+
+```rust,no_run
+use zgui::compose::prelude::*;
+use zgui_desktop::{Application, WindowOptions};
+
+fn counter() -> View {
+    component(|cx| {
+        let count = cx.state(0);
+        let shown = count.clone();
+        row()
+            .p(24.)
+            .gap(12.)
+            .items_center()
+            .child(button().child(text("Add")).on_click(move || {
+                count.set(count.get() + 1);
+            }))
+            .child(text_signal(move || format!("Clicked {} times", shown.get())))
+    })
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Application::new()
+        .window(WindowOptions::default())
+        .run(|cx| {
+            cx.render(counter());
+        })
+}
+```
+
+### A list
+
+`virtual_list` mounts only the rows in view, so ten thousand cost what twenty do. `keyboard_navigation(true)` makes it one Tab stop that the arrows, Page Up and Down, Home and End move through.
+
+```rust,no_run
+use zgui::compose::prelude::*;
+use zgui_desktop::{Application, WindowOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Application::new()
+        .window(WindowOptions::default())
+        .run(|cx| {
+            let offset = cx.ui.signal(0.);
+            cx.render(
+                virtual_list(
+                    offset,
+                    32.,
+                    4,
+                    || 10_000,
+                    |index| index,
+                    |_, index, _| row().px(12.).items_center().child(text(format!("Row {index}"))),
+                )
+                .w_full()
+                .h_full()
+                .keyboard_navigation(true),
+            );
+        })
+}
+```
+
+### Selectable text
+
+Text is not selectable unless asked, as in an app; `selectable(true)` makes a subtree a document you drag across, double-press for words and copy from, as on a web page.
+
+```rust,no_run
+use zgui::compose::prelude::*;
+use zgui_desktop::{Application, WindowOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Application::new()
+        .window(WindowOptions::default())
+        .run(|cx| {
+            cx.render(
+                column()
+                    .selectable(true)
+                    .p(24.)
+                    .gap(8.)
+                    .child(text("Release notes").text_size(22.).heading(1))
+                    .child(text("Drag across these lines to select them, then copy.").text_wrap(true)),
+            );
+        })
+}
+```
+
+### A settings window
+
+`cx.windows.open` opens another window. An application's windows share one reactive runtime: a signal changed in the settings window updates the main one.
+
+```rust,no_run
+use zgui::compose::prelude::*;
+use zgui_desktop::{Application, WindowOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Application::new()
+        .window(WindowOptions::default())
+        .run(|cx| {
+            let dark = cx.ui.signal(true);
+            let windows = cx.windows.clone();
+            let shared = dark.clone();
+            let shown = dark.clone();
+            cx.render(
+                column()
+                    .p(24.)
+                    .gap(12.)
+                    .child(text_signal(move || {
+                        if shown.get() { "Dark".into() } else { "Light".into() }
+                    }))
+                    .child(button().child(text("Settings…")).on_click(move || {
+                        let dark = shared.clone();
+                        windows.open(
+                            WindowOptions {
+                                title: "Settings".into(),
+                                width: 360.,
+                                height: 200.,
+                                ..Default::default()
+                            },
+                            move |cx| {
+                                cx.render(column().p(24.).child(checkbox("Dark appearance", dark)));
+                            },
+                        );
+                    })),
+            );
+        })
+}
+```
+
+### Shipping
+
+`cargo build --release` builds the app. To ship it on Windows (an icon, a manifest, one instance per user, an installer), see [shipping on Windows](windows.md#shipping-a-zgui-app-on-windows); on macOS, bundle the binary in an `.app` with an `Info.plist` (the terminal example's `scripts/zterm-app.sh` does).
+
+## In Luau
+
+The same interface as a script, hot reloaded as you save it, without a Rust host of your own. Install the runner and the checker:
+
+```sh
+cargo install --git https://github.com/zeronsh/zgui zgui-run
+cargo install --git https://github.com/zeronsh/zgui zgui-script --bin zgui
+```
+
+### A window
+
+An app is a directory with an `app.luau` returning its interface, and optionally a `zgui.json` for its window:
+
+```json
+{ "title": "Hello", "width": 480, "height": 320, "app_id": "com.example.hello" }
+```
+
+```lua
+return ui.column { p = 24, gap = 12, ui.text { "Hello, zgui" } }
+```
+
+`zgui-run hello/` opens it; saving `app.luau` updates the window and keeps its state. `zgui check hello/app.luau` type checks it (with luau-lsp installed), and `zgui lint` finds what is slow or wrong though it runs.
+
+### State
+
+`ui.state` holds a value by key: a reload keeps it. Text templates (`"{count}"`) follow it; actions such as `ui.add` change it without calling the script.
+
+```lua
+local count = ui.state("count", 0)
+return ui.row {
+	p = 24,
+	gap = 12,
+	items = "center",
+	ui.button { on_click = ui.add(count, 1), "Add" },
+	ui.text { "Clicked {count} times" },
+}
+```
+
+### A list
+
+`ui.list` mounts only the rows in view; `keyboard = true` makes it one Tab stop with arrow keys.
+
+```lua
+return ui.list {
+	count = 10000,
+	height = 32,
+	keyboard = true,
+	w_full = true,
+	h_full = true,
+	row = function(i: number): Node
+		return ui.row { px = 12, items = "center", ui.text { `Row {i}` } }
+	end,
+}
+```
+
+### Selectable text
+
+```lua
+return ui.column {
+	selectable = true,
+	p = 24,
+	gap = 8,
+	ui.text { "Release notes", text_size = 22, heading = 1 },
+	ui.text { "Drag across these lines to select them, then copy.", wrap = true },
+}
+```
+
+### A settings window
+
+`ui.window` declares another window, open while its state is true; `ui.command` puts an item in the menu bar, with its shortcut (`cmd` is Command on macOS and Control elsewhere).
+
+```lua
+local dark = ui.persist("dark", true)
+local settings = ui.state("settings", false)
+ui.command {
+	id = "settings",
+	title = "Settings…",
+	menu = "File",
+	key = "cmd+,",
+	run = function()
+		settings:set(true)
+	end,
+}
+ui.window {
+	id = "settings",
+	title = "Settings",
+	width = 360,
+	height = 200,
+	open = settings,
+	ui.column { p = 24, ui.checkbox { label = "Dark appearance", value = dark } },
+}
+return ui.text {
+	function()
+		return if dark:get() then "Dark" else "Light"
+	end,
+	p = 24,
+}
+```
+
+### Shipping
+
+A shipped app carries its scripts compiled into the binary: a build script bundles the directory, and a small Rust host runs it from the bundle ([shipping an app](scripting.md#shipping-an-app)). The mail example (`crates/zgui-script/examples/mail`) is a whole app written this way.
+
+## Next
+
+- [Components](composition.md), [styling](styling.md) and [layout](layout.md) in Rust.
+- [Scripting](scripting.md) and the [Luau reference](reference/index.md).
+- [Windows](windows.md) and [Linux](linux.md) notes; [benchmarking](benchmarking.md).

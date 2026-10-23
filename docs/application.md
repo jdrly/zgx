@@ -1,6 +1,6 @@
 # Building a desktop application
 
-Linux and macOS are the first target platforms. `zgui` contains retained state, layout, input, editing, semantics, and widgets; `zgui-gpu` supplies wgpu rendering and shaped text; `zgui-desktop` hosts native windows, IME, clipboard, and accessibility. Linux native smoke tests run in this repository's development environment. A Linux build does not prove macOS runtime behavior: run the same examples and platform CI on macOS before shipping there.
+macOS, Windows and Linux are the target platforms. `zgui` contains retained state, layout, input, editing, semantics, and widgets; `zgui-gpu` supplies wgpu rendering and shaped text; `zgui-desktop` hosts native windows, IME, clipboard, and accessibility. Linux native smoke tests run in this repository's development environment. A Linux build does not prove macOS runtime behavior: run the same examples and platform CI on macOS before shipping there.
 
 Dynamic window title, size, visibility and window-manager requests are documented in [native window controls](window-controls.md).
 

@@ -99,6 +99,10 @@ pub use scoped_task::ScopedTask;
 #[doc = include_str!("../../../README.md")]
 mod readme_examples {}
 
+#[cfg(doctest)]
+#[doc = include_str!("../../../docs/getting-started.md")]
+mod getting_started_examples {}
+
 mod presentation_retry;
 
 #[cfg(doctest)]

@@ -98,6 +98,10 @@ jobs:
           LUAU_LSP="$dir/luau-lsp" cargo run -q -p zgui-script --bin zgui --locked -- check crates/zgui-script/examples crates/zgui-desktop/examples
       - run: cargo test -p zgui -p zgui-desktop -p zgui-workload -p zgui-script --all-targets --locked
       - run: cargo test --workspace --doc --locked
+      # The API docs build without a warning (a broken link, a name collision).
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
       # Concurrent device tests need Vulkan-Loader#1866; older distro loaders
       # can crash inside vkSetDebugUtilsObjectNameEXT. Keep debug/validation on.
       - name: Build private patched Vulkan loader

@@ -37,6 +37,8 @@ windows = { version = "0.62", default-features = false, features = ["Win32_Stora
 # `zgui check app.luau`: type checks scripts with luau-lsp (src/check.rs).
 name = "zgui"
 path = "src/bin/zgui.rs"
+# Its docs would land where the zgui library's do.
+doc = false
 
 # Named apart from zgui-gpu's `layout_bench` and zgui-desktop's `web_view`:
 # examples share one output directory, and Windows cannot link two
