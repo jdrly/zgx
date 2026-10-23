@@ -4539,6 +4539,7 @@ dependencies = [
  "mlua",
  "pulldown-cmark",
  "serde_json",
+ "windows",
  "zgui",
  "zgui-desktop",
  "zgui-gpu",

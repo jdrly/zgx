@@ -34,6 +34,9 @@ mod design;
 mod element;
 #[cfg(target_os = "macos")]
 mod file_events;
+#[cfg(windows)]
+#[path = "file_events_windows.rs"]
+mod file_events;
 mod io;
 pub mod lint;
 mod lower;
@@ -1406,8 +1409,9 @@ impl ScriptHost {
             }
         }
     }
-    /// Polls script files and reloads when they change. Spawn this on the
-    /// window's tasks during development; it only stats files. In a debug
+    /// Reloads when script files change. Spawn this on the window's tasks
+    /// during development: on macOS and Windows it waits for the system to
+    /// say a file changed, elsewhere it stats them `every` so often. In a debug
     /// build it also turns on type checks after each reload (see
     /// `check_on_reload`) when luau-lsp is installed and nothing chose
     /// otherwise.
@@ -1427,7 +1431,7 @@ impl ScriptHost {
             // A bundle never changes; the plugins beside it (on the disk)
             // are watched as any file is.
             // The kernel says when a file changes; nothing runs meanwhile.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             if let Some(mut events) = file_events::FileEvents::new() {
                 // A reload (new plugins) has the watched files looked at again.
                 let (rewatch, mut rewatched) = zgui::task::latest::<()>();
@@ -1488,7 +1492,7 @@ impl ScriptHost {
     }
     /// Every file a reload depends on: the scripts, what they required, the
     /// images they read and the theme files.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
     fn watched_files(&self) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = self.stamps().into_iter().map(|(path, _)| path).collect();
         files.extend(self.0.assets.files());
