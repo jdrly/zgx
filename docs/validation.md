@@ -95,6 +95,7 @@ Recorded native runs use `scripts/platform_smoke.py`, which creates and cleans u
 | Linux X11, forced scale 2 | 1800×1520 initial physical surface; same input checks; resize to 2000×1600 with logical viewport 1000×800 | Same monitor-transition limit |
 | Linux Wayland, headless Weston/pixman | Captured actual gallery surface, semantic snapshot, timed close, multi-window survival/close-policy/exactly-once cleanup | This historical headless run had no input seat; see the newer nested-seat input run below |
 | macOS ARM64 target | `cargo check --workspace --all-targets --target aarch64-apple-darwin --locked` passes from Linux | Type checking only: no native linking, execution, Metal or AppKit interaction evidence |
+| macOS 26, Apple silicon, two 2× displays: popups, drags and windows ([multi-window](multi-window.md)) | `popup_probe`, `drag_probe`, `window_probe` and `corners_probe` post AppKit events to their own windows: menus past the window, press-drag-release, close on deactivation and minimize, drags within and between windows, tear-off, a window moved by its only tab, the Window menu, cascading, saved frames. By hand (2026-10-23): ⌘` cycles `tab_windows`' windows | Drops into other apps, fullscreen and Space switches, and displays of different scales are not probed (a synthetic drag-out would drop at the real pointer; fullscreen takes the screen) |
 
 All native rendering above uses llvmpipe, not a hardware GPU. Reproduce the isolated runs with:
 

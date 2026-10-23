@@ -163,4 +163,4 @@ Luau also has `on_drag_outside` and `drag_moves_window` ([events](reference/even
 | `window_probe` | the Window menu, the cascade, the autosave, and what ⌘` cycles |
 | `corners_probe` | a menu as its window moves (it follows), minimizes (it closes), on another display (it opens there), with a dozen windows in the Window menu; `--fullscreen` takes the screen into fullscreen and back |
 
-Each probe posts synthetic AppKit events to its own windows and never moves the user's pointer. None of them drags anything that carries an export out of a window: AppKit's drag session follows the real pointer and would drop on whatever app is under it. ⌘` is a system hotkey, so it can only be checked by hand.
+Each probe posts synthetic AppKit events to its own windows and never moves the user's pointer. None of them drags anything that carries an export out of a window: AppKit's drag session follows the real pointer and would drop on whatever app is under it. ⌘` is a system hotkey, so it can only be checked by hand; it was, on macOS 26: it cycles `tab_windows`' windows.
