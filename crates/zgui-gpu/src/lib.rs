@@ -1172,6 +1172,19 @@ impl GpuContext {
             } else {
                 wgpu::Features::empty()
             } | (adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING),
+            required_limits: wgpu::Limits {
+                // Direct3D 12 makes its shader-visible view heap this large, in
+                // write-combined memory: 30 MiB at the default million, 8 MiB
+                // here. An image holds one view, and a window's image budget
+                // (64 MiB) is 65,536 of the smallest (16 px): windows share
+                // the device, and four at their budget still fit.
+                max_non_sampler_bindings: if cfg!(windows) {
+                    1 << 18
+                } else {
+                    wgpu::Limits::default().max_non_sampler_bindings
+                },
+                ..Default::default()
+            },
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         }))
