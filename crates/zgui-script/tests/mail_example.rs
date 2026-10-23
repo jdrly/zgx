@@ -1,5 +1,6 @@
 //! The mail example (examples/mail), run headless: opening a message,
-//! searching, composing, and the settings window's dark mode switch.
+//! searching, composing, the settings window's appearance, and how it
+//! folds up in narrower windows.
 mod common;
 
 use common::Harness;
@@ -8,6 +9,38 @@ use zgui::{scene::NodeKind, widgets::Ui};
 use zgui_script::ScriptHost;
 
 const APP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/mail/app.luau");
+
+/// The app in a window `width` wide, laid out.
+fn mail(width: f32) -> Harness {
+    let h = Harness::new(|runtime| ScriptHost::new(runtime, APP));
+    h.ui.scene.borrow_mut().resize(width, 760.);
+    h.frames(2);
+    h
+}
+/// A click at the middle of the text `label` shows in `ui`.
+fn click_text(ui: &mut Ui, label: &str) {
+    let at = {
+        let scene = ui.scene.borrow();
+        let found = scene
+            .paint_items()
+            .find(|i| matches!(scene.kind(i.id), NodeKind::Text { text, .. } if &**text == label))
+            .map(|i| scene.bounds(i.id))
+            .unwrap_or_else(|| panic!("no {label:?}"));
+        (found.x + found.width / 2., found.y + found.height / 2.)
+    };
+    use zgui::input::{InputEvent, PointerButton};
+    let button = PointerButton::Primary;
+    ui.dispatch(InputEvent::PointerDown {
+        x: at.0,
+        y: at.1,
+        button,
+    });
+    ui.dispatch(InputEvent::PointerUp {
+        x: at.0,
+        y: at.1,
+        button,
+    });
+}
 
 fn texts(ui: &Ui) -> Vec<String> {
     let scene = ui.scene.borrow();
@@ -21,10 +54,9 @@ fn texts(ui: &Ui) -> Vec<String> {
 }
 
 #[test]
-fn the_mail_example_opens_searches_composes_and_switches_to_light() {
+fn the_mail_example_opens_searches_composes_and_chooses_its_appearance() {
     let start = Instant::now();
-    let mut h = Harness::new(|runtime| ScriptHost::new(runtime, APP));
-    h.frames(2);
+    let mut h = mail(1180.);
     let loaded = start.elapsed();
     assert!(loaded.as_secs_f64() < 2., "loads in {loaded:?}");
     // A row, then its message.
@@ -54,44 +86,62 @@ fn the_mail_example_opens_searches_composes_and_switches_to_light() {
     assert!(h.host.run_command("new"));
     h.frames(1);
     assert!(h.find("body").is_some(), "the compose sheet opens");
-    // ⌘, opens the settings window; its switch turns the app light.
+    // ⌘, opens the settings window. The appearance follows the system
+    // until a choice there sets it, in every window.
     assert!(h.host.run_command("settings"));
     h.frames(1);
     let windows = h.host.windows().get();
     assert_eq!(windows.len(), 1);
     assert!(windows[0].open.get().truthy());
-    let mut settings = Ui::with_runtime(h.ui.runtime.clone(), 420., 260.);
+    let mut settings = Ui::with_runtime(h.ui.runtime.clone(), 420., 300.);
     settings.mount(h.host.window_view("settings"));
     settings.prepare_frame();
-    assert!(texts(&settings).contains(&"Dark appearance".to_owned()));
-    assert_eq!(&*h.ui.theme().current(), "zgui-dark");
-    let at = {
-        let scene = settings.scene.borrow();
-        let label = scene
-            .paint_items()
-            .find(|i| matches!(scene.kind(i.id), NodeKind::Text { text, .. } if &**text == "Dark appearance"))
-            .map(|i| scene.bounds(i.id))
-            .unwrap();
-        (label.x + 4., label.y + label.height / 2.)
-    };
-    use zgui::input::{InputEvent, PointerButton};
-    let button = PointerButton::Primary;
-    settings.dispatch(InputEvent::PointerDown {
-        x: at.0,
-        y: at.1,
-        button,
-    });
-    settings.dispatch(InputEvent::PointerUp {
-        x: at.0,
-        y: at.1,
-        button,
-    });
+    assert!(texts(&settings).contains(&"Appearance".to_owned()));
+    for (choice, theme) in [("Light", "zgui-light"), ("Dark", "zgui-dark")] {
+        click_text(&mut settings, choice);
+        h.frames(1);
+        assert_eq!(&*h.ui.theme().current(), theme, "{choice}");
+    }
+}
+
+#[test]
+fn narrower_windows_fold_the_mailboxes_then_show_one_pane() {
+    // Wide: the mailboxes beside the list and the message.
+    let mut h = mail(1180.);
+    assert!(h.texts().contains(&"Inbox".to_owned()));
+    // Medium: the mailboxes in a drawer, opened from the list's header and
+    // closed by choosing one.
+    h.ui.scene.borrow_mut().resize(800., 760.);
     h.frames(1);
-    assert_eq!(
-        &*h.ui.theme().current(),
-        "zgui-light",
-        "every window goes light"
+    assert!(!h.texts().contains(&"Inbox".to_owned()));
+    click_text(&mut h.ui, "☰");
+    h.frames(1);
+    click_text(&mut h.ui, "Starred");
+    h.frames(1);
+    assert!(
+        !h.texts().contains(&"Starred".to_owned()),
+        "the drawer closes"
     );
+    click_text(&mut h.ui, "☰");
+    h.frames(1);
+    click_text(&mut h.ui, "Inbox");
+    h.frames(1);
+    // The message pane is what is left, its text wrapped within it.
+    h.click("row-1");
+    h.frames(1);
+    let subject = h.bounds("subject");
+    assert!(subject.x + subject.width <= 800., "{subject:?}");
+    // Narrow: the list alone, then the message alone, with a way back.
+    h.ui.scene.borrow_mut().resize(420., 760.);
+    h.frames(1);
+    assert!(h.find("subject").is_some(), "the open message fills it");
+    assert!(h.find("search").is_none());
+    click_text(&mut h.ui, "‹ Back");
+    h.frames(1);
+    assert!(h.find("subject").is_none());
+    assert!(h.find("search").is_some());
+    let search = h.bounds("search");
+    assert!(search.x + search.width <= 420., "{search:?}");
 }
 
 #[test]

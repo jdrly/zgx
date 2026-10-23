@@ -1868,10 +1868,17 @@ impl Scene {
             _ => unreachable!(),
         };
         let (gap, children) = (node.style.gap, node.children.clone());
-        let along = matches!(
-            (layout, horizontal),
-            (Layout::Row, true) | (Layout::Column, false)
-        );
+        // Children that wrap onto lines need only the widest of them.
+        let wraps = node
+            .style
+            .layout_options
+            .as_deref()
+            .is_some_and(|o| o.wrap.is_some_and(|w| w != crate::layout::FlexWrap::NoWrap));
+        let along = !wraps
+            && matches!(
+                (layout, horizontal),
+                (Layout::Row, true) | (Layout::Column, false)
+            );
         let mut total = 0_f32;
         let mut count = 0;
         for child in children {

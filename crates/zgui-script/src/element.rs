@@ -132,6 +132,14 @@ impl Element {
     pub fn scene_weak(&self) -> Option<&std::rc::Weak<RefCell<Scene>>> {
         self.scene.get()
     }
+    /// Its laid-out size, followed: read in an effect or a computed, it
+    /// runs again when layout resizes the node, before the frame shows (a
+    /// container query, through a ref's `width` and `height`). None while
+    /// it is not in a scene.
+    pub fn size(&self) -> Option<(f32, f32)> {
+        self.scene()?;
+        Some(self.handle.get()?.observe_size()?.get())
+    }
     pub fn is_mounted(&self) -> bool {
         self.handle.get().is_some_and(NodeHandle::is_mounted)
     }
@@ -894,6 +902,15 @@ impl UserData for RefUd {
         fields.add_field_method_get("element", |_, r| {
             r.0.track();
             Ok(r.0.first().map(ElementUd))
+        });
+        // Its element's laid-out size, followed (a container query).
+        fields.add_field_method_get("width", |_, r| {
+            r.0.track();
+            Ok(r.0.first().and_then(|e| e.size()).map(|size| size.0))
+        });
+        fields.add_field_method_get("height", |_, r| {
+            r.0.track();
+            Ok(r.0.first().and_then(|e| e.size()).map(|size| size.1))
         });
     }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

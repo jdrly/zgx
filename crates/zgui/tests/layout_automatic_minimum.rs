@@ -89,3 +89,13 @@ fn taffy_laid_out_rows_keep_the_same_minimum() {
     let rects = squeezed(wrapping.align_self(Align::Center));
     assert!((rects[1].width - word).abs() < 0.01, "{rects:?}");
 }
+
+#[test]
+fn a_wrapping_row_needs_only_its_widest_child() {
+    // Three 60 px chips that wrap: the row gives way down to one chip.
+    let chip = || div().w(60.).h(10.).shrink_0();
+    let chips = row().flex_wrap().child(chip()).child(chip()).child(chip());
+    let rects = squeezed(chips);
+    assert!(rects[1].width < 180., "{rects:?}");
+    assert!(rects[1].width >= 60., "{rects:?}");
+}

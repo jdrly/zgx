@@ -28,13 +28,14 @@ local function row(i: number): Node
 	local message = function(): state.Message?
 		return shown:get()[i]
 	end
-	return ui.column {
+	return ui.row {
 		id = `row-{i}`,
 		w_full = true,
 		h = row_height(),
-		px = 14,
+		pl = 6,
+		pr = 14,
 		py = 8,
-		gap = 2,
+		gap = 0,
 		bg = function()
 			local m = message()
 			return if m and state.selected:get() == m.id then "$selection.item" else "#00000000"
@@ -86,63 +87,80 @@ local function row(i: number): Node
 				},
 			}
 		end,
-		ui.row {
-			gap = 6,
-			items = "center",
-			ui.text {
-				function()
-					local m = message()
-					return if m and m.unread then "●" else ""
-				end,
-				color = "$accent",
-				text_size = 8,
-				w = 8,
-			},
-			ui.text {
-				function()
-					local m = message()
-					return if m then m.from else ""
-				end,
-				bold = true,
-				grow = 1,
-				truncate = true,
-			},
-			ui.text {
-				function()
-					local m = message()
-					return if m then m.date else ""
-				end,
-				color = "$text.tertiary",
-				text_size = "$font.size.sm",
-			},
-		},
+		-- The unread dot, in a gutter of its own: sender, subject and preview
+		-- line up whether it shows or not.
 		ui.text {
 			function()
 				local m = message()
-				return if m then m.subject else ""
+				return if m and m.unread then "●" else ""
 			end,
-			truncate = true,
+			color = "$accent",
+			text_size = 8,
+			w = 14,
+			shrink = 0,
+			pt = 5,
+			align = "center",
 		},
-		ui.show(
-			function()
-				return state.density:get() == "comfortable"
-			end,
+		ui.column {
+			grow = 1,
+			min_w = 0,
+			gap = 2,
+			ui.row {
+				gap = 6,
+				items = "center",
+				ui.text {
+					function()
+						local m = message()
+						return if m then m.from else ""
+					end,
+					bold = true,
+					grow = 1,
+					min_w = 0,
+					truncate = true,
+				},
+				ui.text {
+					function()
+						local m = message()
+						return if m then m.date else ""
+					end,
+					color = "$text.tertiary",
+					text_size = "$font.size.sm",
+					shrink = 0,
+				},
+			},
 			ui.text {
 				function()
 					local m = message()
-					return if m then m.preview else ""
+					return if m then m.subject else ""
 				end,
-				color = "$text.secondary",
-				text_size = "$font.size.sm",
+				min_w = 0,
 				truncate = true,
-			}
-		),
+			},
+			ui.show(
+				function()
+					return state.density:get() == "comfortable"
+				end,
+				ui.text {
+					function()
+						local m = message()
+						return if m then m.preview else ""
+					end,
+					color = "$text.secondary",
+					text_size = "$font.size.sm",
+					min_w = 0,
+					truncate = true,
+				}
+			),
+		},
 	}
 end
 
 return function(): Node
 	return ui.column {
-		w = 360,
+		-- The whole window when it shows one pane at a time.
+		w = function()
+			return if state.layout:get() == "narrow" then "100%" else 360
+		end,
 		h_full = true,
 		bg = "$surface.base",
 		ui.row {
@@ -150,12 +168,26 @@ return function(): Node
 			pt = 40,
 			px = 12,
 			pb = 8,
+			gap = 8,
+			items = "center",
+			-- The mailboxes, while the window is too narrow for the sidebar.
+			ui.show(
+				function()
+					return state.layout:get() ~= "wide"
+				end,
+				ui.button {
+					tooltip = "Mailboxes",
+					on_click = ui.set(state.drawer, true),
+					shrink = 0,
+					"☰",
+				}
+			),
 			ui.input {
 				id = "search",
 				value = state.query,
 				label = "Search",
 				placeholder = "Search",
-				w_full = true,
+				grow = 1,
 			},
 		},
 		ui.list {

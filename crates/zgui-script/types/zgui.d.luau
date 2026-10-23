@@ -532,6 +532,10 @@ declare extern type Ref with
 	mounted: boolean
 	-- How many mounted nodes share it.
 	count: number
+	-- Its element's laid-out size, followed: a computed reading it runs
+	-- again when layout resizes the element (a container query).
+	width: number?
+	height: number?
 	function get(self): Element?
 	-- Without following.
 	function peek(self): Element?

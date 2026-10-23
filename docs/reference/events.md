@@ -172,14 +172,36 @@ end
 | --- | --- |
 | `id`, `tag` | its `id`, and its kind as selectors name it (`"column"`, `"button"`, `"text"`, `"input"`…) |
 | `mounted` | whether it is in the interface now |
-| `width`, `height`, `x`, `y` | its laid-out box, in points from the window's top left; nil while it is not in a scene |
+| `width`, `height`, `x`, `y` | its laid-out box, in points from the window's top left; nil while it is not in a scene. Read as they are, not followed (a ref's `width` and `height` are) |
 | `focus()` | keyboard focus to it or its first shown focusable descendant; whether it took |
 | `blur()` | clears keyboard focus when it is on the element or inside it |
 | `has_class(class)` | whether its `class` names `class` |
 | `select_all()`, `set_selection(a, b)` | an input's selection, in characters (Unicode code points from 0, as `utf8.len` counts them); `b` defaults to `a`, a caret. False for other elements |
 | `selection()` | an input's anchor and focus (where the caret is); nil for other elements |
 
-A ref (`ui.ref()`, given to nodes as `ref = r`) answers `r:get()` and `r.element` (its first mounted element, else nil), `r:peek()` (the same, without following), `r.mounted`, `r.count` and `r:elements()` (every mounted node sharing it, in document order). Reading `get`, `element`, `mounted`, `count` or `elements` in an effect or a computed follows the ref, so an effect that needs the element runs again once it mounts. A ref has no `focus` or other element methods: ask its element (`local el = r:get(); if el then el:focus() end`).
+A ref (`ui.ref()`, given to nodes as `ref = r`) answers `r:get()` and `r.element` (its first mounted element, else nil), `r:peek()` (the same, without following), `r.mounted`, `r.count`, `r:elements()` (every mounted node sharing it, in document order), and `r.width` and `r.height` (its element's laid-out size, nil while none is mounted). Reading `get`, `element`, `mounted`, `count`, `elements`, `width` or `height` in an effect or a computed follows the ref (and `width` and `height` follow layout resizing the element), so an effect that needs the element runs again once it mounts. A ref has no `focus` or other element methods: ask its element (`local el = r:get(); if el then el:focus() end`).
+
+### Container queries
+
+A layout that changes with the room it has (CSS's container and media queries) reads its container's width through a ref, `r.width`. The change lands in the frame the size changes: layout, the computed and layout again all run before it shows, as a browser settles its ResizeObserver callbacks before painting.
+
+```lua
+local root = ui.ref()
+local wide = ui.computed(function()
+	return (root.width or 900) >= 900
+end)
+return ui.row {
+	ref = root,
+	w_full = true,
+	h_full = true,
+	ui.show(function()
+		return wide:get()
+	end, ui.column { w = 220, shrink = 0, "Sidebar" }),
+	ui.column { grow = 1, "Content" },
+}
+```
+
+Query a box whose size does not depend on what the query changes (here the window's row): a box sized by its content that hid content below a width could go back and forth (zgui stops after a few rounds).
 
 ## Gotchas
 

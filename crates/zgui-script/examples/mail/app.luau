@@ -1,5 +1,7 @@
 -- Mail: a sidebar of mailboxes, a virtualized message list, the open
 -- message's selectable body, a compose sheet, and a settings window.
+-- Narrower windows fold it up as a web mail client does: the mailboxes
+-- become a drawer, then one pane shows at a time.
 local state = require("./state")
 local actions = require("./actions")
 local Sidebar = require("@components/sidebar")
@@ -8,9 +10,14 @@ local Detail = require("@components/detail")
 local Compose = require("@components/compose")
 local Settings = require("@components/settings")
 
--- Dark or light, as the settings say.
+-- The system's appearance, unless the settings choose one.
 ui.effect(function()
-	ui.theme.set(if state.dark:get() then "zgui-dark" else "zgui-light")
+	local appearance = state.appearance:get()
+	if appearance == "system" then
+		ui.theme.follow_system { dark = "zgui-dark", light = "zgui-light" }
+	else
+		ui.theme.set(if appearance == "dark" then "zgui-dark" else "zgui-light")
+	end
 end)
 
 ui.command {
@@ -44,17 +51,46 @@ ui.command {
 	end,
 }
 
-ui.window { id = "settings", title = "Settings", width = 420, height = 260, open = state.settings_open, Settings() }
+ui.window { id = "settings", title = "Settings", width = 420, height = 300, open = state.settings_open, Settings() }
+
+local function divider(): Node
+	return ui.div { w = 1, h_full = true, shrink = 0, bg = "$border.subtle" }
+end
 
 return ui.row {
+	ref = state.root,
 	w_full = true,
 	h_full = true,
 	color = "$text.primary",
 	ui.div { absolute = true, top = 0, left = 0, right = 0, h = 36, window_drag = true },
-	Sidebar(),
-	ui.div { w = 1, h_full = true, bg = "$border.subtle" },
-	List(),
-	ui.div { w = 1, h_full = true, bg = "$border.subtle" },
-	Detail(),
+	ui.show(function()
+		return state.layout:get() == "wide"
+	end, ui.row { h_full = true, shrink = 0, Sidebar(), divider() }),
+	-- One pane at a time when narrow: the list, or the open message.
+	ui.show(function()
+		return state.layout:get() ~= "narrow" or state.selected:get() == nil
+	end, List()),
+	ui.show(function()
+		return state.layout:get() ~= "narrow"
+	end, divider()),
+	ui.show(function()
+		return state.layout:get() ~= "narrow" or state.selected:get() ~= nil
+	end, Detail()),
+	-- The mailboxes over the list, while the window is too narrow for them.
+	ui.show(
+		function()
+			return state.drawer:get() and state.layout:get() ~= "wide"
+		end,
+		ui.row {
+			absolute = true,
+			top = 0,
+			left = 0,
+			bottom = 0,
+			right = 0,
+			ui.row { h_full = true, shrink = 0, shadow = "$shadow.lg", Sidebar() },
+			-- A click beside it closes it.
+			ui.div { grow = 1, h_full = true, on_click = ui.set(state.drawer, false) },
+		}
+	),
 	Compose(),
 }

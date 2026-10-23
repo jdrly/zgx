@@ -40,8 +40,19 @@ return function(): Node
 				pt = 40,
 				px = 28,
 				gap = 12,
+				-- The actions wrap onto a second line in a narrow pane; Back
+				-- returns to the list when the window shows one pane.
 				ui.row {
 					gap = 8,
+					flex_wrap = true,
+					ui.show(
+						function()
+							return state.layout:get() == "narrow"
+						end,
+						action("‹ Back", "Back to the messages", function()
+							state.selected:set(nil)
+						end)
+					),
 					action("Reply", "Reply to the sender", function()
 						actions.reply(id)
 					end),
@@ -57,6 +68,7 @@ return function(): Node
 				},
 				ui.text { m.subject, id = "subject", text_size = "$font.size.xl", bold = true, wrap = true },
 				ui.rich {
+					wrap = true,
 					ui.span { m.from, bold = true },
 					ui.span { `  <{m.email}>`, color = "$text.secondary" },
 					ui.span { `  ·  {m.date}`, color = "$text.tertiary" },

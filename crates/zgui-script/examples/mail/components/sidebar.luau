@@ -30,6 +30,7 @@ local function mailbox(name: string): Node
 			ui.batch(function()
 				state.mailbox:set(name)
 				state.selected:set(nil)
+				state.drawer:set(false)
 			end)
 		end,
 		ui.text { name, grow = 1 },

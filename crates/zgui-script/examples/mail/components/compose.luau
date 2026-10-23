@@ -5,9 +5,10 @@ local actions = require("../actions")
 
 local function field(label: string, value: State<string>): Node
 	return ui.row {
+		w_full = true,
 		gap = 8,
 		items = "center",
-		ui.text { label, w = 64, color = "$text.secondary" },
+		ui.text { label, w = 64, shrink = 0, color = "$text.secondary" },
 		ui.input { value = value, label = label, grow = 1 },
 	}
 end
