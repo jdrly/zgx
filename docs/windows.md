@@ -82,6 +82,10 @@ window whatever its title bar:
 - Always show scrollbars off (Accessibility, Visual effects; the default):
   scrollbars hide at rest and show while the user scrolls
   (`Ui::set_overlay_scrollbars`), as Edge's and WinUI's do.
+- The wheel's lines and characters to scroll at a time (Bluetooth & devices,
+  Mouse): a notch scrolls each line or character at 100/3 pixels, 100 for
+  the default 3, as Chromium does; "one screen at a time" scrolls by the
+  window's height less an eighth.
 
 An app theme or `theme_scope` that sets a colour or duration token itself
 keeps its own value; the text size scales the font tokens of every theme.

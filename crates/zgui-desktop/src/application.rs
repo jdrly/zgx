@@ -2342,7 +2342,10 @@ impl Host {
                 {
                     self.dispatch(InputEvent::ScrollGesture(gesture))?;
                 }
-                let (dx, dy) = wheel_delta(delta, self.scale_factor);
+                let step = crate::scrollers::wheel_step(
+                    self.context.viewport.with_untracked(|viewport| *viewport),
+                );
+                let (dx, dy) = wheel_delta(delta, self.scale_factor, step);
                 if crate::scroll_resample::enabled() {
                     // Applied on display refreshes; see `update`.
                     let now = std::time::Instant::now();
@@ -3515,19 +3518,6 @@ fn cursor_for_role(role: Option<Role>) -> CursorIcon {
         _ => CursorIcon::Default,
     }
 }
-/// How far a wheel's line scrolls, in logical pixels, as browsers have it:
-/// 40 (Chromium's and WebKit's line step, and Chromium's per Cocoa tick).
-/// Windows reports notches, not lines, and a notch is the system's wheel
-/// lines (3 by default) at a third of 100 each: 100, as Chromium scrolls.
-/// On Linux, KDE's wheel lines ("Scroll by", 3 by default) scale it as
-/// Windows' do: 40 is three lines.
-fn wheel_line() -> f32 {
-    #[cfg(target_os = "linux")]
-    if let Some(lines) = crate::linux_appearance::current().wheel_lines {
-        return 40. * lines as f32 / 3.;
-    }
-    if cfg!(windows) { 100. } else { 40. }
-}
 /// A trackpad scroll gesture, from winit's phases: the fingers' Started,
 /// Moved and Ended, then (if they flicked) the momentum's, reported alike.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -3568,12 +3558,11 @@ impl Trackpad {
         gesture
     }
 }
-fn wheel_delta(delta: MouseScrollDelta, scale: f64) -> (f32, f32) {
+/// A wheel's motion in logical pixels: its lines (Windows' notches) at
+/// `step`'s pixels each across and down (`scrollers::wheel_step`).
+fn wheel_delta(delta: MouseScrollDelta, scale: f64, step: (f32, f32)) -> (f32, f32) {
     match delta {
-        MouseScrollDelta::LineDelta(x, y) => {
-            let line = wheel_line();
-            (-x * line, -y * line)
-        }
+        MouseScrollDelta::LineDelta(x, y) => (-x * step.0, -y * step.1),
         MouseScrollDelta::PixelDelta(p) => {
             let p = p.to_logical::<f32>(scale);
             (-p.x, -p.y)
@@ -3954,11 +3943,9 @@ mod tests {
     }
     #[test]
     fn wheel_down_is_positive_in_logical_scene_coordinates() {
-        // A line as a browser scrolls one; on Windows, a notch.
-        let line = if cfg!(windows) { 100. } else { 40. };
         assert_eq!(
-            wheel_delta(MouseScrollDelta::LineDelta(1., -2.), 2.),
-            (-line, 2. * line)
+            wheel_delta(MouseScrollDelta::LineDelta(1., -2.), 2., (30., 40.)),
+            (-30., 80.)
         );
         // Windows: a precision touchpad's fractions of a notch are motion.
         assert!(!continuous_lines(0., -1.));
@@ -3968,7 +3955,8 @@ mod tests {
         assert_eq!(
             wheel_delta(
                 MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(20., -40.)),
-                2.
+                2.,
+                (30., 40.)
             ),
             (-10., 20.)
         );
