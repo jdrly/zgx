@@ -90,7 +90,7 @@ enum Event {
     MenuFallback(u64, crate::MenuAction),
     MenusChanged,
     #[cfg(target_os = "linux")]
-    NativeFiles(u64, crate::wayland_files::FileEvent),
+    NativeFiles(u64, crate::wayland_data::FileEvent),
     #[cfg(target_os = "macos")]
     NativeMenuAction(crate::MenuAction),
     Wake(u64),
@@ -351,7 +351,7 @@ struct WindowRequest {
 #[derive(Clone)]
 pub struct WindowFactory {
     #[cfg(target_os = "linux")]
-    file_routes: crate::wayland_files::Routes,
+    file_routes: crate::wayland_data::Routes,
     fonts: Rc<Vec<zgui_gpu::text::FontData>>,
     menus: Rc<RefCell<Vec<crate::AppMenu>>>,
     pending: Rc<RefCell<VecDeque<WindowRequest>>>,
@@ -661,7 +661,7 @@ impl Application {
         };
         let mut host = WindowManager {
             #[cfg(target_os = "linux")]
-            native_files: None,
+            native_data: None,
             _native_events: native_events,
             application_event: self.application_event,
             quit_on_last_window_close: self.quit_on_last_window_close,
@@ -2575,7 +2575,7 @@ impl Drop for Host {
 }
 struct WindowManager {
     #[cfg(target_os = "linux")]
-    native_files: Option<crate::wayland_files::NativeFiles>,
+    native_data: Option<crate::wayland_data::NativeData>,
     _native_events: Option<crate::native_events::NativeApplicationEvents>,
     application_event: Option<ApplicationEventHandler>,
     quit_on_last_window_close: bool,
@@ -2691,21 +2691,27 @@ impl ApplicationHandler<Event> for WindowManager {
         }
         self.active = true;
         #[cfg(target_os = "linux")]
-        if self.native_files.is_none() {
+        if self.native_data.is_none() {
             let proxy = self.factory.proxy.clone();
-            match crate::wayland_files::NativeFiles::new(
+            match crate::wayland_data::NativeData::new(
                 event_loop.owned_display_handle(),
                 self.factory.file_routes.clone(),
                 Arc::new(move |token, event| {
                     let _ = proxy.send_event(Event::NativeFiles(token, event));
                 }),
             ) {
-                Ok(service) => self.native_files = service,
-                Err(error) => eprintln!("zgui: native file drops unavailable: {error}"),
+                Ok(service) => self.native_data = service,
+                Err(error) => {
+                    eprintln!("zgui: native clipboard and file drops unavailable: {error}")
+                }
             }
         }
         if self.factory.clipboard.borrow().is_none() {
-            match crate::clipboard::Clipboard::new(event_loop.owned_display_handle()) {
+            match crate::clipboard::Clipboard::new(
+                event_loop.owned_display_handle(),
+                #[cfg(target_os = "linux")]
+                self.native_data.as_ref().map(|data| data.clipboard()),
+            ) {
                 Ok(clipboard) => *self.factory.clipboard.borrow_mut() = Some(clipboard),
                 Err(error) => eprintln!("zgui: clipboard unavailable: {error}"),
             }
@@ -2755,7 +2761,7 @@ impl ApplicationHandler<Event> for WindowManager {
                 if let Some(host) = self.hosts.get_mut(&token)
                     && !host.context.window.is_closed()
                 {
-                    use crate::wayland_files::FileEvent;
+                    use crate::wayland_data::FileEvent;
                     let result = match event {
                         FileEvent::Hover { x, y, path } => {
                             host.dispatch(InputEvent::FileHover { x, y, path })
@@ -3559,7 +3565,12 @@ mod tests {
             next: Rc::new(Cell::new(1)),
             alive: Rc::new(Cell::new(true)),
             clipboard: Rc::new(RefCell::new(Some(
-                crate::clipboard::Clipboard::new(event_loop.owned_display_handle()).unwrap(),
+                crate::clipboard::Clipboard::new(
+                    event_loop.owned_display_handle(),
+                    #[cfg(target_os = "linux")]
+                    None,
+                )
+                .unwrap(),
             ))),
             gpu_contexts: Rc::new(RefCell::new(Vec::new())),
             proxy: event_loop.create_proxy(),
@@ -3567,7 +3578,7 @@ mod tests {
         let retained = factory.clone();
         let manager = WindowManager {
             #[cfg(target_os = "linux")]
-            native_files: None,
+            native_data: None,
             _native_events: None,
             application_event: None,
             quit_on_last_window_close: true,

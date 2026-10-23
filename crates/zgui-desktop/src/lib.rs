@@ -31,7 +31,7 @@ mod portal_dialog;
 mod portal_parent;
 mod url;
 #[cfg(target_os = "linux")]
-mod wayland_files;
+mod wayland_data;
 mod window_chrome;
 mod window_info;
 pub use app_menu::{

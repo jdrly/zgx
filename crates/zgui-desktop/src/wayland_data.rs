@@ -1,0 +1,1052 @@
+//! Owned Wayland data devices: the clipboard, the primary selection and
+//! external file drags, through one device of each kind per seat.
+//!
+//! One device, not one per feature: Weston serves a selection only through
+//! the newest offer of it, so a second device in this process would leave
+//! the other reading nothing, and would cancel this process's own clipboard
+//! by releasing that offer.
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{ErrorKind, Read, Write},
+    os::fd::{AsFd, OwnedFd},
+    os::unix::net::UnixStream,
+    path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
+    thread,
+    time::{Duration, Instant},
+};
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle, WEnum,
+    protocol::{
+        wl_data_device,
+        wl_data_device_manager::{self, DndAction},
+        wl_data_offer, wl_data_source, wl_keyboard, wl_pointer, wl_registry,
+        wl_seat::{self, Capability},
+    },
+};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1 as PrimaryManager,
+    zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1 as PrimaryDevice},
+    zwp_primary_selection_offer_v1::{self, ZwpPrimarySelectionOfferV1 as PrimaryOffer},
+    zwp_primary_selection_source_v1::{self, ZwpPrimarySelectionSourceV1 as PrimarySource},
+};
+use winit::{
+    event_loop::OwnedDisplayHandle,
+    raw_window_handle::{HasDisplayHandle, RawDisplayHandle},
+};
+pub(crate) type Routes = Arc<Mutex<HashMap<u32, u64>>>;
+#[derive(Debug)]
+pub(crate) enum FileEvent {
+    Hover {
+        x: f32,
+        y: f32,
+        path: PathBuf,
+    },
+    Leave,
+    Rejected {
+        x: f32,
+        y: f32,
+        reason: zgui::input::FileDropError,
+    },
+    Drop {
+        x: f32,
+        y: f32,
+        paths: Arc<[PathBuf]>,
+        accepted: std::sync::mpsc::Sender<bool>,
+    },
+}
+type Handler = Arc<dyn Fn(u64, FileEvent) + Send + Sync>;
+/// Text types offered, in order of preference when reading.
+const TEXT_TYPES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+/// How long a paste waits for the selection's owner, and how much it takes.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(2);
+const LOAD_LIMIT: usize = 64 * 1024 * 1024;
+enum Command {
+    Exit,
+    Store {
+        primary: bool,
+        text: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Load {
+        primary: bool,
+        reply: mpsc::Sender<Result<Loaded, String>>,
+    },
+}
+/// The selection owner writes into the stream; `bool` asks for CRLF
+/// normalization.
+struct Loaded(UnixStream, bool);
+pub(crate) struct NativeData {
+    commands: calloop::channel::Sender<Command>,
+    worker: Option<thread::JoinHandle<()>>,
+    // Worker joins before this owned foreign display is released.
+    _display: OwnedDisplayHandle,
+}
+/// The clipboard and primary selection, served by the data worker.
+#[derive(Clone)]
+pub(crate) struct WaylandClipboard(calloop::channel::Sender<Command>);
+impl WaylandClipboard {
+    /// Publish `text`; fails before the seat has delivered any input, as a
+    /// selection needs an input serial.
+    pub fn store(&self, primary: bool, text: String) -> Result<(), String> {
+        let (reply, answer) = mpsc::channel();
+        self.0
+            .send(Command::Store {
+                primary,
+                text,
+                reply,
+            })
+            .map_err(|_| "Wayland data worker stopped".to_string())?;
+        answer
+            .recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "Wayland data worker did not answer".to_string())?
+    }
+    pub fn load(&self, primary: bool) -> Result<String, String> {
+        let (reply, answer) = mpsc::channel();
+        self.0
+            .send(Command::Load { primary, reply })
+            .map_err(|_| "Wayland data worker stopped".to_string())?;
+        let started = Instant::now();
+        let loaded = answer
+            .recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "Wayland data worker did not answer".to_string())??;
+        let Loaded(mut stream, normalize) = loaded;
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 65536];
+        loop {
+            let left = LOAD_TIMEOUT
+                .checked_sub(started.elapsed())
+                .filter(|left| !left.is_zero())
+                .ok_or("selection owner did not finish writing")?;
+            stream
+                .set_read_timeout(Some(left))
+                .map_err(|e| e.to_string())?;
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) if bytes.len() + n > LOAD_LIMIT => return Err("selection too large".into()),
+                Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        Ok(if normalize {
+            text.replace("\r\n", "\n")
+        } else {
+            text.into_owned()
+        })
+    }
+}
+impl NativeData {
+    pub fn new(
+        display: OwnedDisplayHandle,
+        routes: Routes,
+        handler: Handler,
+    ) -> Result<Option<Self>, String> {
+        let RawDisplayHandle::Wayland(raw) = display
+            .display_handle()
+            .map_err(|e| e.to_string())?
+            .as_raw()
+        else {
+            return Ok(None);
+        };
+        // SAFETY: the owned display remains alive until the worker has joined.
+        let backend = unsafe {
+            wayland_backend::sys::client::Backend::from_foreign_display(raw.display.as_ptr().cast())
+        };
+        let connection = Connection::from_backend(backend);
+        let (sender, commands) = calloop::channel::channel();
+        let worker = thread::Builder::new()
+            .name("zgui-wayland-data".into())
+            .spawn(move || {
+                let queue = connection.new_event_queue::<State>();
+                let qh = queue.handle();
+                let registry = connection.display().get_registry(&qh, ());
+                let mut state = State {
+                    routes,
+                    handler,
+                    connection: connection.clone(),
+                    qh: qh.clone(),
+                    manager: None,
+                    primary_manager: None,
+                    seats: Vec::new(),
+                    offers: HashMap::new(),
+                    selection: None,
+                    primary_offers: HashMap::new(),
+                    primary_selection: None,
+                    source: None,
+                    primary_source: None,
+                    serial: None,
+                    drag: None,
+                    completion: None,
+                    exit: false,
+                };
+                let Ok(mut event_loop) = calloop::EventLoop::<State>::try_new() else {
+                    return;
+                };
+                let handle = event_loop.handle();
+                if handle
+                    .insert_source(commands, |event, _, state: &mut State| {
+                        let calloop::channel::Event::Msg(command) = event else {
+                            state.exit = true;
+                            return;
+                        };
+                        match command {
+                            Command::Exit => state.exit = true,
+                            Command::Store {
+                                primary,
+                                text,
+                                reply,
+                            } => {
+                                let _ = reply.send(state.store(primary, text));
+                            }
+                            Command::Load { primary, reply } => {
+                                let _ = reply.send(state.load(primary));
+                            }
+                        }
+                        let _ = state.connection.flush();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                if calloop_wayland_source::WaylandSource::new(connection.clone(), queue)
+                    .insert(handle)
+                    .is_err()
+                {
+                    return;
+                }
+                while !state.exit {
+                    let timeout = (state.drag.as_ref().is_some_and(|d| d.read.is_some())
+                        || state.completion.is_some())
+                    .then_some(Duration::from_millis(20));
+                    if event_loop.dispatch(timeout, &mut state).is_err() {
+                        break;
+                    }
+                    state.read_transfer();
+                }
+                state.cancel();
+                for (_, offer) in state
+                    .offers
+                    .drain()
+                    .chain(state.selection.take().map(|o| (0, o)))
+                {
+                    offer.proxy.destroy();
+                }
+                for (_, (offer, _)) in state
+                    .primary_offers
+                    .drain()
+                    .chain(state.primary_selection.take().map(|o| (0, o)))
+                {
+                    offer.destroy();
+                }
+                if let Some((source, _)) = state.source.take() {
+                    source.destroy();
+                }
+                if let Some((source, _)) = state.primary_source.take() {
+                    source.destroy();
+                }
+                for seat in state.seats.drain(..) {
+                    seat.release();
+                }
+                if let Some(manager) = state.primary_manager.take() {
+                    manager.destroy();
+                }
+                if let Some(manager) = state.manager.take() {
+                    drop(manager);
+                }
+                drop(registry);
+                let _ = connection.flush();
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Some(Self {
+            commands: sender,
+            worker: Some(worker),
+            _display: display,
+        }))
+    }
+    pub fn clipboard(&self) -> WaylandClipboard {
+        WaylandClipboard(self.commands.clone())
+    }
+}
+impl Drop for NativeData {
+    fn drop(&mut self) {
+        let _ = self.commands.send(Command::Exit);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+struct Offer {
+    proxy: wl_data_offer::WlDataOffer,
+    uris: bool,
+    /// The preferred text type offered, an index into `TEXT_TYPES`.
+    text: Option<usize>,
+}
+struct Seat {
+    name: u32,
+    seat: wl_seat::WlSeat,
+    device: Option<wl_data_device::WlDataDevice>,
+    primary: Option<PrimaryDevice>,
+    // Their enter, key and button serials authorize setting a selection.
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+}
+impl Seat {
+    fn release(self) {
+        if let Some(device) = self.device
+            && device.version() >= 2
+        {
+            device.release();
+        }
+        if let Some(primary) = self.primary {
+            primary.destroy();
+        }
+        if let Some(keyboard) = self.keyboard
+            && keyboard.version() >= 3
+        {
+            keyboard.release();
+        }
+        if let Some(pointer) = self.pointer
+            && pointer.version() >= 3
+        {
+            pointer.release();
+        }
+        if self.seat.version() >= 5 {
+            self.seat.release();
+        }
+    }
+}
+struct Transfer {
+    stream: UnixStream,
+    bytes: Vec<u8>,
+    deadline: Instant,
+}
+struct Drag {
+    offer: wl_data_offer::WlDataOffer,
+    token: u64,
+    x: f32,
+    y: f32,
+    read: Option<Transfer>,
+    paths: Option<Arc<[PathBuf]>>,
+    dropped: bool,
+    copy: bool,
+    left: bool,
+}
+struct Completion {
+    offer: wl_data_offer::WlDataOffer,
+    accepted: std::sync::mpsc::Receiver<bool>,
+    deadline: Instant,
+}
+struct State {
+    routes: Routes,
+    handler: Handler,
+    connection: Connection,
+    qh: QueueHandle<Self>,
+    manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    primary_manager: Option<PrimaryManager>,
+    seats: Vec<Seat>,
+    offers: HashMap<u32, Offer>,
+    /// The current clipboard, held until superseded: Weston cancels a
+    /// selection's source when its newest offer is destroyed.
+    selection: Option<Offer>,
+    primary_offers: HashMap<u32, (PrimaryOffer, Option<usize>)>,
+    primary_selection: Option<(PrimaryOffer, Option<usize>)>,
+    /// What this process published, until another client replaces it.
+    source: Option<(wl_data_source::WlDataSource, Arc<str>)>,
+    primary_source: Option<(PrimarySource, Arc<str>)>,
+    /// The latest input serial and the seat it came from.
+    serial: Option<(u32, u32)>,
+    drag: Option<Drag>,
+    completion: Option<Completion>,
+    exit: bool,
+}
+impl State {
+    fn devices(&mut self, qh: &QueueHandle<Self>) {
+        for seat in &mut self.seats {
+            if let Some(manager) = &self.manager
+                && seat.device.is_none()
+            {
+                seat.device = Some(manager.get_data_device(&seat.seat, qh, ()));
+            }
+            if let Some(manager) = &self.primary_manager
+                && seat.primary.is_none()
+            {
+                seat.primary = Some(manager.get_device(&seat.seat, qh, ()));
+            }
+        }
+    }
+    fn store(&mut self, primary: bool, text: String) -> Result<(), String> {
+        let (seat, serial) = self.serial.ok_or("no input has reached this client yet")?;
+        let seat = self
+            .seats
+            .iter()
+            .find(|candidate| candidate.name == seat)
+            .ok_or("the input seat is gone")?;
+        let text: Arc<str> = text.into();
+        if primary {
+            let (Some(manager), Some(device)) = (&self.primary_manager, &seat.primary) else {
+                return Err("the compositor has no primary selection".into());
+            };
+            let source = manager.create_source(&self.qh, ());
+            for kind in TEXT_TYPES {
+                source.offer(kind.into());
+            }
+            device.set_selection(Some(&source), serial);
+            if let Some((previous, _)) = self.primary_source.replace((source, text)) {
+                previous.destroy();
+            }
+        } else {
+            let (Some(manager), Some(device)) = (&self.manager, &seat.device) else {
+                return Err("the compositor has no data device".into());
+            };
+            let source = manager.create_data_source(&self.qh, ());
+            for kind in TEXT_TYPES {
+                source.offer(kind.into());
+            }
+            device.set_selection(Some(&source), serial);
+            if let Some((previous, _)) = self.source.replace((source, text)) {
+                previous.destroy();
+            }
+        }
+        Ok(())
+    }
+    fn load(&mut self, primary: bool) -> Result<Loaded, String> {
+        // Even this process's own selection goes through the compositor: its
+        // writer is another thread, so the caller's wait cannot deadlock.
+        let (read, write) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let kind = if primary {
+            let (offer, kind) = self
+                .primary_selection
+                .as_ref()
+                .ok_or("the primary selection is empty")?;
+            let kind = kind.ok_or("the primary selection holds no text")?;
+            offer.receive(TEXT_TYPES[kind].into(), write.as_fd());
+            kind
+        } else {
+            let offer = self.selection.as_ref().ok_or("the clipboard is empty")?;
+            let kind = offer.text.ok_or("the clipboard holds no text")?;
+            offer.proxy.receive(TEXT_TYPES[kind].into(), write.as_fd());
+            kind
+        };
+        drop(write);
+        Ok(Loaded(read, TEXT_TYPES[kind].starts_with("text/")))
+    }
+    fn cancel(&mut self) {
+        if let Some(done) = self.completion.take() {
+            done.offer.destroy();
+        }
+        if let Some(drag) = self.drag.take() {
+            if !drag.left {
+                (self.handler)(drag.token, FileEvent::Leave);
+            }
+            drag.offer.destroy();
+        }
+    }
+    fn reject(&mut self, reason: zgui::input::FileDropError) {
+        if let Some(drag) = &self.drag {
+            (self.handler)(
+                drag.token,
+                FileEvent::Rejected {
+                    x: drag.x,
+                    y: drag.y,
+                    reason,
+                },
+            );
+        }
+        self.cancel();
+    }
+    fn read_transfer(&mut self) {
+        if let Some(done) = &self.completion {
+            let accepted = match done.accepted.try_recv() {
+                Ok(value) => Some(value),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
+                Err(_) => (Instant::now() > done.deadline).then_some(false),
+            };
+            if let Some(accepted) = accepted {
+                let done = self.completion.take().unwrap();
+                if accepted && done.offer.version() >= 3 {
+                    done.offer.finish();
+                }
+                done.offer.destroy();
+            }
+        }
+        let Some(drag) = &mut self.drag else { return };
+        if !self
+            .routes
+            .lock()
+            .unwrap()
+            .values()
+            .any(|token| *token == drag.token)
+        {
+            self.cancel();
+            return;
+        }
+        let Some(read) = &mut drag.read else { return };
+        match read.poll() {
+            Ok(Some(bytes)) => {
+                drag.read = None;
+                match decode_uris(&bytes) {
+                    Ok(paths) => {
+                        if !drag.left {
+                            for path in &paths {
+                                (self.handler)(
+                                    drag.token,
+                                    FileEvent::Hover {
+                                        x: drag.x,
+                                        y: drag.y,
+                                        path: path.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        drag.paths = Some(paths.into());
+                        self.finish();
+                    }
+                    Err(reason) => self.reject(reason),
+                }
+            }
+            Err(reason) => self.reject(reason),
+            Ok(None) => {}
+        }
+    }
+    fn finish(&mut self) {
+        if !self
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.dropped && d.paths.is_some())
+        {
+            return;
+        }
+        let drag = self.drag.take().unwrap();
+        if drag.copy {
+            let (accepted, reply) = std::sync::mpsc::channel();
+            (self.handler)(
+                drag.token,
+                FileEvent::Drop {
+                    x: drag.x,
+                    y: drag.y,
+                    paths: drag.paths.unwrap(),
+                    accepted,
+                },
+            );
+            // Only the UI's accepted drop completes the protocol transaction.
+            // Closing the owner, rejecting the region, or losing the callback
+            // destroys the offer without falsely reporting successful receipt.
+            self.completion = Some(Completion {
+                offer: drag.offer,
+                accepted: reply,
+                deadline: Instant::now() + Duration::from_secs(3),
+            });
+        } else {
+            drag.offer.destroy();
+        }
+    }
+}
+impl Dispatch<wl_registry::WlRegistry, ()> for State {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => {
+                if interface == "wl_data_device_manager" {
+                    state.manager = Some(registry.bind(name, version.min(3), qh, ()));
+                }
+                if interface == "zwp_primary_selection_device_manager_v1" {
+                    state.primary_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                if interface == "wl_seat" {
+                    state.seats.push(Seat {
+                        name,
+                        seat: registry.bind(name, version.min(7), qh, name),
+                        device: None,
+                        primary: None,
+                        keyboard: None,
+                        pointer: None,
+                    });
+                }
+                state.devices(qh);
+            }
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(index) = state.seats.iter().position(|seat| seat.name == name) {
+                    state.cancel();
+                    state.seats.swap_remove(index).release();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<wl_seat::WlSeat, u32> for State {
+    fn event(
+        state: &mut Self,
+        proxy: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        name: &u32,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
+        else {
+            return;
+        };
+        let Some(seat) = state.seats.iter_mut().find(|seat| seat.name == *name) else {
+            return;
+        };
+        match (
+            capabilities.contains(Capability::Keyboard),
+            seat.keyboard.take(),
+        ) {
+            (true, None) => seat.keyboard = Some(proxy.get_keyboard(qh, *name)),
+            (true, kept) => seat.keyboard = kept,
+            (false, Some(keyboard)) if keyboard.version() >= 3 => keyboard.release(),
+            (false, _) => {}
+        }
+        match (
+            capabilities.contains(Capability::Pointer),
+            seat.pointer.take(),
+        ) {
+            (true, None) => seat.pointer = Some(proxy.get_pointer(qh, *name)),
+            (true, kept) => seat.pointer = kept,
+            (false, Some(pointer)) if pointer.version() >= 3 => pointer.release(),
+            (false, _) => {}
+        }
+    }
+}
+impl Dispatch<wl_keyboard::WlKeyboard, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        seat: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_keyboard::Event::Enter { serial, .. } | wl_keyboard::Event::Key { serial, .. } =
+            event
+        {
+            state.serial = Some((*seat, serial));
+        }
+    }
+}
+impl Dispatch<wl_pointer::WlPointer, u32> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        seat: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_pointer::Event::Enter { serial, .. } | wl_pointer::Event::Button { serial, .. } =
+            event
+        {
+            state.serial = Some((*seat, serial));
+        }
+    }
+}
+impl Dispatch<wl_data_source::WlDataSource, ()> for State {
+    fn event(
+        state: &mut Self,
+        source: &wl_data_source::WlDataSource,
+        event: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { fd, .. } => {
+                if let Some((current, text)) = &state.source
+                    && current == source
+                {
+                    write_selection(fd, text.clone());
+                }
+            }
+            wl_data_source::Event::Cancelled => {
+                if state
+                    .source
+                    .as_ref()
+                    .is_some_and(|(current, _)| current == source)
+                {
+                    state.source = None;
+                }
+                source.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<PrimaryManager, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &PrimaryManager,
+        _: <PrimaryManager as Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+impl Dispatch<PrimaryDevice, ()> for State {
+    wayland_client::event_created_child!(State, PrimaryDevice, [0 => (PrimaryOffer, ())]);
+    fn event(
+        state: &mut Self,
+        _: &PrimaryDevice,
+        event: zwp_primary_selection_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_primary_selection_device_v1::Event::DataOffer { offer } => {
+                if state.primary_offers.len() >= 64 {
+                    for (_, (offer, _)) in state.primary_offers.drain() {
+                        offer.destroy();
+                    }
+                }
+                state
+                    .primary_offers
+                    .insert(offer.id().protocol_id(), (offer, None));
+            }
+            zwp_primary_selection_device_v1::Event::Selection { id } => {
+                let offer = id.and_then(|id| state.primary_offers.remove(&id.id().protocol_id()));
+                if let Some((previous, _)) = std::mem::replace(&mut state.primary_selection, offer)
+                {
+                    previous.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<PrimaryOffer, ()> for State {
+    fn event(
+        state: &mut Self,
+        offer: &PrimaryOffer,
+        event: zwp_primary_selection_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event
+            && let Some((_, text)) = state.primary_offers.get_mut(&offer.id().protocol_id())
+        {
+            *text = preferred(*text, &mime_type);
+        }
+    }
+}
+impl Dispatch<PrimarySource, ()> for State {
+    fn event(
+        state: &mut Self,
+        source: &PrimarySource,
+        event: zwp_primary_selection_source_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_primary_selection_source_v1::Event::Send { fd, .. } => {
+                if let Some((current, text)) = &state.primary_source
+                    && current == source
+                {
+                    write_selection(fd, text.clone());
+                }
+            }
+            zwp_primary_selection_source_v1::Event::Cancelled => {
+                if state
+                    .primary_source
+                    .as_ref()
+                    .is_some_and(|(current, _)| current == source)
+                {
+                    state.primary_source = None;
+                }
+                source.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+/// The better of `current` and `kind` among `TEXT_TYPES`.
+fn preferred(current: Option<usize>, kind: &str) -> Option<usize> {
+    let index = TEXT_TYPES.iter().position(|candidate| *candidate == kind);
+    match (current, index) {
+        (Some(current), Some(index)) => Some(current.min(index)),
+        (current, index) => current.or(index),
+    }
+}
+/// Write a selection this process owns to a reader. On its own thread: a
+/// reader that stops reading blocks only that thread, never the worker.
+fn write_selection(fd: OwnedFd, text: Arc<str>) {
+    let _ = thread::Builder::new()
+        .name("zgui-selection-write".into())
+        .spawn(move || {
+            let _ = File::from(fd).write_all(text.as_bytes());
+        });
+}
+impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_data_device_manager::WlDataDeviceManager,
+        _: wl_data_device_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for State {
+    fn event(
+        state: &mut Self,
+        offer: &wl_data_offer::WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_offer::Event::Offer { mime_type } => {
+                if let Some(saved) = state.offers.get_mut(&offer.id().protocol_id()) {
+                    saved.uris |= mime_type == "text/uri-list";
+                    saved.text = preferred(saved.text, &mime_type);
+                }
+            }
+            wl_data_offer::Event::Action { dnd_action } => {
+                if let Some(drag) = &mut state.drag
+                    && drag.offer == *offer
+                {
+                    drag.copy = dnd_action.into_result().is_ok_and(|a| a == DndAction::Copy);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
+    wayland_client::event_created_child!(State,wl_data_device::WlDataDevice,[0=>(wl_data_offer::WlDataOffer,())]);
+    fn event(
+        state: &mut Self,
+        _: &wl_data_device::WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        connection: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::DataOffer { id } => {
+                if state.offers.len() >= 64 {
+                    for (_, offer) in state.offers.drain() {
+                        offer.proxy.destroy();
+                    }
+                }
+                state.offers.insert(
+                    id.id().protocol_id(),
+                    Offer {
+                        proxy: id,
+                        uris: false,
+                        text: None,
+                    },
+                );
+            }
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                x,
+                y,
+                id,
+            } => {
+                state.cancel();
+                let Some(offer) = id.and_then(|id| state.offers.remove(&id.id().protocol_id()))
+                else {
+                    return;
+                };
+                let token = state
+                    .routes
+                    .lock()
+                    .unwrap()
+                    .get(&surface.id().protocol_id())
+                    .copied();
+                let Some(token) = token.filter(|_| offer.uris) else {
+                    offer.proxy.accept(serial, None);
+                    offer.proxy.destroy();
+                    return;
+                };
+                let Ok((read, write)) = UnixStream::pair() else {
+                    offer.proxy.destroy();
+                    return;
+                };
+                if read.set_nonblocking(true).is_err() {
+                    offer.proxy.destroy();
+                    return;
+                }
+                offer.proxy.accept(serial, Some("text/uri-list".into()));
+                if offer.proxy.version() >= 3 {
+                    offer.proxy.set_actions(DndAction::Copy, DndAction::Copy);
+                }
+                offer.proxy.receive("text/uri-list".into(), write.as_fd());
+                drop(write);
+                let copy = offer.proxy.version() < 3;
+                state.drag = Some(Drag {
+                    offer: offer.proxy,
+                    token,
+                    x: x as f32,
+                    y: y as f32,
+                    read: Some(Transfer {
+                        stream: read,
+                        bytes: Vec::new(),
+                        deadline: Instant::now() + Duration::from_secs(3),
+                    }),
+                    paths: None,
+                    dropped: false,
+                    copy,
+                    left: false,
+                });
+                let _ = connection.flush();
+            }
+            wl_data_device::Event::Motion { x, y, .. } => {
+                if let Some(drag) = &mut state.drag {
+                    drag.x = x as f32;
+                    drag.y = y as f32;
+                    if let Some(paths) = &drag.paths
+                        && let Some(path) = paths.first()
+                    {
+                        (state.handler)(
+                            drag.token,
+                            FileEvent::Hover {
+                                x: drag.x,
+                                y: drag.y,
+                                path: path.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+            wl_data_device::Event::Drop => {
+                if let Some(drag) = &mut state.drag {
+                    drag.dropped = true;
+                }
+                state.finish();
+            }
+            wl_data_device::Event::Leave => {
+                if let Some(drag) = &mut state.drag {
+                    (state.handler)(drag.token, FileEvent::Leave);
+                    drag.left = true;
+                    if !drag.dropped {
+                        state.cancel();
+                    }
+                }
+            }
+            wl_data_device::Event::Selection { id } => {
+                let offer = id.and_then(|id| state.offers.remove(&id.id().protocol_id()));
+                if let Some(previous) = std::mem::replace(&mut state.selection, offer) {
+                    previous.proxy.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+impl Transfer {
+    fn poll(&mut self) -> Result<Option<Vec<u8>>, zgui::input::FileDropError> {
+        use zgui::input::FileDropError;
+        if Instant::now() > self.deadline {
+            return Err(FileDropError::TimedOut);
+        }
+        let mut buffer = [0u8; 8192];
+        loop {
+            match self.stream.read(&mut buffer) {
+                Ok(0) => return Ok(Some(std::mem::take(&mut self.bytes))),
+                Ok(n) => {
+                    if self.bytes.len() + n > 1024 * 1024 {
+                        return Err(FileDropError::TooLarge);
+                    }
+                    self.bytes.extend_from_slice(&buffer[..n]);
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(None),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => return Err(FileDropError::InvalidData),
+            }
+        }
+    }
+}
+fn decode_uris(bytes: &[u8]) -> Result<Vec<PathBuf>, zgui::input::FileDropError> {
+    use zgui::input::FileDropError;
+    let text = std::str::from_utf8(bytes).map_err(|_| FileDropError::InvalidData)?;
+    let mut paths = Vec::new();
+    for line in text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        if paths.len() == 1024 {
+            return Err(FileDropError::TooManyFiles);
+        }
+        paths.push(crate::portal_dialog::file_uri(line).ok_or(FileDropError::InvalidData)?);
+    }
+    if paths.is_empty() {
+        Err(FileDropError::InvalidData)
+    } else {
+        Ok(paths)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zgui::input::FileDropError;
+    #[test]
+    fn uri_list_is_bounded_and_all_or_nothing() {
+        assert_eq!(
+            decode_uris(b"# files\r\nfile:///tmp/a\r\nfile:///tmp/second%20file.txt\r\n").unwrap(),
+            [
+                PathBuf::from("/tmp/a"),
+                PathBuf::from("/tmp/second file.txt")
+            ]
+        );
+        for bad in [
+            &b"file:///good\nhttps://remote/file"[..],
+            b"file:///bad%00path",
+            b"# comment only",
+            b"file:///bad%",
+        ] {
+            assert_eq!(decode_uris(bad), Err(FileDropError::InvalidData));
+        }
+        assert_eq!(
+            decode_uris("file:///tmp/a\n".repeat(1025).as_bytes()),
+            Err(FileDropError::TooManyFiles)
+        );
+    }
+    #[test]
+    fn stalled_oversized_and_disconnected_streams_do_not_block() {
+        use std::io::Write;
+        let (read, mut write) = UnixStream::pair().unwrap();
+        read.set_nonblocking(true).unwrap();
+        let mut transfer = Transfer {
+            stream: read,
+            bytes: Vec::new(),
+            deadline: Instant::now() + Duration::from_secs(3),
+        };
+        assert!(transfer.poll().unwrap().is_none());
+        transfer.deadline = Instant::now() - Duration::from_millis(1);
+        assert_eq!(transfer.poll(), Err(FileDropError::TimedOut));
+        transfer.deadline = Instant::now() + Duration::from_secs(3);
+        transfer.bytes.resize(1024 * 1024, b'a');
+        write.write_all(b"x").unwrap();
+        assert_eq!(transfer.poll(), Err(FileDropError::TooLarge));
+        transfer.bytes.clear();
+        write.write_all(b"file:///truncated%").unwrap();
+        drop(write);
+        let bytes = transfer.poll().unwrap().unwrap();
+        assert_eq!(decode_uris(&bytes), Err(FileDropError::InvalidData));
+    }
+}

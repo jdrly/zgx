@@ -27,7 +27,6 @@ open = "=5.4.4"
 zgui-workload = { path = "../../comparisons/workload" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-smithay-clipboard = "0.7.3"
 dbus = "=0.9.12"
 dbus-crossroads = "=0.5.3"
 calloop = "=0.14.4"
