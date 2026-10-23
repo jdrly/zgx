@@ -27,3 +27,36 @@ SVG entries retain a stable numeric source identity and tint, not XML bytes. Sou
 - Virtualized rows continue to own only the mounted range and overscan. Removing rows releases component registrations, tasks, visibility observers, previews and scene nodes. Renderer caches hold bounded pixels/metadata rather than keeping removed Canvas/XML source payloads alive until a later presentation.
 
 The integrated regression suite and final benchmark packet record the tested revision. These bounds describe framework-owned storage; application models, active SVG/path sources, driver allocations and external font databases are not included in a cache's pixel counter.
+
+## Open: the window server's cost of heavy content (macOS)
+
+In the heavy dashboard's `both` and `stream` modes, the window server spends
+more CPU on zgui's window than on GPUI Fast's. Eight interleaved 20-second
+trials (October 2026) put it at 7.4 points over the desktop alone for zgui and
+3.6 for GPUI Fast. In `scroll` the two cost the same. What was checked, with
+no difference found between `both` and `scroll`:
+
+- What Core Animation sees: two IOSurfaces taking turns as one plain layer's
+  contents, one swap and one commit a frame, handed over at the same point in
+  the refresh (`ZGUI_PRESENT_LOG`), and no other layer property changing.
+- What the app asks of the window server: no cursor, IME-area or redraw
+  requests while the workload runs, and accessibility inactive.
+- The app's GPU work: repainting the whole window every frame, with pixels
+  unchanged, costs the window server nothing more.
+
+What changes it is how much of each frame differs from the last. Measured in
+paired seconds (below), the video layer (`AVSampleBufferDisplayLayer`) costs
+the window server about 2 points less than the plain layer in `both` and
+nothing less in `scroll`, for about 0.6 points more app CPU (and 60 Hz frames
+pace worse on it; see `layer_present.rs`). Blitting each frame into a
+`CAMetalLayer` drawable, as GPUI presents, made no consistent difference
+(+0.5, +2.7, −2.0) for 1.6 points more app CPU.
+
+**How to measure it.** Separate trials can't resolve this on a busy desktop:
+the desktop alone swung from 41% to 55% of a core between runs. Alternate
+two configurations inside one process instead, on even and odd Unix
+seconds, and credit the window server's CPU time (`ps -o time=`) in each
+whole second to the configuration that ran: the desktop's drift cancels
+between neighbouring seconds. With 60 seconds a run the paired difference
+has a standard error of about 0.6 points. Repeat with other apps' windows
+still, before choosing a presentation path.
