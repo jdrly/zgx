@@ -2,7 +2,7 @@
 use std::{
     any::{Any, TypeId},
     cell::{Cell, RefCell},
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     rc::{Rc, Weak},
 };
 
@@ -43,6 +43,10 @@ impl std::hash::Hasher for IdHasher {
     }
 }
 type IdMap<V> = HashMap<EffectId, V, std::hash::BuildHasherDefault<IdHasher>>;
+/// A signal's subscribers, in no order: `pending` orders what runs. A set
+/// most nodes' effects join (the inherited typography) is removed from
+/// one by one as they go, in constant time.
+type IdSet = HashSet<EffectId, std::hash::BuildHasherDefault<IdHasher>>;
 #[derive(Default)]
 struct Inner {
     effects: RefCell<IdMap<EffectRecord>>,
@@ -91,7 +95,7 @@ impl Runtime {
         Signal {
             inner: Rc::new(SignalInner {
                 value: RefCell::new(value),
-                subscribers: RefCell::new(BTreeSet::new()),
+                subscribers: RefCell::default(),
                 runtime: Rc::downgrade(&self.inner),
             }),
         }
@@ -287,7 +291,7 @@ impl Drop for Effect {
 
 struct SignalInner<T> {
     value: RefCell<T>,
-    subscribers: RefCell<BTreeSet<EffectId>>,
+    subscribers: RefCell<IdSet>,
     runtime: Weak<Inner>,
 }
 impl<T> Dependency for SignalInner<T> {
