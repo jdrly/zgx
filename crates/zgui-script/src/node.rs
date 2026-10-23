@@ -37,6 +37,9 @@ pub(crate) struct Node {
     pub pseudo: Vec<(Pseudo, Styles)>,
     pub children: Vec<Rc<Node>>,
     pub id: Option<Rc<str>>,
+    /// A container's `label`: the name assistive technology reads for it
+    /// (a switch, an icon button). Widgets read their own `label`.
+    pub label: Option<Rc<str>>,
     pub classes: Rc<[Rc<str>]>,
     pub refs: Vec<Rc<Ref>>,
     pub events: Events,
@@ -396,6 +399,7 @@ impl Node {
             pseudo: Vec::new(),
             children: Vec::new(),
             id: None,
+            label: None,
             classes: Rc::new([]),
             refs: Vec::new(),
             events: Events::default(),
@@ -1917,6 +1921,14 @@ fn fill(lua: &Lua, mut node: Node, table: Option<&Table>) -> mlua::Result<Node> 
                     )));
                 }
             },
+            "label"
+                if matches!(
+                    node.kind,
+                    Kind::Column | Kind::Row | Kind::Div | Kind::Overlay | Kind::Button
+                ) =>
+            {
+                node.label = Some(lua.unpack::<String>(value)?.into());
+            }
             name if WIDGET_FIELDS.contains(&name) => {}
             name => {
                 let prop = Prop::parse(name)

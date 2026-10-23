@@ -1622,6 +1622,9 @@ export type ContainerProps = {
 	-- rather than at the pointer.
 	context_menu_below: boolean?,
 	[number]: Child,
+	-- The name assistive technology reads for it, instead of its text: a
+	-- switch, a button showing only an icon.
+	label: string?,
 }
 export type ScrollProps = {
 	-- Size and position.
@@ -1853,6 +1856,9 @@ export type ScrollProps = {
 	-- rather than at the pointer.
 	context_menu_below: boolean?,
 	[number]: Child,
+	-- The name assistive technology reads for it, instead of its text: a
+	-- switch, a button showing only an icon.
+	label: string?,
 	-- The scroll position in points, both ways.
 	offset: State<number>?,
 	-- Stays at the end while the content grows, until scrolled away.

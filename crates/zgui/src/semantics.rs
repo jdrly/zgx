@@ -68,12 +68,16 @@ pub struct SemanticNode {
     /// focus, each a label under this node and a UTF-8 offset into that
     /// label's value.
     pub document_selection: Option<((NodeId, usize), (NodeId, usize))>,
+    /// The label was given (`View::accessible_label`), not derived from the
+    /// node's text: it stays when that text changes.
+    pub named: bool,
 }
 impl SemanticNode {
     pub fn new(role: Role, label: impl Into<String>) -> Self {
         Self {
             role,
             label: label.into(),
+            named: false,
             value: None,
             text_selection: None,
             checked: None,

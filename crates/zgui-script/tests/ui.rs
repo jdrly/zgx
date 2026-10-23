@@ -1390,6 +1390,22 @@ fn rows_without_a_key_follow_their_items() {
 }
 
 #[test]
+fn containers_take_a_label_for_assistive_technology() {
+    let mut h = Harness::inline(
+        r##"return ui.row {
+            ui.button { id = "switch", label = "Turn off", w = 40, h = 20, ui.div { w = 10, h = 10 } },
+            ui.div { id = "chart", label = "CPU history", w = 40, h = 20 },
+        }"##,
+    );
+    let mut name = |id: &str| {
+        let node = h.find(id).unwrap();
+        h.ui.semantics.borrow().get(node).map(|n| n.label.clone())
+    };
+    assert_eq!(name("switch").as_deref(), Some("Turn off"));
+    assert_eq!(name("chart").as_deref(), Some("CPU history"));
+}
+
+#[test]
 fn modals_open_from_state() {
     let mut h = Harness::inline(
         r##"local open = ui.state("open", false)

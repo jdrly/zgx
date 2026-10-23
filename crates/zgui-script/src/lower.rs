@@ -1878,6 +1878,9 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
     if let Some(id) = &node.id {
         view = view.id(id.to_string());
     }
+    if let Some(label) = &node.label {
+        view = view.accessible_label(label.to_string());
+    }
     if let Some(layout) = node.layout.as_ref().filter(|_| node.sizes_layout()) {
         view = layout_box(view, layout, vm, low);
     }

@@ -1155,7 +1155,12 @@ export type MaskSweep = { x: number?, y: number?, duration: number?, frame_rate:
 -- error (`[number]: never` makes Luau check them).
 export type Props = Merge<Merge<StyleProps, NodeProps>, { [number]: never }>
 -- column, row, div, overlay, grid, button: and children.
-export type ContainerProps = Merge<Props, { [number]: Child }>
+export type ContainerProps = Merge<Props, {
+	[number]: Child,
+	-- The name assistive technology reads for it, instead of its text: a
+	-- switch, a button showing only an icon.
+	label: string?,
+}>
 export type ScrollProps = Merge<ContainerProps, {
 	-- The scroll position in points, both ways.
 	offset: State<number>?,

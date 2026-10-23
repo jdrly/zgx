@@ -318,6 +318,7 @@ pub struct View {
     menu_keep_open: bool,
     contents: bool,
     mounted: Vec<Box<dyn FnOnce(NodeHandle)>>,
+    accessible_label: Option<String>,
     placeholder: Option<Box<dyn FnMut() -> String>>,
     placeholder_color: Option<Box<dyn FnMut() -> crate::scene::Color>>,
     select_on_focus: Option<bool>,
@@ -430,6 +431,7 @@ impl View {
             menu_keep_open: false,
             contents: false,
             mounted: Vec::new(),
+            accessible_label: None,
             placeholder: None,
             placeholder_color: None,
             select_on_focus: None,
@@ -689,6 +691,13 @@ impl View {
     /// Reactively control an editor's read-only state without remounting it.
     pub fn read_only_when(mut self, read_only: impl FnMut() -> bool + 'static) -> Self {
         self.read_only = Some(Box::new(read_only));
+        self
+    }
+    /// The name assistive technology reads for this node, instead of one
+    /// made from its text: a switch, or a button showing only an icon. A
+    /// node without a role of its own becomes a named group.
+    pub fn accessible_label(mut self, label: impl Into<String>) -> Self {
+        self.accessible_label = Some(label.into());
         self
     }
     /// Run `f` once this view's node and children are mounted, with a handle
@@ -3062,6 +3071,19 @@ fn mount_element(
             }
         });
     }
+    if let Some(label) = view.accessible_label {
+        let mut semantics = ui.semantics.borrow_mut();
+        if semantics.get(root).is_some() {
+            semantics.update(root, |node| {
+                node.label = label;
+                node.named = true;
+            });
+        } else {
+            let mut node = SemanticNode::new(Role::Group, label);
+            node.named = true;
+            semantics.set(root, node);
+        }
+    }
     update_button_labels(ui, root);
     for mounted in view.mounted {
         mounted(NodeHandle {
@@ -3723,7 +3745,7 @@ fn update_button_labels(ui: &Ui, node: NodeId) {
             .semantics
             .borrow()
             .get(id)
-            .is_some_and(|n| n.role == Role::Button);
+            .is_some_and(|n| n.role == Role::Button && !n.named);
         if is_button {
             let mut parts = Vec::new();
             let mut pending = vec![id];
