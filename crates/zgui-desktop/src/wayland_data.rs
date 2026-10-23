@@ -67,6 +67,8 @@ enum Command {
     Store {
         primary: bool,
         text: String,
+        /// The same as HTML (the clipboard only), offered as `text/html`.
+        html: Option<String>,
         reply: mpsc::Sender<Result<(), String>>,
     },
     Load {
@@ -90,11 +92,20 @@ impl WaylandClipboard {
     /// Publish `text`; fails before the seat has delivered any input, as a
     /// selection needs an input serial.
     pub fn store(&self, primary: bool, text: String) -> Result<(), String> {
+        self.publish(primary, text, None)
+    }
+    /// Publish the clipboard as plain text and as HTML: rich editors and
+    /// browsers paste the HTML, everything else the text.
+    pub fn store_rich(&self, text: String, html: String) -> Result<(), String> {
+        self.publish(false, text, Some(html))
+    }
+    fn publish(&self, primary: bool, text: String, html: Option<String>) -> Result<(), String> {
         let (reply, answer) = mpsc::channel();
         self.0
             .send(Command::Store {
                 primary,
                 text,
+                html,
                 reply,
             })
             .map_err(|_| "Wayland data worker stopped".to_string())?;
@@ -197,9 +208,10 @@ impl NativeData {
                             Command::Store {
                                 primary,
                                 text,
+                                html,
                                 reply,
                             } => {
-                                let _ = reply.send(state.store(primary, text));
+                                let _ = reply.send(state.store(primary, text, html));
                             }
                             Command::Load { primary, reply } => {
                                 let _ = reply.send(state.load(primary));
@@ -241,7 +253,7 @@ impl NativeData {
                 {
                     offer.destroy();
                 }
-                if let Some((source, _)) = state.source.take() {
+                if let Some((source, ..)) = state.source.take() {
                     source.destroy();
                 }
                 if let Some((source, _)) = state.primary_source.take() {
@@ -354,7 +366,7 @@ struct State {
     primary_offers: HashMap<u32, (PrimaryOffer, Option<usize>)>,
     primary_selection: Option<(PrimaryOffer, Option<usize>)>,
     /// What this process published, until another client replaces it.
-    source: Option<(wl_data_source::WlDataSource, Arc<str>)>,
+    source: Option<(wl_data_source::WlDataSource, Arc<str>, Option<Arc<str>>)>,
     primary_source: Option<(PrimarySource, Arc<str>)>,
     /// The latest input serial and the seat it came from.
     serial: Option<(u32, u32)>,
@@ -377,7 +389,7 @@ impl State {
             }
         }
     }
-    fn store(&mut self, primary: bool, text: String) -> Result<(), String> {
+    fn store(&mut self, primary: bool, text: String, html: Option<String>) -> Result<(), String> {
         let (seat, serial) = self.serial.ok_or("no input has reached this client yet")?;
         let seat = self
             .seats
@@ -402,11 +414,12 @@ impl State {
                 return Err("the compositor has no data device".into());
             };
             let source = manager.create_data_source(&self.qh, ());
-            for kind in TEXT_TYPES {
-                source.offer(kind.into());
+            for kind in TEXT_TYPES.iter().chain(html.as_ref().map(|_| &"text/html")) {
+                source.offer((*kind).into());
             }
             device.set_selection(Some(&source), serial);
-            if let Some((previous, _)) = self.source.replace((source, text)) {
+            if let Some((previous, ..)) = self.source.replace((source, text, html.map(Into::into)))
+            {
                 previous.destroy();
             }
         }
@@ -667,18 +680,19 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_data_source::Event::Send { fd, .. } => {
-                if let Some((current, text)) = &state.source
+            wl_data_source::Event::Send { mime_type, fd } => {
+                if let Some((current, text, html)) = &state.source
                     && current == source
                 {
-                    write_selection(fd, text.clone());
+                    let html = html.as_ref().filter(|_| mime_type == "text/html");
+                    write_selection(fd, html.unwrap_or(text).clone());
                 }
             }
             wl_data_source::Event::Cancelled => {
                 if state
                     .source
                     .as_ref()
-                    .is_some_and(|(current, _)| current == source)
+                    .is_some_and(|(current, ..)| current == source)
                 {
                     state.source = None;
                 }

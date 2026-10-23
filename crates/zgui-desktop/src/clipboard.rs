@@ -46,7 +46,7 @@ impl Clipboard {
         match &mut self.backend {
             Backend::Native(clipboard) => clipboard.set_html(html, Some(text))?,
             #[cfg(target_os = "linux")]
-            Backend::Wayland(_) => return self.set_text(text),
+            Backend::Wayland(clipboard) => clipboard.store_rich(text, html)?,
         }
         Ok(())
     }
