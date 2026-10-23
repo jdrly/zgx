@@ -147,11 +147,16 @@ permission (camera, microphone, location, notifications, clipboard reads).
 `scripts/windows_webview_smoke.py` checks the page against zgui content
 around and over it.
 
+## Activation
+
+`Application::application_id` makes the app one instance an ID and session:
+a later launch (a file opened from Explorer, a URL scheme) hands its files
+and URLs to the running one as `ApplicationEvent::OpenUrls`, or with none an
+`ApplicationEvent::Reopen`, and exits. The ID is also the AppUserModelID the
+taskbar groups windows under. See [platform services](platform-services.md).
+
 ## Limitations
 
-- `Application::application_id` opts into OS activation callbacks, which are not
-  implemented on Windows. Running an application with an ID returns an explicit
-  error. Handle launch arguments and protocol registration in the application.
 - Cancelling a file-picker or prompt future invalidates result delivery but
   does not dismiss its native dialog. A pending native dialog can retain its
   parent until dismissed. Backend failures can appear as cancellation.

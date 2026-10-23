@@ -123,9 +123,17 @@ dismissing that message box.
 
 `Application::application_id("org.example.Editor")?.on_application_event(...)` delivers typed `ApplicationEvent::OpenUrls` and `Reopen` callbacks on the UI thread. Linux owns the corresponding session-bus name and implements `org.freedesktop.Application.Open` and `Activate` at the application ID's slash-separated object path. Install the application's `.desktop` file, URI MIME associations, and D-Bus activation service separately for OS launching; this library does not modify the user's registration. macOS owns AppleEvent handlers for URL/document opens and reopen while preserving winit's application delegate. Routes are installed again after native launch initialization and removed on teardown. URL schemes still require the application's bundle `CFBundleURLTypes` registration. These callbacks are opt-in through the application ID. Native Mac reopen and OS URL launch/delivery have been observed: a test receiver registered in the user's Applications directory received the exact `zgui-smoke:accepted` URL in its retained UI after the launcher returned success. Earlier missing-registration failures are preserved. This test-only registration does not add application packaging to the framework.
 
-Windows has no native application-activation backend. Opting into
-`Application::application_id` makes `run` return an explicit error; applications
-must handle launch arguments and register URI schemes themselves.
+Windows has no launcher that routes to a running app, so zgui keeps one
+instance an application ID and session itself. The first launch claims a named
+pipe for the ID and serves it; a later launch hands it its files and URLs (or,
+with none, a reopen), lets it take the foreground, and `run` returns `Ok`
+without opening a window. Files and URLs are the launch arguments a file
+association or URI scheme passes: existing paths, as `file:` URLs, and URLs.
+Flags and other arguments stay the application's own, and the first launch's
+own files and URLs arrive as its first `OpenUrls`. The ID is also the
+process's AppUserModelID, which groups its windows on the taskbar; an
+installer's Start menu shortcut should carry the same ID. Registering file
+associations and URI schemes stays the installer's job.
 
 Applications that remain available after their last window closes can set `quit_on_last_window_close(false)` and create windows through the event callback's `WindowFactory`; `WindowFactory::quit()` exits explicitly. Result delivery to closed windows is suppressed. Retaining the application does not retain a closed window's UI.
 

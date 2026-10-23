@@ -622,12 +622,18 @@ impl Application {
         let proxy = event_loop.create_proxy();
         let native_events = if let Some(id) = &self.application_id {
             let wake = proxy.clone();
-            Some(crate::native_events::NativeApplicationEvents::new(
+            let events = crate::native_events::NativeApplicationEvents::new(
                 id,
                 Arc::new(move |event| {
                     let _ = wake.send_event(Event::Application(event));
                 }),
-            )?)
+            )?;
+            // Windows: another instance runs and took this launch's files
+            // and URLs; this one opens nothing.
+            let Some(events) = events else {
+                return Ok(());
+            };
+            Some(events)
         } else {
             None
         };

@@ -55,7 +55,10 @@ mod platform {
         thread: Option<thread::JoinHandle<()>>,
     }
     impl NativeApplicationEvents {
-        pub(crate) fn new(id: &str, handler: Handler) -> Result<Self, ApplicationEventError> {
+        pub(crate) fn new(
+            id: &str,
+            handler: Handler,
+        ) -> Result<Option<Self>, ApplicationEventError> {
             validate_id(id)?;
             let id = id.to_owned();
             let stop = Arc::new(AtomicBool::new(false));
@@ -96,10 +99,10 @@ mod platform {
                 }
             }).map_err(|e|ApplicationEventError(e.to_string()))?;
             match started.recv_timeout(Duration::from_secs(3)) {
-                Ok(Ok(())) => Ok(Self {
+                Ok(Ok(())) => Ok(Some(Self {
                     stop,
                     thread: Some(thread),
-                }),
+                })),
                 result => {
                     stop.store(true, Ordering::Release);
                     Err(match result {
@@ -195,7 +198,10 @@ mod platform {
         _handler: Retained<EventHandler>,
     }
     impl NativeApplicationEvents {
-        pub(crate) fn new(id: &str, handler: Handler) -> Result<Self, ApplicationEventError> {
+        pub(crate) fn new(
+            id: &str,
+            handler: Handler,
+        ) -> Result<Option<Self>, ApplicationEventError> {
             validate_id(id)?;
             let mtm = MainThreadMarker::new().ok_or_else(|| {
                 ApplicationEventError("application events require the main thread".into())
@@ -211,7 +217,7 @@ mod platform {
                 _handler: handler,
             };
             service.install();
-            Ok(service)
+            Ok(Some(service))
         }
         pub(crate) fn install(&self) {
             // NSApplication installs its standard AppleEvent routes while
@@ -247,15 +253,279 @@ mod platform {
 }
 #[cfg(target_os = "windows")]
 mod platform {
+    //! One instance an application ID and session, as Windows has no
+    //! launcher that routes to a running app (Linux's session bus, macOS's
+    //! AppleEvents): the first claims a named pipe, and a later launch hands
+    //! it its files and URLs (or asks it to reopen) and steps aside. The ID
+    //! is also the process's AppUserModelID: its windows group under it on
+    //! the taskbar, as an installer's shortcut names it.
     use super::*;
+    use std::{
+        ffi::OsString,
+        path::Path,
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
+        time::{Duration, Instant},
+    };
+    use windows::{
+        Win32::{
+            Foundation::{CloseHandle, ERROR_PIPE_BUSY, GENERIC_WRITE, GetLastError, HANDLE},
+            Storage::FileSystem::{
+                CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES,
+                FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_INBOUND, ReadFile, WriteFile,
+            },
+            System::{
+                Pipes::{
+                    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
+                    GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+                    PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
+                },
+                RemoteDesktop::ProcessIdToSessionId,
+                Threading::GetCurrentProcessId,
+            },
+            UI::{
+                Shell::{SetCurrentProcessExplicitAppUserModelID, UrlCreateFromPathW},
+                WindowsAndMessaging::AllowSetForegroundWindow,
+            },
+        },
+        core::{HSTRING, PWSTR},
+    };
 
-    pub(crate) struct NativeApplicationEvents;
+    /// The most a launch may hand over: the other platforms' batch limits.
+    const MAX_MESSAGE: usize = 256 * 65537;
+
+    pub(crate) struct NativeApplicationEvents {
+        name: HSTRING,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    /// This session's pipe for `id`.
+    fn pipe_name(id: &str) -> HSTRING {
+        let mut session = 0;
+        // SAFETY: reads this process's session into a local.
+        let _ = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) };
+        HSTRING::from(format!(r"\\.\pipe\{id}.{session}"))
+    }
+
+    /// The files and URLs among launch arguments, as a file association or a
+    /// protocol handler passes them: existing paths as `file:` URLs (made
+    /// absolute against this process's directory), and URLs. Flags and
+    /// anything else are the application's own.
+    pub(super) fn launch_urls(args: impl IntoIterator<Item = OsString>) -> Vec<String> {
+        args.into_iter()
+            .filter_map(|arg| {
+                let text = arg.to_string_lossy();
+                if text.starts_with('-') {
+                    return None;
+                }
+                let path = Path::new(&arg);
+                if path.exists() {
+                    return file_url(&std::path::absolute(path).ok()?);
+                }
+                // `C:\x` is not a URL: a scheme is longer than a drive.
+                let (scheme, _) = text.split_once(':')?;
+                (scheme.len() > 1 && text.len() <= 65536 && crate::url::valid_url(&text))
+                    .then(|| text.into_owned())
+            })
+            .take(256)
+            .collect()
+    }
+
+    fn file_url(path: &Path) -> Option<String> {
+        let mut url = vec![0u16; 32 * 1024];
+        let mut length = url.len() as u32;
+        // SAFETY: writes at most `length` units into `url`.
+        unsafe {
+            UrlCreateFromPathW(
+                &HSTRING::from(path.as_os_str()),
+                PWSTR(url.as_mut_ptr()),
+                &mut length,
+                0,
+            )
+        }
+        .ok()?;
+        Some(String::from_utf16_lossy(&url[..length as usize]))
+    }
+
+    /// What a launch's message asks: no URLs, a reopen.
+    pub(super) fn event(message: &str) -> Option<ApplicationEvent> {
+        if message.is_empty() {
+            return Some(ApplicationEvent::Reopen);
+        }
+        let urls: Vec<String> = message.split('\n').map(str::to_owned).collect();
+        (urls.len() <= 256
+            && urls
+                .iter()
+                .all(|url| url.len() <= 65536 && crate::url::valid_url(url)))
+        .then_some(ApplicationEvent::OpenUrls(urls))
+    }
+
+    /// A connection to the instance serving `name`, waiting while it is
+    /// between two launches; `None` if none serves it.
+    fn open(name: &HSTRING) -> Option<HANDLE> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            // SAFETY: opens a handle of ours, which the caller closes.
+            match unsafe {
+                CreateFileW(
+                    name,
+                    GENERIC_WRITE.0,
+                    FILE_SHARE_NONE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                )
+            } {
+                Ok(pipe) => return Some(pipe),
+                // SAFETY: reads this thread's last error; waits on the name.
+                Err(_)
+                    if unsafe { GetLastError() } == ERROR_PIPE_BUSY
+                        && Instant::now() < deadline =>
+                unsafe {
+                    let _ = WaitNamedPipeW(name, 500);
+                },
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Hand `urls` (none: reopen) to the instance serving `name`, letting it
+    /// take the foreground; false if none answers.
+    fn forward(name: &HSTRING, urls: &[String]) -> bool {
+        let Some(pipe) = open(name) else {
+            return false;
+        };
+        // SAFETY: our own handle to the pipe, closed before returning.
+        unsafe {
+            let mut server = 0;
+            if GetNamedPipeServerProcessId(pipe, &mut server).is_ok() {
+                let _ = AllowSetForegroundWindow(server);
+            }
+            let message = urls.join("\n");
+            let mut written = 0;
+            let sent = WriteFile(pipe, Some(message.as_bytes()), Some(&mut written), None).is_ok()
+                && written as usize == message.len();
+            let _ = CloseHandle(pipe);
+            sent
+        }
+    }
+
+    /// The pipe's one instance, or `None` when another process has it.
+    fn claim(name: &HSTRING) -> Option<HANDLE> {
+        // SAFETY: creates the pipe under our name, ours to close.
+        let pipe = unsafe {
+            CreateNamedPipeW(
+                name,
+                PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0,
+                64 * 1024,
+                0,
+                None,
+            )
+        };
+        (!pipe.is_invalid()).then_some(pipe)
+    }
+
+    /// One launch's message, to the end of its writes.
+    fn read(pipe: HANDLE) -> Option<String> {
+        let mut message = Vec::new();
+        let mut chunk = [0u8; 16 * 1024];
+        loop {
+            let mut read = 0;
+            // SAFETY: reads into `chunk`, at most its length.
+            if unsafe { ReadFile(pipe, Some(&mut chunk), Some(&mut read), None) }.is_err()
+                || read == 0
+            {
+                break;
+            }
+            message.extend_from_slice(&chunk[..read as usize]);
+            if message.len() > MAX_MESSAGE {
+                return None;
+            }
+        }
+        String::from_utf8(message).ok()
+    }
+
     impl NativeApplicationEvents {
-        pub(crate) fn new(id: &str, _handler: Handler) -> Result<Self, ApplicationEventError> {
+        /// The running instance's events, or `None` when another instance
+        /// serves `id` and this launch's files and URLs went to it.
+        pub(crate) fn new(
+            id: &str,
+            handler: Handler,
+        ) -> Result<Option<Self>, ApplicationEventError> {
+            Self::serving(id, handler, launch_urls(std::env::args_os().skip(1)))
+        }
+
+        pub(super) fn serving(
+            id: &str,
+            handler: Handler,
+            launch: Vec<String>,
+        ) -> Result<Option<Self>, ApplicationEventError> {
             validate_id(id)?;
-            Err(ApplicationEventError(
-                "Windows URL activation is not registered by zgui; handle launch arguments in the application".into(),
-            ))
+            // SAFETY: names this process before any window exists.
+            unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(id)) }
+                .map_err(|error| ApplicationEventError(error.to_string()))?;
+            let name = pipe_name(id);
+            let Some(pipe) = claim(&name) else {
+                if forward(&name, &launch) {
+                    return Ok(None);
+                }
+                return Err(ApplicationEventError(format!(
+                    "application ID {id} is held by an instance that does not answer"
+                )));
+            };
+            if !launch.is_empty() {
+                handler(ApplicationEvent::OpenUrls(launch));
+            }
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = stop.clone();
+            // A HANDLE is not Send; the thread owns the pipe from here.
+            let pipe = pipe.0 as usize;
+            let thread = thread::Builder::new()
+                .name("zgui-application-events".into())
+                .spawn(move || {
+                    let pipe = HANDLE(pipe as *mut _);
+                    loop {
+                        // SAFETY: our pipe; a launch that connected first
+                        // reports an error and is connected all the same.
+                        let _ = unsafe { ConnectNamedPipe(pipe, None) };
+                        if stopped.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if let Some(event) = read(pipe).as_deref().and_then(event) {
+                            handler(event);
+                        }
+                        // SAFETY: our pipe, listened on again.
+                        let _ = unsafe { DisconnectNamedPipe(pipe) };
+                    }
+                    // SAFETY: our pipe, closed once.
+                    let _ = unsafe { CloseHandle(pipe) };
+                })
+                .map_err(|error| ApplicationEventError(error.to_string()))?;
+            Ok(Some(Self {
+                name,
+                stop,
+                thread: Some(thread),
+            }))
+        }
+    }
+
+    impl Drop for NativeApplicationEvents {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            // Connect once to wake the server from its wait for a launch,
+            // waiting out one it is still serving.
+            if let Some(pipe) = open(&self.name) {
+                // SAFETY: our own short-lived handle.
+                let _ = unsafe { CloseHandle(pipe) };
+            }
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -266,12 +536,67 @@ mod tests {
     use super::*;
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_activation_is_explicitly_unsupported() {
-        let result = NativeApplicationEvents::new("org.example.Editor", Arc::new(|_| {}));
-        let Err(error) = result else {
-            panic!("Windows activation must not silently succeed without a backend");
+    fn a_second_windows_launch_hands_its_files_and_urls_to_the_first() {
+        use std::sync::{Mutex, mpsc};
+        let id = format!("org.zgui.test{}", std::process::id());
+        let (send, receive) = mpsc::channel();
+        let send = Mutex::new(send);
+        let first = NativeApplicationEvents::serving(
+            &id,
+            Arc::new(move |event| send.lock().unwrap().send(event).unwrap()),
+            vec!["https://example.com/launch".into()],
+        )
+        .unwrap()
+        .expect("the first launch serves");
+        let next = |launch: Vec<String>| {
+            NativeApplicationEvents::serving(&id, Arc::new(|_| {}), launch)
+                .unwrap()
+                .is_none()
         };
-        assert!(error.0.contains("Windows URL activation"));
+        let wait = || {
+            receive
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+        };
+        assert_eq!(
+            wait(),
+            ApplicationEvent::OpenUrls(vec!["https://example.com/launch".into()])
+        );
+        assert!(next(vec![
+            "file:///C:/a%20b.txt".into(),
+            "zgui-test:open".into()
+        ]));
+        assert_eq!(
+            wait(),
+            ApplicationEvent::OpenUrls(vec![
+                "file:///C:/a%20b.txt".into(),
+                "zgui-test:open".into()
+            ])
+        );
+        assert!(next(Vec::new()));
+        assert_eq!(wait(), ApplicationEvent::Reopen);
+        drop(first);
+        // Once the first has gone, the next launch serves.
+        let again = NativeApplicationEvents::serving(&id, Arc::new(|_| {}), Vec::new());
+        assert!(again.unwrap().is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_launch_arguments_are_files_and_urls_not_flags() {
+        let file = std::env::current_exe().unwrap();
+        let urls = platform::launch_urls([
+            "--smoke-test".into(),
+            file.into_os_string(),
+            "myapp://open/thing".into(),
+            r"C:\does\not\exist.txt".into(),
+            "plain words".into(),
+        ]);
+        assert_eq!(urls.len(), 2, "{urls:?}");
+        assert!(urls[0].starts_with("file:///"), "{urls:?}");
+        assert_eq!(urls[1], "myapp://open/thing");
+        assert_eq!(platform::event(""), Some(ApplicationEvent::Reopen));
+        assert_eq!(platform::event("not a url"), None);
     }
 
     #[test]
