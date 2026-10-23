@@ -83,7 +83,10 @@ fn shade(input:Out)->vec4<f32> {
      let inner_radius=clamp(radius-(across+down)*0.5,0.,min(box.z,box.w)*0.5);
      let iq=abs(v.point-box.xy-box.zw*0.5)-(box.zw*0.5-vec2(inner_radius));
      let inside=length(max(iq,vec2(0.)))+min(max(iq.x,iq.y),0.)-inner_radius;
-     let aa=max(fwidth(distance),0.5);
+     // Fine derivatives (each pixel's own): Direct3D's `fwidth` is coarse,
+     // one per 2×2 block, and softened rounded rings (a pixel 1.4 px inside
+     // a 4 px border came out 94% covered). Metal's and Vulkan's were fine.
+     let aa=max(fwidthFine(distance),0.5);
      let hollow=select(0.,clamp(0.5-inside/aa,0.,1.),box.z>0.&&box.w>0.);
      color.a*=max(clamp(0.5-distance/aa,0.,1.)-hollow,0.);
    } else if v.shape.z>0. {
@@ -95,7 +98,7 @@ fn shade(input:Out)->vec4<f32> {
      let e=sign(x)*sqrt(1.-exp(-x2*(1.27323954+0.147*x2)/(1.+0.147*x2)));
      color.a*=0.5-0.5*e;
    }
-   else {let aa=max(fwidth(distance),0.5);let outer=clamp(0.5-distance/aa,0.,1.);let inner=clamp(0.5-(distance+v.shape.y)/aa,0.,1.);let alpha=color.a*inner+v.border.a*(outer-inner);let rgb=select(vec3(0.),(color.rgb*color.a*inner+v.border.rgb*v.border.a*(outer-inner))/max(alpha,0.00001),alpha>0.);color=vec4(rgb,alpha);}
+   else {let aa=max(fwidthFine(distance),0.5);let outer=clamp(0.5-distance/aa,0.,1.);let inner=clamp(0.5-(distance+v.shape.y)/aa,0.,1.);let alpha=color.a*inner+v.border.a*(outer-inner);let rgb=select(vec3(0.),(color.rgb*color.a*inner+v.border.rgb*v.border.a*(outer-inner))/max(alpha,0.00001),alpha>0.);color=vec4(rgb,alpha);}
  }
 
  // Premultiplied texels carry their alpha already: the colour stays
