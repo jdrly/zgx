@@ -140,9 +140,12 @@ pub(crate) fn titlebar_area(
     {
         linux::titlebar_area(size.width, titlebar)
     }
-    // TODO(macos): the traffic lights' frame (`standardWindowButton`) in
-    // the 40-point strip `Inset` keeps, and the strip right of them.
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = size;
+        mac::titlebar_area(window)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = size;
         (None, None)
@@ -1696,6 +1699,74 @@ mod mac {
             Some(&content),
         );
         window.invalidateShadow();
+    }
+
+    /// The title bar's free strip and the traffic lights in it, in points
+    /// from the content's top left. From the buttons' own frames and the
+    /// title bar's own height, so a toolbar's taller bar, a right-to-left
+    /// layout (buttons at the right, the strip left of them) and hidden
+    /// buttons come out as AppKit lays them out. None in fullscreen.
+    pub(super) fn titlebar_area(
+        window: &winit::window::Window,
+    ) -> (Option<zgui::scene::Rect>, Option<zgui::scene::Rect>) {
+        use zgui::scene::Rect;
+        let Some(window) = ns_window(window) else {
+            return (None, None);
+        };
+        let Some(content) = window.contentView() else {
+            return (None, None);
+        };
+        if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+            return (None, None);
+        }
+        let size = content.frame().size;
+        // The content covers the title bar (a full-size content view): the
+        // bar is what the content's layout rect leaves out.
+        let bar = (size.height - window.contentLayoutRect().size.height) as f32;
+        if bar <= 0. {
+            return (None, None);
+        }
+        let width = size.width as f32;
+        let mut controls: Option<Rect> = None;
+        // NSWindowCloseButton, MiniaturizeButton, ZoomButton.
+        for button in [0_usize, 1, 2] {
+            let button: Option<Retained<NSView>> =
+                unsafe { msg_send![&*window, standardWindowButton: button] };
+            let Some(button) = button.filter(|b| !b.isHidden()) else {
+                continue;
+            };
+            let frame = content.convertRect_fromView(button.bounds(), Some(&button));
+            let y = if content.isFlipped() {
+                frame.origin.y
+            } else {
+                size.height - frame.origin.y - frame.size.height
+            };
+            let rect = Rect::new(
+                frame.origin.x as f32,
+                y as f32,
+                frame.size.width as f32,
+                frame.size.height as f32,
+            );
+            controls = Some(match controls {
+                Some(c) => {
+                    let (x0, y0) = (c.x.min(rect.x), c.y.min(rect.y));
+                    let x1 = (c.x + c.width).max(rect.x + rect.width);
+                    let y1 = (c.y + c.height).max(rect.y + rect.height);
+                    Rect::new(x0, y0, x1 - x0, y1 - y0)
+                }
+                None => rect,
+            });
+        }
+        let area = match controls {
+            // Right to left: the buttons at the right, the strip before them.
+            Some(c) if c.x > width / 2. => Rect::new(0., 0., c.x.max(0.), bar),
+            Some(c) => {
+                let end = (c.x + c.width).min(width);
+                Rect::new(end, 0., width - end, bar)
+            }
+            None => Rect::new(0., 0., width, bar),
+        };
+        (Some(area), controls)
     }
 
     /// No desktop tint (`CAChameleonLayer` hidden), a 60-point gaussian and
