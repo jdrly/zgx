@@ -1,9 +1,11 @@
-# zgui patch to wgpu-hal 29.0.4 (Metal backend only)
+# zgui patch to wgpu-hal 29.0.4 (Metal backend, one Direct3D 12 addition)
 
 Vendored from crates.io `wgpu-hal` 29.0.4 (MIT OR Apache-2.0, license files
 unchanged) and applied through `[patch.crates-io]` in the workspace
 `Cargo.toml`. Only `src/metal/{command,mod,device,adapter}.rs` differ, plus
-the new `src/metal/buffer_writes.rs`; search for "zgui patch".
+the new `src/metal/buffer_writes.rs`, and for Direct3D 12
+`src/dx12/instance.rs` and `src/auxil/dxgi/factory.rs` (see the last
+section); search for "zgui patch".
 
 ## Why
 
@@ -61,3 +63,21 @@ system CPU for zgui vs 1.4% for GPUI on the same animation
 
 Result: two command buffers per frame (one per render pass), 1.2 ms less
 kernel time per 100 frames, and zgui below GPUI in CPU per frame.
+
+## Direct3D 12: one adapter, one device
+
+`Instance::enumerate_adapters`, which wgpu-core's `request_adapter` ranks,
+opens a Direct3D 12 device on every DXGI adapter to read its capabilities.
+Each driver it loads keeps memory after the device is released: an NVIDIA
+machine with an indirect display (a second adapter on the same GPU) kept
+22 MiB of private memory for the second device, and zgui's shared context
+measured 89.8 MiB private where it is 81.0 MiB with one device.
+
+`dx12::Instance::expose_preferred_adapter(power)` exposes the first adapter,
+in DXGI's own order for that power preference (`EnumAdapterByGpuPreference`,
+`EnumAdapters1` without DXGI 1.6), that has Direct3D 12, and opens no device
+on the rest; `auxil::dxgi::factory::enumerate_adapters_by` is the ordered
+enumeration. zgui-gpu (`preferred_dx12_adapter`) passes the result to
+`wgpu::Instance::create_adapter_from_hal`, and falls back to
+`request_adapter` when it finds none or it cannot present to the window.
+Tested by `crates/zgui-gpu/tests/adapter.rs`.

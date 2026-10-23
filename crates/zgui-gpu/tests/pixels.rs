@@ -693,6 +693,34 @@ fn layer_texture_budget_fails_before_allocation_and_recovers_after_removal() {
 }
 
 #[test]
+fn image_count_budget_fails_the_frame_and_recovers_after_removal() {
+    let _gpu_fixture = gpu_fixture();
+    let mut gpu = GpuRenderer::new(8, 8).unwrap();
+    let mut scene = Scene::new(8., 8.);
+    let stack = scene.append(
+        scene.root(),
+        NodeKind::Container(Layout::Overlay),
+        fixed(8., 8.),
+    );
+    let images: Vec<_> = (0..16_385)
+        .map(|_| {
+            let image = zgui::image::ImageData::new(1, 1, vec![255, 0, 0, 255]).unwrap();
+            scene.append(
+                stack,
+                NodeKind::Image(std::sync::Arc::new(image)),
+                fixed(1., 1.),
+            )
+        })
+        .collect();
+    let d = scene.flush().damage;
+    assert!(gpu.render(&scene, &d).unwrap_err().0.contains("16384"));
+    scene.remove(images[0]);
+    let d = scene.flush().damage;
+    gpu.render(&scene, &d).unwrap();
+    assert_eq!(gpu.readback().unwrap()[..4], [255, 0, 0, 255]);
+}
+
+#[test]
 fn blur_inside_isolated_layer_rebuilds_on_backdrop_mutation() {
     let _gpu_fixture = gpu_fixture();
     let mut gpu = GpuRenderer::new(48, 32).unwrap();

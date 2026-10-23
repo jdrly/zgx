@@ -81,11 +81,26 @@ impl Deref for DxgiAdapter {
 }
 
 pub fn enumerate_adapters(factory: DxgiFactory) -> Vec<DxgiAdapter> {
+    enumerate_adapters_by(factory, None)
+}
+
+/// zgui patch: the adapters in DXGI's order for `preference` (DXGI 1.6,
+/// Windows 10 1803), or `EnumAdapters1`'s without it.
+pub fn enumerate_adapters_by(
+    factory: DxgiFactory,
+    preference: Option<Dxgi::DXGI_GPU_PREFERENCE>,
+) -> Vec<DxgiAdapter> {
     let mut adapters = Vec::with_capacity(8);
 
     for cur_index in 0.. {
         profiling::scope!("IDXGIFactory1::EnumAdapters1");
-        let adapter1: Dxgi::IDXGIAdapter1 = match unsafe { factory.EnumAdapters1(cur_index) } {
+        let adapter1: windows::core::Result<Dxgi::IDXGIAdapter1> = match (&factory, preference) {
+            (DxgiFactory::Factory6(factory), Some(preference)) => unsafe {
+                factory.EnumAdapterByGpuPreference(cur_index, preference)
+            },
+            _ => unsafe { factory.EnumAdapters1(cur_index) },
+        };
+        let adapter1 = match adapter1 {
             Ok(a) => a,
             Err(e) if e.code() == Dxgi::DXGI_ERROR_NOT_FOUND => break,
             Err(e) => {

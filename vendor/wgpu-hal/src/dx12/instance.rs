@@ -170,19 +170,44 @@ impl crate::Instance for super::Instance {
 
         adapters
             .into_iter()
-            .filter_map(|raw| {
-                super::Adapter::expose(
-                    raw,
-                    &self.library,
-                    &self.device_factory,
-                    &self.dcomp_lib,
-                    self.flags,
-                    self.memory_budget_thresholds,
-                    self.compiler_container.clone(),
-                    self.options.clone(),
-                    self.telemetry,
-                )
-            })
+            .filter_map(|raw| self.expose(raw))
             .collect()
+    }
+}
+
+impl super::Instance {
+    fn expose(
+        &self,
+        raw: auxil::dxgi::factory::DxgiAdapter,
+    ) -> Option<crate::ExposedAdapter<super::Api>> {
+        super::Adapter::expose(
+            raw,
+            &self.library,
+            &self.device_factory,
+            &self.dcomp_lib,
+            self.flags,
+            self.memory_budget_thresholds,
+            self.compiler_container.clone(),
+            self.options.clone(),
+            self.telemetry,
+        )
+    }
+
+    /// zgui patch: the first adapter in DXGI's order for `power` that has
+    /// Direct3D 12. Unlike `enumerate_adapters`, it creates no device on
+    /// the adapters after it: each one a process ever opens keeps its
+    /// driver's memory (20 MiB or more) after the device is released.
+    pub fn expose_preferred_adapter(
+        &self,
+        power: wgt::PowerPreference,
+    ) -> Option<crate::ExposedAdapter<super::Api>> {
+        let preference = match power {
+            wgt::PowerPreference::None => Dxgi::DXGI_GPU_PREFERENCE_UNSPECIFIED,
+            wgt::PowerPreference::LowPower => Dxgi::DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+            wgt::PowerPreference::HighPerformance => Dxgi::DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        };
+        auxil::dxgi::factory::enumerate_adapters_by(self.factory.clone(), Some(preference))
+            .into_iter()
+            .find_map(|raw| self.expose(raw))
     }
 }

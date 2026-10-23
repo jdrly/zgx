@@ -153,6 +153,9 @@ const SHAPE_RUN_AGES: u64 = 2;
 /// `render`).
 const SHAPE_RESET: u64 = 512;
 const VERTEX_BUDGET: usize = 32 * 1024 * 1024;
+/// Image textures a renderer holds at once, each with its own bind group (a
+/// view in Direct3D 12's fixed-size heap; see `GpuContext::create`).
+const MAX_IMAGES: usize = 16_384;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Quad {
@@ -1133,6 +1136,18 @@ pub fn measure_text(
 ) -> (f32, f32) {
     text::ShapedText::new(fonts, text, size, width).size()
 }
+/// The adapter DXGI ranks first for low power, with a device opened on it
+/// alone (none when Direct3D 12 isn't the instance's backend). wgpu's
+/// `request_adapter` opens a Direct3D 12 device on every adapter to rank them,
+/// and each driver keeps its memory after the device is released: 20 MiB for
+/// a second adapter (an indirect display's) on an NVIDIA machine.
+#[cfg(windows)]
+fn preferred_dx12_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
+    // SAFETY: the hal instance is only read, and the adapter is exposed from it.
+    let hal = unsafe { instance.as_hal::<wgpu::hal::api::Dx12>() }?;
+    let exposed = hal.expose_preferred_adapter(wgpu::PowerPreference::LowPower)?;
+    Some(unsafe { instance.create_adapter_from_hal(exposed) })
+}
 /// Shared native GPU device, pipelines, and font database. Clone this cheaply for
 /// additional windows; render targets/atlases remain owned by each renderer.
 #[derive(Clone)]
@@ -1216,12 +1231,24 @@ impl GpuContext {
                     continue;
                 }
             };
-            let adapter =
-                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::LowPower,
-                    compatible_surface: surface.as_ref(),
-                    force_fallback_adapter: false,
-                }));
+            #[cfg(windows)]
+            let preferred = preferred_dx12_adapter(&instance).filter(|adapter| {
+                surface
+                    .as_ref()
+                    .is_none_or(|surface| adapter.is_surface_supported(surface))
+            });
+            #[cfg(not(windows))]
+            let preferred = None;
+            let adapter = match preferred {
+                Some(adapter) => Ok(adapter),
+                None => {
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: surface.as_ref(),
+                        force_fallback_adapter: false,
+                    }))
+                }
+            };
             found = adapter
                 .map(|adapter| (instance, adapter))
                 .map_err(|e| GpuError(e.to_string()));
@@ -1246,12 +1273,12 @@ impl GpuContext {
             } | (adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING),
             required_limits: wgpu::Limits {
                 // Direct3D 12 makes its shader-visible view heap this large, in
-                // write-combined memory: 30 MiB at the default million, 8 MiB
-                // here. An image holds one view, and a window's image budget
-                // (64 MiB) is 65,536 of the smallest (16 px): windows share
-                // the device, and four at their budget still fit.
+                // write-combined memory: 30 MiB at the default million, 2 MiB
+                // here. An image holds one view and a window holds at most
+                // `MAX_IMAGES`: windows share the device, and four at their
+                // budget still fit beside their other bind groups.
                 max_non_sampler_bindings: if cfg!(windows) {
-                    1 << 18
+                    1 << 16
                 } else {
                     wgpu::Limits::default().max_non_sampler_bindings
                 },
@@ -5116,6 +5143,11 @@ impl GpuRenderer {
             return Err(GpuError(
                 "visible image textures exceed the 64 MiB budget".into(),
             ));
+        }
+        if self.images.len() >= MAX_IMAGES {
+            return Err(GpuError(format!(
+                "visible images exceed the budget of {MAX_IMAGES}"
+            )));
         }
         if image.width() > self.device.limits().max_texture_dimension_2d
             || image.height() > self.device.limits().max_texture_dimension_2d

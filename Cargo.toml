@@ -58,7 +58,8 @@ codegen-units = 1
 # wgpu-hal with a Metal backend patch: command buffers are created lazily and
 # empty ones are never committed. Upstream opens several per submission; each
 # costs a commit, a completion callback and Core Animation frame-pacing IPC.
-# See vendor/wgpu-hal/ZGUI_PATCH.md.
+# On Windows, a Direct3D 12 adapter can be exposed without opening a device on
+# every other adapter. See vendor/wgpu-hal/ZGUI_PATCH.md.
 #
 # cosmic-text with a shaping patch: cached words are looked up without building
 # a key per word, and plain ASCII lines skip bidi analysis. Text shaping is the
