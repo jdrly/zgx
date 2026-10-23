@@ -497,6 +497,42 @@ return ui.column {
 }
 
 #[test]
+fn a_computed_read_right_after_a_write_has_the_new_value() {
+    // A click handler runs in the runtime's batch, where the computed's
+    // effect would run only once the handler returns: a read in between,
+    // inside `ui.batch` or after it, saw the old value (the mail app then
+    // opened the message it had just archived).
+    let mut h = Harness::inline(
+        r#"
+local n = ui.state("n", 1)
+local doubled = ui.computed(function()
+	return n:get() * 2
+end)
+local seen = ui.state("seen", "")
+return ui.column {
+	ui.button {
+		id = "go",
+		on_click = function()
+			local inside = 0
+			ui.batch(function()
+				n:set(5)
+				inside = doubled:peek()
+			end)
+			seen:set(`{inside} {doubled:get()}`)
+		end,
+		"go",
+	},
+	ui.text { "{seen}", id = "seen" },
+}
+"#,
+    );
+    h.frame();
+    h.click("go");
+    h.frame();
+    assert_eq!(h.text("seen"), "10 10");
+}
+
+#[test]
 fn timers_faster_than_a_frame_warn_once() {
     let h = Harness::inline(
         r#"local rate = 4

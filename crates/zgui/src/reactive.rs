@@ -67,6 +67,54 @@ struct Inner {
     extensions: RefCell<Vec<(TypeId, Rc<dyn Any>)>>,
 }
 
+impl Inner {
+    /// Run effect `id` if it is queued. Its heap entry may outlive the
+    /// queueing (`Refresh::refresh` ran it early), so an effect that isn't
+    /// queued is left alone. Returns whether it ran.
+    fn run(&self, id: EffectId) -> bool {
+        let callback = {
+            let mut effects = self.effects.borrow_mut();
+            let Some(record) = effects.get_mut(&id).filter(|record| record.queued) else {
+                return false;
+            };
+            record.queued = false;
+            record.run = record.run.wrapping_add(1);
+            record.callback.clone()
+        };
+        let previous = self.active.replace(Some(id));
+        (*callback.borrow_mut())();
+        self.active.set(previous);
+        // Drop subscriptions this run no longer read. The record may be
+        // gone if the callback disposed its own effect.
+        let stale: Vec<Weak<dyn Dependency>> = {
+            let mut effects = self.effects.borrow_mut();
+            let Some(record) = effects.get_mut(&id) else {
+                return true;
+            };
+            let run = record.run;
+            // `KEPT` is above every run: read this run, or kept.
+            if record.dependencies.iter().all(|d| d.run >= run) {
+                return true;
+            }
+            let mut stale = Vec::new();
+            record.dependencies.retain(|d| {
+                let keep = d.run >= run;
+                if !keep {
+                    stale.push(d.source.clone());
+                }
+                keep
+            });
+            stale
+        };
+        for dependency in stale {
+            if let Some(dependency) = dependency.upgrade() {
+                dependency.unsubscribe(id);
+            }
+        }
+        true
+    }
+}
+
 /// An explicit runtime avoids global state and supports multiple independent UI roots.
 #[derive(Clone, Default)]
 pub struct Runtime {
@@ -196,47 +244,7 @@ impl Runtime {
             let Some(Reverse(id)) = self.inner.pending.borrow_mut().pop() else {
                 break;
             };
-            let callback = {
-                let mut effects = self.inner.effects.borrow_mut();
-                effects.get_mut(&id).map(|record| {
-                    record.queued = false;
-                    record.run = record.run.wrapping_add(1);
-                    record.callback.clone()
-                })
-            };
-            let Some(callback) = callback else {
-                continue;
-            };
-            self.inner.active.set(Some(id));
-            (*callback.borrow_mut())();
-            self.inner.active.set(None);
-            // Drop subscriptions this run no longer read. The record may be
-            // gone if the callback disposed its own effect.
-            let stale: Vec<Weak<dyn Dependency>> = {
-                let mut effects = self.inner.effects.borrow_mut();
-                let Some(record) = effects.get_mut(&id) else {
-                    continue;
-                };
-                let run = record.run;
-                // `KEPT` is above every run: read this run, or kept.
-                if record.dependencies.iter().all(|d| d.run >= run) {
-                    continue;
-                }
-                let mut stale = Vec::new();
-                record.dependencies.retain(|d| {
-                    let keep = d.run >= run;
-                    if !keep {
-                        stale.push(d.source.clone());
-                    }
-                    keep
-                });
-                stale
-            };
-            for dependency in stale {
-                if let Some(dependency) = dependency.upgrade() {
-                    dependency.unsubscribe(id);
-                }
-            }
+            self.inner.run(id);
         }
     }
     pub fn effect_count(&self) -> usize {
@@ -283,6 +291,39 @@ impl WeakRuntime {
 pub struct Effect {
     id: EffectId,
     runtime: Weak<Inner>,
+}
+impl Effect {
+    /// A handle that runs this effect early, while it lives.
+    pub fn refresher(&self) -> Refresh {
+        Refresh {
+            id: self.id,
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+/// Runs an effect now if a write has queued it (`Effect::refresher`): a
+/// value an effect derives (a computed) is current when read inside a
+/// batch, or in a handler, rather than once the outermost batch ends. It
+/// keeps neither the effect nor the runtime alive.
+#[derive(Clone)]
+pub struct Refresh {
+    id: EffectId,
+    runtime: Weak<Inner>,
+}
+impl Refresh {
+    /// Run the effect if it is queued and not running (an effect reading
+    /// what it derives sees its last value). Returns whether it ran.
+    pub fn refresh(&self) -> bool {
+        let Some(runtime) = self.runtime.upgrade() else {
+            return false;
+        };
+        let running = runtime
+            .effects
+            .borrow()
+            .get(&self.id)
+            .is_none_or(|record| record.callback.try_borrow_mut().is_err());
+        !running && runtime.run(self.id)
+    }
 }
 impl Drop for Effect {
     fn drop(&mut self) {
@@ -465,6 +506,33 @@ impl ServiceScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_refreshed_effect_derives_its_value_inside_a_batch_and_runs_once() {
+        let runtime = Runtime::new();
+        let source = runtime.signal(1);
+        let derived = runtime.signal(0);
+        let runs = Rc::new(Cell::new(0));
+        let effect = runtime.effect({
+            let (source, derived, runs) = (source.clone(), derived.clone(), runs.clone());
+            move || {
+                runs.set(runs.get() + 1);
+                derived.set(source.get() * 10);
+            }
+        });
+        let refresh = effect.refresher();
+        assert!(!refresh.refresh(), "nothing queued");
+        runtime.batch(|| {
+            source.set(2);
+            assert_eq!(derived.get(), 10, "deferred in the batch");
+            assert!(refresh.refresh());
+            assert_eq!(derived.get(), 20, "current once refreshed");
+            assert!(!refresh.refresh());
+        });
+        // The batch's flush finds it already run.
+        assert_eq!(runs.get(), 2);
+        drop(effect);
+        assert!(!refresh.refresh(), "a disposed effect does nothing");
+    }
     #[test]
     fn untracked_nested_and_caught_panic_restore_outer_dependencies() {
         let runtime = Runtime::new();

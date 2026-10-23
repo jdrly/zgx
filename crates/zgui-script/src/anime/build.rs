@@ -115,7 +115,7 @@ impl Ctx {
                 .unwrap_or(mlua::Value::Nil),
             Target::State(s) => self
                 .lua
-                .create_userdata(crate::value::State(s.clone()))
+                .create_userdata(crate::value::State::new(s.clone()))
                 .map(mlua::Value::UserData)
                 .unwrap_or(mlua::Value::Nil),
             Target::Table(t) => mlua::Value::Table(t.clone()),

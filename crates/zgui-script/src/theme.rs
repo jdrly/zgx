@@ -268,7 +268,7 @@ pub(crate) fn install(lua: &Lua, ui: &Table, dir: Option<PathBuf>) -> mlua::Resu
         retained.push(Box::new(follow));
         retained.push(Box::new(apply));
     }
-    theme.set("current", crate::value::State(current))?;
+    theme.set("current", crate::value::State::new(current))?;
     theme.set(
         "kind",
         lua.create_function(|lua, ()| {
@@ -298,7 +298,7 @@ pub(crate) fn install(lua: &Lua, ui: &Table, dir: Option<PathBuf>) -> mlua::Resu
             mirror.set(Value::Bool(read(from.system_preferences())));
         });
         env(lua)?.retained.borrow_mut().push(Box::new(follow));
-        prefers.set(name, crate::value::State(state))?;
+        prefers.set(name, crate::value::State::new(state))?;
     }
     prefers.set_readonly(true);
     ui.set("prefers", prefers)

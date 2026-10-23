@@ -1063,8 +1063,23 @@ impl From<Shared> for Signal<Value> {
 /// A handle to Rust-owned state. Scripts read it with `:get()`, which
 /// subscribes the reading text or style, and write it from event handlers.
 #[derive(Clone)]
-pub struct State(pub Signal<Value>);
+pub struct State(
+    pub Signal<Value>,
+    pub(crate) Option<zgui::reactive::Refresh>,
+);
 impl State {
+    /// A state over `signal`.
+    pub fn new(signal: Signal<Value>) -> Self {
+        Self(signal, None)
+    }
+    /// A computed's value is current when read, even in a handler or a
+    /// batch, where its effect would otherwise run only afterwards.
+    fn fresh(&self) -> &Signal<Value> {
+        if let Some(refresh) = &self.1 {
+            refresh.refresh();
+        }
+        &self.0
+    }
     /// Sets the value; what it updates runs off the script's clock.
     fn write(&self, lua: &mlua::Lua, value: Value) {
         let vm = lua
@@ -1090,8 +1105,10 @@ fn fail(method: &str, error: String) -> mlua::Error {
 }
 impl UserData for State {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("get", |_, s, ()| Ok(s.0.get()));
-        methods.add_method("peek", |_, s, ()| Ok(s.0.with_untracked(Clone::clone)));
+        methods.add_method("get", |_, s, ()| Ok(s.fresh().get()));
+        methods.add_method("peek", |_, s, ()| {
+            Ok(s.fresh().with_untracked(Clone::clone))
+        });
         methods.add_method("set", |lua, s, value: mlua::Value| {
             s.change(lua, |old| convert(value, Some(old)))
         });

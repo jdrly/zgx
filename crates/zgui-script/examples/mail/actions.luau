@@ -69,6 +69,7 @@ function M.move(id: number, mailbox: string)
 				break
 			end
 		end
+		local focus: number? = nil
 		ui.batch(function()
 			-- Its unread count moves with it.
 			local m = state.messages:peek()[i]
@@ -85,21 +86,25 @@ function M.move(id: number, mailbox: string)
 				local next = if place then list[place] else nil
 				if next then
 					M.open(next.id)
-					-- Focus goes with it, to its row in the list, as a mail
-					-- app's does (not to the window): once the list shows it.
-					ui.after(0, function()
-						for _, row in state.rows:elements() do
-							if row.id == `row-{place}` then
-								row:focus()
-							end
-						end
-					end)
+					focus = place
 				else
 					state.selected:set(nil)
 				end
 			end
 			state.status:set(`Moved to {mailbox}`)
 		end)
+		-- Focus goes with it, to its row in the list, as a mail app's does
+		-- (not to the window). Rows are by position, so that row is mounted
+		-- and, the batch over, shows it; focusing it now, before the
+		-- toolbar that had focus leaves, keeps focus from moving on into
+		-- the next message's toolbar.
+		if focus then
+			for _, row in state.rows:elements() do
+				if row.id == `row-{focus}` then
+					row:focus()
+				end
+			end
+		end
 	end
 end
 

@@ -3087,7 +3087,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                     "ui.use_state is for component state; use ui.state at the top level",
                 ));
             }
-            Ok(State(env.runtime.signal(initial)))
+            Ok(State::new(env.runtime.signal(initial)))
         })?,
     )?;
     ui.set(
@@ -3155,7 +3155,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         "computed",
         lua.create_function(|lua, f: Function| {
             let env = env(lua)?;
-            Ok(State(computed(lua, &env, f)))
+            Ok(computed_state(lua, &env, f))
         })?,
     )?;
     ui.set("variants", lua.create_function(crate::variants::define)?)?;
@@ -3418,7 +3418,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (key, initial): (String, Value)| {
             let env = env(lua)?;
             let key = module_key(lua, &env, key);
-            Ok(State(env.store.state(&key, initial)))
+            Ok(State::new(env.store.state(&key, initial)))
         })?,
     )?;
     // `ui.persist(key, initial)`: state saved in the host's storage and
@@ -3428,7 +3428,11 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (key, initial): (String, Value)| {
             let env = env(lua)?;
             let key = module_key(lua, &env, key);
-            Ok(State(env.persist.state(&env.persist_as, &key, initial)))
+            Ok(State::new(env.persist.state(
+                &env.persist_as,
+                &key,
+                initial,
+            )))
         })?,
     )?;
     ui.set(
@@ -3436,7 +3440,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
         lua.create_function(|lua, (key, initial): (String, Value)| {
             let env = env(lua)?;
             env.permits(&env.exposed_shared, &key, "ui.shared")?;
-            Ok(State(env.shared.state(&key, initial)))
+            Ok(State::new(env.shared.state(&key, initial)))
         })?,
     )?;
 
@@ -3661,7 +3665,12 @@ fn module_prefix(lua: &Lua, env: &Env) -> Option<String> {
 
 /// `f`'s value, kept current in Rust: `ui.computed`. It lives as long as
 /// what is being built (a component), or the script.
-pub(crate) fn computed(_: &Lua, env: &Env, f: Function) -> Signal<Value> {
+pub(crate) fn computed(lua: &Lua, env: &Env, f: Function) -> Signal<Value> {
+    computed_state(lua, env, f).0
+}
+/// `ui.computed`: the value `f` makes, kept current as what it reads
+/// changes, and brought up to date when a script reads it.
+pub(crate) fn computed_state(_: &Lua, env: &Env, f: Function) -> crate::value::State {
     let signal = env.runtime.signal(Value::Nil);
     let (vm, out) = (env.vm.clone(), signal.clone());
     // Its value is there as soon as it is made, even while a component
@@ -3688,8 +3697,9 @@ pub(crate) fn computed(_: &Lua, env: &Env, f: Function) -> Signal<Value> {
             }
         }
     });
+    let refresh = effect.refresher();
     retain(env, Box::new(effect));
-    signal
+    crate::value::State(signal, Some(refresh))
 }
 /// A node's interaction styles by slot (`variants::INTERACTION`'s order).
 pub(crate) fn interaction_of(pseudo: &[(Pseudo, Styles)]) -> [Vec<(Prop, Lit)>; 4] {

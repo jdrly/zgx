@@ -97,9 +97,9 @@ pub(crate) fn install(
     let window = lua.create_table()?;
     window.set(
         "titlebar_area",
-        State(shared.state(TITLEBAR_AREA, Value::Nil)),
+        State::new(shared.state(TITLEBAR_AREA, Value::Nil)),
     )?;
-    window.set("controls", State(shared.state(CONTROLS, Value::Nil)))?;
+    window.set("controls", State::new(shared.state(CONTROLS, Value::Nil)))?;
     let meta = lua.create_table()?;
     meta.set(
         "__call",

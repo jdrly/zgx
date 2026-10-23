@@ -1066,7 +1066,7 @@ fn kind_view(
                         cx,
                         &low,
                         &builder,
-                        (item, index + 1, crate::value::State(signal)),
+                        (item, index + 1, crate::value::State::new(signal)),
                     )
                 },
             )
