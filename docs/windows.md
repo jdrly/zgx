@@ -86,6 +86,51 @@ window whatever its title bar:
 An app theme or `theme_scope` that sets a colour or duration token itself
 keeps its own value; the text size scales the font tokens of every theme.
 
+## Web views
+
+`zgui::web_view` pages are WebView2, with the `webview2` feature of
+`zgui-desktop` (off by default; without it nothing below is compiled and web
+views render placeholders):
+
+```powershell
+cargo run -p zgui-desktop --features webview2 --example web_view
+```
+
+With the feature, each window owns its DirectComposition tree: the window
+renderer presents into its bottom visual, each page's visual sits above it in
+paint order inside visuals clipping it to its node (rounded corners included,
+antialiased), and zgui paint over a page (a popover, a composer) goes on an
+overlay plane presenting into the top visual. A frame's presents and the pages'
+geometry commit together, so pages move with zgui content. Presentation is
+otherwise unchanged; the probes above measured the same with and without the
+feature (every frame shown, 12.7 against 12.8 ms keystroke latency, the same
+idle cost).
+
+Pages are visual-hosted (`ICoreWebView2CompositionController`): the window's
+procedure routes the pointer as `PlaneSplit::route` decides, so zgui content
+drawn over a page takes its clicks, and a click on zgui content takes the
+keyboard back from a page. Navigation, its state and events, script evaluation,
+messages (`window.zgui.postMessage`), user scripts, app schemes, the navigation
+policy, new-window requests, profiles, zoom and DevTools work as on macOS. The
+loader is linked in; the runtime is the system's (Windows 11 ships it, Windows
+10 gets it with Edge). Without one, web views render placeholders and say so
+once on stderr. Profiles live in `%LOCALAPPDATA%\<executable name>\WebView2`.
+
+Unlike macOS:
+
+- Glass over a page shows its tint, not a blur of the page (DirectComposition
+  cannot blur another process's content).
+- `WebViewState::back_list` and `forward_list` stay empty (WebView2 lists no
+  history); `go_to_history(n)` goes through the page's `history.go(n)`.
+- Form submissions are reported as `NavigationKind::Link` (user-initiated) or
+  `Other`; progress is 0.1 at start, 0.5 when content arrives, 1 when loaded.
+- App schemes are registered with the WebView2 environment: windows whose web
+  views serve different sets of schemes keep their profiles in separate data
+  folders.
+
+`scripts/windows_webview_smoke.py` checks the page against zgui content
+around and over it.
+
 ## Limitations
 
 - `Application::application_id` opts into OS activation callbacks, which are not
@@ -95,7 +140,8 @@ keeps its own value; the text size scales the font tokens of every theme.
   does not dismiss its native dialog. A pending native dialog can retain its
   parent until dismissed. Backend failures can appear as cancellation.
 - Rendered application menus are supported; native Win32 menu bars are not.
-- Native views (`web_view`, Ghostty terminals) are macOS only.
+- Ghostty terminals and `NativeContent::Platform` views are macOS only; web
+  views need the `webview2` feature (see Web views).
 - The Linux benchmark sampler and the X11/Wayland smoke scripts do not run on
   Windows; Windows has its own (below).
 
@@ -134,6 +180,12 @@ python scripts/windows_platform_smoke.py target/debug/examples
   editor, the file picker and the message box (each owned by its window, the
   window disabled while it shows), and a file dragged in from another process
   through OLE drag and drop, as from Explorer.
+- `windows_webview_smoke.py` (`web_view` built with `--features webview2`):
+  the page loads and its title reaches the state, a click in the page reaches
+  it, zgui's composer over the page takes clicks and typing and its script
+  changes the page, the menu popover draws above the page and takes its
+  clicks, the wheel scrolls the page, and after a resize the page still fills
+  its node.
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range
