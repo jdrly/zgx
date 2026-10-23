@@ -140,9 +140,14 @@ scale. It moves with its window, and closes as the app deactivates, when the
 title bar is pressed, on Escape and on a press outside it.
 
 A menu or popover that is one rounded panel gets DWM's rounded corners, rim
-and shadow, as Windows 11 frames its menus. It keeps the theme's background
-rather than acrylic: DWM draws a never-activated window's system backdrop as
-a flat colour.
+and shadow, as Windows 11 frames its menus.
+
+Known gap: menus and popovers keep the theme's flat background, where Windows
+11's own menus are acrylic. DWM draws a system backdrop
+(`DWMSBT_TRANSIENTWINDOW`) only behind an activated window, and a flat colour
+behind one never activated; a popup must not take activation from its window,
+which keeps the keyboard. The undocumented `SetWindowCompositionAttribute`
+acrylic is not used.
 
 No popup window exists before the pointer first reaches something that opens
 one, and a closed one is kept hidden for the next: an app that never opens a
