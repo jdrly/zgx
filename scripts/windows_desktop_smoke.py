@@ -48,8 +48,42 @@ def main():
                          'SEMANTIC "Notes" Some("Native bridge")', 'VIEWPORT (1000.0, 800.0)']:
             if expected not in output:
                 raise AssertionError(f"missing native interaction result {expected!r}:\n{output}")
-        print(f"PASS: Windows scale={scale:g}, initial physical size={actual_size}, native pointer "
-              "activation, text entry, selection, clipboard, Tab focus, resize, close")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    insert_keys(args.binary, env)
+    print(f"PASS: Windows scale={scale:g}, initial physical size={actual_size}, native pointer "
+          "activation, text entry, selection, clipboard, Tab focus, resize, close; "
+          "Shift+Delete, Shift+Insert and Ctrl+Insert")
+
+
+def insert_keys(binary, env):
+    """Windows' older clipboard keys: Shift+Delete cuts (not only deletes),
+    Shift+Insert pastes, Ctrl+Insert copies."""
+    proc = subprocess.Popen([str(binary.resolve())], env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    try:
+        window = win.wait_window(proc)
+        scale = win.dpi(window) / 96
+        win.activate(window)
+        win.click(window, 80 * scale, 430 * scale)
+        win.key("ctrl+a")
+        win.type_text("Native bridge")
+        win.key("ctrl+a", "ctrl+c")
+        win.click(window, 80 * scale, 530 * scale)
+        win.key("ctrl+a")
+        win.type_text("cut me")
+        # A cut leaves "cut me" on the clipboard; a deletion would leave
+        # "Native bridge" there.
+        win.key("ctrl+a", "shift+delete", "shift+insert", "shift+insert")
+        win.key("ctrl+a", "ctrl+insert", "shift+tab", "ctrl+a", "shift+insert")
+        time.sleep(0.3)
+        win.close(window)
+        output, _ = proc.communicate(timeout=25)
+        for expected in ['SEMANTIC "Name" Some("cut mecut me")', 'SEMANTIC "Notes" Some("cut mecut me")']:
+            if expected not in output:
+                raise AssertionError(f"missing {expected!r}:\n{output}")
     finally:
         if proc.poll() is None:
             proc.kill()

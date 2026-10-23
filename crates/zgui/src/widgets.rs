@@ -452,6 +452,10 @@ pub enum WindowGesture {
     /// The second press of a double click: zoom or minimize the window, as
     /// the platform's setting for its title bar says.
     DoubleClick,
+    /// A secondary click: the window's menu (restore, move, size, minimize,
+    /// maximize, close), as a right click on a title bar shows it on Windows
+    /// and Linux. macOS has no such menu.
+    Menu,
 }
 type LayoutListener = Rc<RefCell<Box<dyn FnMut()>>>;
 /// A handle to a `Ui` that does not keep it alive (`Ui::downgrade`).

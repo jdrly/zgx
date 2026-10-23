@@ -290,3 +290,42 @@ fn a_hover_styled_child_of_a_drag_region_still_moves_the_window() {
     assert_eq!(ui.take_window_gesture(), Some(WindowGesture::Drag));
     assert_eq!(ui.input.captured(), None);
 }
+
+#[test]
+fn a_secondary_click_on_a_drag_region_asks_for_the_window_menu() {
+    let mut ui = Ui::new(400., 200.);
+    let view = ui.mount(
+        row()
+            .size(400., 40.)
+            .window_drag()
+            .child(div().size(100., 40.))
+            .child(button().id("close").size(40., 40.).on_click(|| {})),
+    );
+    ui.prepare_frame();
+    let secondary = |down: bool, x: f32| {
+        if down {
+            InputEvent::PointerDown {
+                x,
+                y: 20.,
+                button: PointerButton::Secondary,
+            }
+        } else {
+            InputEvent::PointerUp {
+                x,
+                y: 20.,
+                button: PointerButton::Secondary,
+            }
+        }
+    };
+    // On release, as a title bar shows it.
+    ui.dispatch(secondary(true, 50.));
+    assert_eq!(ui.take_window_gesture(), None);
+    ui.dispatch(secondary(false, 50.));
+    assert_eq!(ui.take_window_gesture(), Some(WindowGesture::Menu));
+    // Not over what takes input.
+    let close = view.find("close").unwrap();
+    let at = ui.scene.borrow().bounds(close);
+    ui.dispatch(secondary(true, at.x + 5.));
+    ui.dispatch(secondary(false, at.x + 5.));
+    assert_eq!(ui.take_window_gesture(), None);
+}

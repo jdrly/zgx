@@ -1561,12 +1561,25 @@ impl Host {
         }
     }
     fn clipboard_key(&mut self, key: &Key) -> bool {
-        if !self.modifiers.primary_shortcut() {
+        #[cfg(windows)]
+        let alias = windows_clipboard_alias(key, self.modifiers);
+        #[cfg(not(windows))]
+        let alias: Option<&str> = None;
+        let k: &str = match (alias, key) {
+            (Some(k), _) => k,
+            (None, Key::Character(k)) if self.modifiers.primary_shortcut() => k,
+            _ => return false,
+        };
+        // Shift+Delete with nothing selected deletes, as without Shift.
+        if alias == Some("x")
+            && self
+                .context
+                .ui
+                .focused_editor()
+                .is_none_or(|editor| editor.copy().is_empty())
+        {
             return false;
         }
-        let Key::Character(k) = key else {
-            return false;
-        };
         let Some(editor) = self.context.ui.focused_editor() else {
             // Selected display text (`View::selectable`) copies.
             if !k.eq_ignore_ascii_case("c") || !self.context.ui.has_text_selection() {
@@ -1980,7 +1993,9 @@ impl Host {
         #[cfg(target_os = "macos")]
         {
             // AppKit's own count: zgui's press tracking ends with a drag.
-            if gesture == WindowGesture::DoubleClick || mouse_down::click_count() == 2 {
+            if gesture == WindowGesture::Menu {
+                // No window menu on macOS.
+            } else if gesture == WindowGesture::DoubleClick || mouse_down::click_count() == 2 {
                 crate::window_chrome::double_click(&window);
             } else if mouse_down::drag(&window) {
                 // The window server has the press now: AppKit sends no
@@ -1997,6 +2012,10 @@ impl Host {
                     .set(window.drag_window().err().map(|e| e.to_string()));
             }
             WindowGesture::DoubleClick => crate::window_chrome::double_click(&window),
+            WindowGesture::Menu => window.show_window_menu(
+                LogicalPosition::new(f64::from(self.cursor.0), f64::from(self.cursor.1))
+                    .to_physical::<f64>(self.scale_factor),
+            ),
         }
         Ok(())
     }
@@ -2358,11 +2377,19 @@ impl Host {
                             PhysicalKey::Unidentified(_) => None,
                         });
                     if event.state == ElementState::Pressed {
-                        prevented = self.dispatch_prevented(InputEvent::KeyDown {
-                            key: key.clone(),
-                            modifiers: self.modifiers,
-                            repeat: event.repeat,
-                        })?;
+                        // Windows' Shift+Delete cuts a selection, before the
+                        // editor would only delete it.
+                        #[cfg(windows)]
+                        let cut = windows_clipboard_alias(&key, self.modifiers) == Some("x")
+                            && self.clipboard_key(&key);
+                        #[cfg(not(windows))]
+                        let cut = false;
+                        prevented = cut
+                            || self.dispatch_prevented(InputEvent::KeyDown {
+                                key: key.clone(),
+                                modifiers: self.modifiers,
+                                repeat: event.repeat,
+                            })?;
                         if !prevented {
                             prevented = self.clipboard_key(&key);
                         }
@@ -2701,6 +2728,17 @@ impl Host {
         if self.frame_deadline.is_none() {
             self.frame_deadline = Some(self.frame_timer.next_deadline(now, self.frame_interval));
         }
+    }
+}
+/// Windows' older clipboard keys, which its own fields still take:
+/// Ctrl+Insert copies, Shift+Insert pastes, Shift+Delete cuts.
+#[cfg(windows)]
+fn windows_clipboard_alias(key: &Key, m: zgui::input::Modifiers) -> Option<&'static str> {
+    match key {
+        Key::Insert if m.control && !m.shift && !m.alt => Some("c"),
+        Key::Insert if m.shift && !m.control && !m.alt => Some("v"),
+        Key::Delete if m.shift && !m.control && !m.alt => Some("x"),
+        _ => None,
     }
 }
 fn read_maximized_without_style_change(

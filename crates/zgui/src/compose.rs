@@ -3095,19 +3095,28 @@ fn mount_element(
 }
 /// `View::window_drag`: a primary press on `region`, or on a descendant
 /// that takes no input itself, asks the host to move the window (or, the
-/// second of a double click, to zoom it).
+/// second of a double click, to zoom it); a secondary click, for the
+/// window's menu.
 fn mount_window_drag(ui: &mut Ui, region: NodeId) {
     let weak = ui.downgrade();
     ui.on_event(region, false, move |cx| {
+        let menu = matches!(
+            cx.event,
+            InputEvent::PointerUp {
+                button: PointerButton::Secondary,
+                ..
+            }
+        );
         if cx.phase == EventPhase::Capture
             || cx.default_prevented()
-            || !matches!(
-                cx.event,
-                InputEvent::PointerDown {
-                    button: PointerButton::Primary,
-                    ..
-                }
-            )
+            || !(menu
+                || matches!(
+                    cx.event,
+                    InputEvent::PointerDown {
+                        button: PointerButton::Primary,
+                        ..
+                    }
+                ))
         {
             return;
         }
@@ -3136,7 +3145,9 @@ fn mount_window_drag(ui: &mut Ui, region: NodeId) {
         // Moving the window neither focuses nor presses what is under it.
         cx.prevent_default();
         cx.stop_propagation();
-        ui.request_window_gesture(if cx.click_count() == 2 {
+        ui.request_window_gesture(if menu {
+            crate::widgets::WindowGesture::Menu
+        } else if cx.click_count() == 2 {
             crate::widgets::WindowGesture::DoubleClick
         } else {
             crate::widgets::WindowGesture::Drag
