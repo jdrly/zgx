@@ -18,6 +18,45 @@ use std::{
 const FORMAT: &[u8] = b"zgui system fonts 1\n";
 
 pub(crate) fn system_fonts() -> FontSystem {
+    let mut fonts = cached_system_fonts();
+    platform_families(&mut fonts);
+    fonts
+}
+
+/// The system's own faces for the generic families. cosmic-text names
+/// Linux's (Open Sans, Noto Sans Mono, DejaVu Serif), which Windows has
+/// none of, so sans-serif text took the first face of the fallback list and
+/// monospace any fixed-width face. Windows 11's interface face is Segoe UI
+/// Variable, whose optical size axis zgui sets from the text size as
+/// Windows does (its Small, Text and Display cuts).
+fn platform_families(fonts: &mut FontSystem) {
+    #[cfg(windows)]
+    {
+        let db = fonts.db_mut();
+        let pick = |names: &[&'static str]| {
+            names.iter().copied().find(|name| {
+                db.faces()
+                    .any(|face| face.families.iter().any(|(family, _)| family == name))
+            })
+        };
+        let sans = pick(&["Segoe UI Variable", "Segoe UI"]);
+        let mono = pick(&["Cascadia Mono", "Consolas"]);
+        let serif = pick(&["Times New Roman"]);
+        if let Some(sans) = sans {
+            db.set_sans_serif_family(sans);
+        }
+        if let Some(mono) = mono {
+            db.set_monospace_family(mono);
+        }
+        if let Some(serif) = serif {
+            db.set_serif_family(serif);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = fonts;
+}
+
+fn cached_system_fonts() -> FontSystem {
     let Some(cache) = cache_file() else {
         return FontSystem::new();
     };
