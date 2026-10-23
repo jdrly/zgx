@@ -383,3 +383,30 @@ fn a_click_before_the_menu_shows_leaves_it_open() {
     key(&mut ui, Key::ArrowDown);
     assert_eq!(ui.input.focused(), view.find("large"), "past the disabled");
 }
+
+/// Right to left, a menu lines up with its trigger's right edge (its start)
+/// and opens leftward, rather than past the window's right edge.
+#[test]
+fn a_menu_opens_from_its_triggers_start_right_to_left() {
+    let mut ui = Ui::new(500., 400.);
+    let open = ui.signal(true);
+    let view = ui.mount(
+        row().w_full().px(60.).rtl().child(
+            menu("Size", open.clone(), button().id("anchor").size(120., 28.))
+                .id("menu")
+                .w(200.)
+                .p(0.)
+                .children([menu_item("small").h(24.)]),
+        ),
+    );
+    ui.prepare_frame();
+    ui.prepare_frame();
+    let scene = ui.scene.borrow();
+    let anchor = scene.bounds(view.find("anchor").unwrap());
+    let panel = scene.bounds(view.find("menu").unwrap());
+    assert!(
+        anchor.x > 300.,
+        "the trigger starts at the right: {anchor:?}"
+    );
+    assert_eq!(panel.x + panel.width, anchor.x + anchor.width, "{panel:?}");
+}

@@ -1,6 +1,6 @@
 //! Placement for a retained popover portal; ownership and focus live in compose_modal.
 use crate::{
-    scene::{NodeId, Rect, Transform},
+    scene::{Direction, NodeId, Rect, Transform},
     widgets::Ui,
 };
 
@@ -18,7 +18,8 @@ pub enum Side {
     Right,
 }
 /// How it lines up along that side: the trigger's start edge, centre or
-/// end edge (left/top, middle, right/bottom).
+/// end edge. Start is the left (the right where the trigger's text runs
+/// right to left) or the top; end the other.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Edge {
     /// The trigger's start edge (left or top).
@@ -100,6 +101,7 @@ fn mount_placement(
     let position_bounds = ui.observe_bounds(position);
     let screens = ui.popup_screens();
     let weak = ui.downgrade();
+    let anchor_node = anchor;
     ui.bind(owner, move || {
         let anchor = anchor_bounds.get();
         let viewport = screens
@@ -110,6 +112,9 @@ fn mount_placement(
         let Some(ui) = weak.upgrade() else {
             return;
         };
+        // Start and end, and which side a submenu prefers, follow the way
+        // the trigger's text runs.
+        let rtl = ui.scene.borrow().direction(anchor_node) == Direction::Rtl;
         // `open_over`'s item: where it lies in the panel (layout's, so the
         // panel's own placement does not move it).
         let item = over.as_ref().and_then(|over| over()).map(|item| {
@@ -121,9 +126,11 @@ fn mount_placement(
             Rect::new(item.x - laid.x, item.y - laid.y, item.width, item.height)
         });
         let desired = match (at, item) {
-            (_, Some(item)) => over_placement(anchor, viewport, panel.width, panel.height, item),
-            (None, _) => submenu_placement(anchor, viewport, panel.width, panel.height),
-            (Some(at), None) => placement(anchor, viewport, panel.width, panel.height, at),
+            (_, Some(item)) => {
+                over_placement(anchor, viewport, panel.width, panel.height, item, rtl)
+            }
+            (None, _) => submenu_placement(anchor, viewport, panel.width, panel.height, rtl),
+            (Some(at), None) => placement(anchor, viewport, panel.width, panel.height, at, rtl),
         };
         let mut scene = ui.scene.borrow_mut();
         if !scene.contains(position) {
@@ -160,7 +167,14 @@ pub(crate) fn screen_of(screens: &[Rect], anchor: Rect) -> Option<Rect> {
         .min_by(|a, b| distance(a).total_cmp(&distance(b)))
 }
 
-fn placement(anchor: Rect, viewport: Rect, width: f32, height: f32, at: Placement) -> (f32, f32) {
+fn placement(
+    anchor: Rect,
+    viewport: Rect,
+    width: f32,
+    height: f32,
+    at: Placement,
+    rtl: bool,
+) -> (f32, f32) {
     let right = viewport.x + viewport.width;
     let bottom = viewport.y + viewport.height;
     let gap = at.offset;
@@ -180,15 +194,21 @@ fn placement(anchor: Rect, viewport: Rect, width: f32, height: f32, at: Placemen
             preferred
         }
     };
-    // Across it: lined up with the trigger's start, centre or end.
-    let across = |start: f32, size: f32, extent: f32| match at.align {
-        Edge::Start => start,
-        Edge::Center => start + (extent - size) / 2.,
-        Edge::End => start + extent - size,
+    // Across it: lined up with the trigger's start, centre or end. Below
+    // or above the trigger, start is its right edge where text runs right
+    // to left; beside it, its top either way.
+    let across = |start: f32, size: f32, extent: f32, horizontal: bool| {
+        let flipped = horizontal && rtl;
+        match at.align {
+            Edge::Start if flipped => start + extent - size,
+            Edge::End if !flipped => start + extent - size,
+            Edge::Center => start + (extent - size) / 2.,
+            _ => start,
+        }
     };
     let (x, y) = match at.side {
         Side::Bottom | Side::Top => (
-            across(anchor.x, width, anchor.width),
+            across(anchor.x, width, anchor.width, true),
             along(
                 anchor.y,
                 anchor.y + anchor.height,
@@ -207,7 +227,7 @@ fn placement(anchor: Rect, viewport: Rect, width: f32, height: f32, at: Placemen
                 viewport.x,
                 right,
             ),
-            across(anchor.y, height, anchor.height),
+            across(anchor.y, height, anchor.height, false),
         ),
     };
     (
@@ -226,9 +246,20 @@ fn current_panel(scene: &crate::scene::Scene, position: NodeId) -> NodeId {
 }
 
 /// A pop-up button's menu: its `item` (where it lies in the panel) over the
-/// trigger, lined up with it, kept on the screen.
-fn over_placement(anchor: Rect, viewport: Rect, width: f32, height: f32, item: Rect) -> (f32, f32) {
-    let x = anchor.x - item.x;
+/// trigger, lined up with its start edge (the right where text runs right
+/// to left), kept on the screen.
+fn over_placement(
+    anchor: Rect,
+    viewport: Rect,
+    width: f32,
+    height: f32,
+    item: Rect,
+    rtl: bool,
+) -> (f32, f32) {
+    let x = match rtl {
+        true => anchor.x + anchor.width - (item.x + item.width),
+        false => anchor.x - item.x,
+    };
     let y = anchor.y + (anchor.height - item.height) / 2. - item.y;
     let right = viewport.x + viewport.width;
     let bottom = viewport.y + viewport.height;
@@ -238,16 +269,25 @@ fn over_placement(anchor: Rect, viewport: Rect, width: f32, height: f32, item: R
     )
 }
 
-fn submenu_placement(anchor: Rect, viewport: Rect, width: f32, height: f32) -> (f32, f32) {
+/// A submenu beside its trigger: after it (the right, or the left where
+/// text runs right to left), else the side with more room.
+fn submenu_placement(
+    anchor: Rect,
+    viewport: Rect,
+    width: f32,
+    height: f32,
+    rtl: bool,
+) -> (f32, f32) {
     let right_edge = viewport.x + viewport.width;
     let right = anchor.x + anchor.width + 4.;
     let left = anchor.x - width - 4.;
     let right_room = right_edge - right;
     let left_room = anchor.x - 4. - viewport.x;
-    let x = if right_room >= width || right_room >= left_room {
-        right
-    } else {
-        left
+    let x = match rtl {
+        false if right_room >= width || right_room >= left_room => right,
+        false => left,
+        true if left_room >= width || left_room >= right_room => left,
+        true => right,
     };
     (
         x.clamp(viewport.x, (right_edge - width).max(viewport.x)),
@@ -272,33 +312,134 @@ mod tests {
         };
         // Below, start-aligned: the default, as before.
         assert_eq!(
-            placement(trigger, viewport, 120., 60., Placement::default()),
+            placement(trigger, viewport, 120., 60., Placement::default(), false),
             (100., 74.)
         );
         // End-aligned: the panel's right edge on the trigger's.
         assert_eq!(
-            placement(trigger, viewport, 120., 60., at(Side::Bottom, Edge::End)),
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Bottom, Edge::End),
+                false
+            ),
             (60., 74.)
         );
         assert_eq!(
-            placement(trigger, viewport, 120., 60., at(Side::Bottom, Edge::Center)),
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Bottom, Edge::Center),
+                false
+            ),
             (80., 74.)
         );
         // Above, with no room above: below instead.
         assert_eq!(
-            placement(trigger, viewport, 120., 60., at(Side::Top, Edge::Start)),
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Top, Edge::Start),
+                false
+            ),
             (100., 74.)
         );
         // Right of it, centred on it.
         assert_eq!(
-            placement(trigger, viewport, 120., 60., at(Side::Right, Edge::Center)),
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Right, Edge::Center),
+                false
+            ),
             (184., 30.)
         );
         // Near the bottom edge: flipped above.
         let low = Rect::new(100., 260., 80., 20.);
         assert_eq!(
-            placement(low, viewport, 120., 60., Placement::default()),
+            placement(low, viewport, 120., 60., Placement::default(), false),
             (100., 196.)
+        );
+    }
+    #[test]
+    fn start_and_end_follow_the_triggers_direction() {
+        let viewport = Rect::new(0., 0., 400., 300.);
+        let trigger = Rect::new(100., 50., 80., 20.);
+        let at = |side, align| Placement {
+            side,
+            align,
+            offset: 4.,
+        };
+        // Right to left, start is the trigger's right edge, end its left.
+        assert_eq!(
+            placement(trigger, viewport, 120., 60., Placement::default(), true),
+            (60., 74.)
+        );
+        assert_eq!(
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Bottom, Edge::End),
+                true
+            ),
+            (100., 74.)
+        );
+        assert_eq!(
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Bottom, Edge::Center),
+                true
+            ),
+            (80., 74.)
+        );
+        // Beside it, start is its top either way; sides stay physical.
+        assert_eq!(
+            placement(
+                trigger,
+                viewport,
+                120.,
+                60.,
+                at(Side::Right, Edge::Start),
+                true
+            ),
+            (184., 50.)
+        );
+        // Near the right edge, kept inside it.
+        let edge = Rect::new(330., 50., 60., 20.);
+        assert_eq!(
+            placement(edge, viewport, 120., 60., Placement::default(), true),
+            (270., 74.)
+        );
+        // A submenu prefers the left, and takes the right when only it has
+        // room.
+        let menu = Rect::new(10., 20., 300., 200.);
+        assert_eq!(
+            submenu_placement(Rect::new(230., 190., 60., 20.), menu, 100., 60., true),
+            (126., 160.)
+        );
+        assert_eq!(
+            submenu_placement(Rect::new(30., 50., 80., 20.), menu, 100., 60., true),
+            (114., 50.)
+        );
+        // A pop-up button's item lines up with its right edge.
+        let button = Rect::new(100., 150., 120., 24.);
+        let item = Rect::new(5., 53., 110., 24.);
+        assert_eq!(
+            over_placement(button, viewport, 120., 180., item, true),
+            (105., 97.)
         );
     }
     #[test]
@@ -308,12 +449,15 @@ mod tests {
         // The third 24-point row (after 5 points of padding) of a menu.
         let item = Rect::new(5., 53., 110., 24.);
         assert_eq!(
-            over_placement(trigger, viewport, 120., 180., item),
+            over_placement(trigger, viewport, 120., 180., item, false),
             (95., 97.)
         );
         // Near the top, kept on the screen.
         let high = Rect::new(100., 10., 120., 24.);
-        assert_eq!(over_placement(high, viewport, 120., 180., item), (95., 0.));
+        assert_eq!(
+            over_placement(high, viewport, 120., 180., item, false),
+            (95., 0.)
+        );
     }
     #[test]
     fn popups_open_on_their_anchors_screen() {
@@ -335,20 +479,20 @@ mod tests {
     fn submenu_placement_flips_and_clamps_with_nonzero_viewport_origin() {
         let viewport = Rect::new(10., 20., 300., 200.);
         assert_eq!(
-            submenu_placement(Rect::new(30., 50., 80., 20.), viewport, 100., 60.),
+            submenu_placement(Rect::new(30., 50., 80., 20.), viewport, 100., 60., false),
             (114., 50.)
         );
         assert_eq!(
-            submenu_placement(Rect::new(230., 190., 60., 20.), viewport, 100., 60.),
+            submenu_placement(Rect::new(230., 190., 60., 20.), viewport, 100., 60., false),
             (126., 160.)
         );
         // Both sides are too small; choose the more spacious side then clamp.
         assert_eq!(
-            submenu_placement(Rect::new(140., 10., 40., 20.), viewport, 180., 60.),
+            submenu_placement(Rect::new(140., 10., 40., 20.), viewport, 180., 60., false),
             (130., 20.)
         );
         assert_eq!(
-            submenu_placement(Rect::new(30., 50., 80., 20.), viewport, 400., 300.),
+            submenu_placement(Rect::new(30., 50., 80., 20.), viewport, 400., 300., false),
             (10., 20.)
         );
     }
