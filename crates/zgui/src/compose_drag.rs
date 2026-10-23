@@ -114,6 +114,49 @@ impl View {
         });
         self
     }
+    /// What the drag carries to other apps (text, links, files, images),
+    /// as it leaves the app's windows: where the host can, it hands the drag
+    /// to the platform there (macOS), and Finder, Mail or a browser take it.
+    /// `on_drag_end` hears whether one did.
+    pub fn drag_export<T: 'static>(
+        self,
+        mut export: impl FnMut(&T) -> Vec<crate::input::DragItem> + 'static,
+    ) -> Self {
+        self.on_event(move |cx| {
+            if cx.phase != EventPhase::Target {
+                return;
+            }
+            if let InputEvent::Drag(event) = &cx.event
+                && event.phase == DragPhase::Start
+                && let Some(value) = event.payload.downcast_ref::<T>()
+            {
+                cx.set_drag_export(export(value));
+            }
+        })
+    }
+    /// Released outside every window of the app (where its host can tell,
+    /// macOS): a tab torn off its window, to open in a window of its own
+    /// (`WindowOptions::under_pointer` puts the grab point under the pointer).
+    /// `on_drag_end` hears it too, not accepted.
+    pub fn on_drag_outside<T: 'static>(
+        self,
+        mut callback: impl FnMut(&T, &crate::input::DragEvent) + 'static,
+    ) -> Self {
+        self.on_event(move |cx| {
+            if cx.phase != EventPhase::Target {
+                return;
+            }
+            if let InputEvent::Drag(event) = &cx.event
+                && event.phase == DragPhase::End
+                && event.outside
+                && let Some(value) = event.payload.downcast_ref::<T>()
+            {
+                callback(value, event);
+            }
+        })
+    }
+    /// Hear the drag end: `accepted` when a destination (in any of the
+    /// app's windows, or another app) took it.
     pub fn on_drag_end<T: 'static>(self, mut callback: impl FnMut(&T, bool) + 'static) -> Self {
         self.on_event(move |cx| {
             if cx.phase != EventPhase::Target {
@@ -166,6 +209,15 @@ pub(crate) fn mount(ui: &mut Ui, source: NodeId, mut builder: PreviewBuilder) {
                     style.absolute = true;
                     ui.scene.borrow_mut().set_style(node, style);
                     ui.input.set_drag_preview(Some(node));
+                    // Where popups have windows of their own, so does the
+                    // preview: the host moves its window with the pointer,
+                    // over other windows and apps, drawing it once.
+                    if ui
+                        .popup_screens()
+                        .with_untracked(|screens| !screens.is_empty())
+                    {
+                        ui.scene.borrow_mut().set_popup(node, true);
+                    }
                     preview.0 = Some(view);
                 }
             }
@@ -178,19 +230,17 @@ pub(crate) fn mount(ui: &mut Ui, source: NodeId, mut builder: PreviewBuilder) {
             _ => {}
         }
         if let Some(view) = &preview.0 {
-            ui.scene.borrow_mut().set_transform(
-                view.node(),
-                match builder.cursor_offset {
-                    Some((x, y)) => Transform {
-                        x: event.x + x,
-                        y: event.y + y,
-                    },
-                    None => Transform {
-                        x: event.x - event.grab_x,
-                        y: event.y - event.grab_y,
-                    },
-                },
-            );
+            let (x, y) = match builder.cursor_offset {
+                Some((x, y)) => (event.x + x, event.y + y),
+                None => (event.x - event.grab_x, event.y - event.grab_y),
+            };
+            if ui.scene.borrow().is_popup(view.node()) {
+                ui.input.set_drag_preview_origin(Some((x, y)));
+            } else {
+                ui.scene
+                    .borrow_mut()
+                    .set_transform(view.node(), Transform { x, y });
+            }
         }
     });
     ui.retain(source, binding);

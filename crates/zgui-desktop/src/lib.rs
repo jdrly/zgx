@@ -22,9 +22,11 @@
 pub mod app_menu;
 mod clipboard;
 pub mod file_dialog;
+mod native_drag;
 mod native_events;
 mod native_prompt;
 mod platform;
+mod popup_window;
 #[cfg(target_os = "linux")]
 mod portal_dialog;
 #[cfg(target_os = "linux")]
@@ -35,6 +37,7 @@ mod url;
 mod wayland_data;
 mod window_chrome;
 mod window_info;
+mod window_place;
 pub use app_menu::{
     AppMenu, AppMenuEntry, AppMenuError, MenuAccelerator, MenuAction, StandardItem, app_menu_bar,
     has_native_app_menu,
@@ -47,6 +50,7 @@ pub use native_prompt::{PromptButtons, PromptLevel, PromptOptions, PromptRespons
 pub use url::{OpenUrlError, open_url};
 pub use window_chrome::{Glass, GlassMaterial, Titlebar};
 pub use window_info::{DisplayInfo, DisplaySelector, WindowBounds, WindowCapabilities, WindowInfo};
+pub use window_place::Tabbing;
 mod native_host;
 #[cfg(target_os = "macos")]
 pub use native_host::{BackdropReport, NativeDiagnostics, NativeViewReport};

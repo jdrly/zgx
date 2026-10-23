@@ -554,6 +554,9 @@ pub(crate) struct Events {
     pub drag: Option<Function>,
     pub drag_preview: Option<Function>,
     pub drag_end: Option<Function>,
+    /// `drag_export(payload) -> { text, url, files }`: what the drag carries
+    /// to other apps as it leaves the app's windows (macOS).
+    pub drag_export: Option<Function>,
     /// On a destination: `drop_when(payload) -> bool` (default: all),
     /// `on_drag_over(payload, { x, y, local_x, local_y, w, h })` while an
     /// accepted drag hovers, `on_drag_leave(payload)` when it leaves,
@@ -599,6 +602,7 @@ impl Events {
         drag: None,
         drag_preview: None,
         drag_end: None,
+        drag_export: None,
         drop: None,
         drop_when: None,
         drag_over: None,
@@ -1596,8 +1600,8 @@ fn set_handler(
             events.context_menu = Some(f);
             return Ok(None);
         }
-        "on_drag" | "drag_preview" | "on_drag_end" | "on_drop" | "drop_when" | "on_drag_over"
-        | "on_drag_leave" => {
+        "on_drag" | "drag_preview" | "on_drag_end" | "drag_export" | "on_drop" | "drop_when"
+        | "on_drag_over" | "on_drag_leave" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime(format!("{key} takes a function")));
             };
@@ -1605,6 +1609,7 @@ fn set_handler(
                 "on_drag" => &mut events.drag,
                 "drag_preview" => &mut events.drag_preview,
                 "on_drag_end" => &mut events.drag_end,
+                "drag_export" => &mut events.drag_export,
                 "on_drop" => &mut events.drop,
                 "drop_when" => &mut events.drop_when,
                 "on_drag_over" => &mut events.drag_over,

@@ -413,6 +413,11 @@ struct UiStorage {
     mount_theme: RefCell<Option<Rc<ThemeScope>>>,
     text_geometry_revision: Signal<u64>,
     presented: Signal<bool>,
+    /// Where popups may show (`Ui::set_popup_screens`).
+    popup_screens: Signal<Vec<Rect>>,
+    /// Open signals of anchored popups, by their popup roots
+    /// (`Ui::dismiss_popups`).
+    popups: RefCell<Vec<(NodeId, Signal<bool>)>>,
     scene: Rc<RefCell<Scene>>,
     input: InputDispatcher,
     semantics: Rc<RefCell<Semantics>>,
@@ -602,6 +607,8 @@ impl Ui {
             text_geometry_revision: runtime.signal(0),
             presented: runtime.signal(true),
             overlay_scrollbars: runtime.signal(false),
+            popup_screens: runtime.signal(Vec::new()),
+            popups: RefCell::new(Vec::new()),
             runtime,
             scene: Rc::new(RefCell::new(Scene::new(width, height))),
             input: InputDispatcher::new(),
@@ -1397,6 +1404,50 @@ impl Ui {
     }
     pub(crate) fn observe_presentation(&self) -> Signal<bool> {
         self.storage.presented.clone()
+    }
+    /// Let anchored popups (popovers, menus, submenus, context menus,
+    /// tooltips) show past the window, within `screens`: the visible part of
+    /// each screen, in window coordinates. Each flips and clamps to the
+    /// screen its trigger is on instead of the window, and its subtree
+    /// becomes a popup root (`Scene::set_popup`) the host shows in a window
+    /// of its own. None (the default, and on hosts without popup windows):
+    /// they stay inside the window.
+    pub fn set_popup_screens(&self, screens: Vec<Rect>) {
+        if self
+            .storage
+            .popup_screens
+            .with_untracked(|current| *current != screens)
+        {
+            self.storage.popup_screens.set(screens);
+        }
+    }
+    pub(crate) fn popup_screens(&self) -> Signal<Vec<Rect>> {
+        self.storage.popup_screens.clone()
+    }
+    pub(crate) fn register_popup(&self, root: NodeId, open: Signal<bool>) {
+        let scene = self.scene.borrow();
+        let mut popups = self.storage.popups.borrow_mut();
+        popups.retain(|(node, _)| scene.contains(*node));
+        popups.push((root, open));
+    }
+    /// Close every open popup shown past the window, as AppKit closes menus
+    /// and transient popovers when the app or its window loses focus.
+    pub fn dismiss_popups(&self) {
+        let open: Vec<Signal<bool>> = {
+            let scene = self.scene.borrow();
+            self.storage
+                .popups
+                .borrow()
+                .iter()
+                .filter(|(node, _)| scene.is_popup(*node))
+                .map(|(_, open)| open.clone())
+                .collect()
+        };
+        for open in open {
+            if open.with_untracked(|open| *open) {
+                open.set(false);
+            }
+        }
     }
     pub(crate) fn observe_visibility(&self, node: NodeId) -> Signal<bool> {
         if let Some(signal) = self.storage.observed_visibility.borrow().get(&node) {

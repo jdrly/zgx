@@ -413,3 +413,82 @@ fn drops_land_under_a_pointer_transparent_layer() {
     up(&ui, 150., 20.);
     assert_eq!(&*log.borrow(), &["drop:7"]);
 }
+
+/// A drag from one window over another (`drag_over`), dropped there
+/// (`drag_drop`), and the source told how it ended (`end_drag_elsewhere`),
+/// as a host with several windows carries it; then one torn off (released
+/// outside every window).
+#[test]
+fn drags_cross_windows_and_tear_off() {
+    let mut source = Ui::new(300., 200.);
+    let mut target = Ui::new(300., 200.);
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let (ended, outside, hovered, dropped) = (log.clone(), log.clone(), log.clone(), log.clone());
+    source.mount(
+        div()
+            .id("source")
+            .size(100., 40.)
+            .on_drag(|| Card(3))
+            .on_drag_end(move |card: &Card, accepted| {
+                ended
+                    .borrow_mut()
+                    .push(format!("end:{}:{accepted}", card.0))
+            })
+            .on_drag_outside(move |card: &Card, event| {
+                outside
+                    .borrow_mut()
+                    .push(format!("outside:{}:{}", card.0, event.outside))
+            }),
+    );
+    target.mount(
+        div()
+            .id("destination")
+            .size(300., 200.)
+            .on_event(move |cx| {
+                if let InputEvent::Drag(event) = &cx.event
+                    && event.phase == zgui::input::DragPhase::Over
+                    && cx.phase == zgui::input::EventPhase::Target
+                {
+                    hovered
+                        .borrow_mut()
+                        .push(format!("over:{}", event.visiting));
+                }
+            })
+            .on_drop(move |card: &Card, _| dropped.borrow_mut().push(format!("drop:{}", card.0))),
+    );
+    source.prepare_frame();
+    target.prepare_frame();
+    down(&source, 10., 10.);
+    moved(&source, 30., 10.);
+    let drag = source.input.drag_state().expect("dragging");
+    assert_eq!(drag.payload.downcast_ref::<Card>(), Some(&Card(3)));
+    // Over the other window: the source's destinations hear nothing.
+    source.input.set_drag_away(&source.scene, true);
+    assert!(
+        target
+            .input
+            .drag_over(&target.scene, &drag.payload, 50., 50.)
+    );
+    assert!(
+        target
+            .input
+            .drag_drop(&target.scene, &drag.payload, 50., 50.)
+    );
+    source.input.end_drag_elsewhere(&source.scene, true, false);
+    assert!(!source.input.is_dragging());
+    assert_eq!(
+        *log.borrow(),
+        ["over:true", "over:true", "drop:3", "end:3:true"]
+    );
+    let ended = source.input.take_drag_ended().unwrap();
+    assert!(ended.accepted && !ended.outside);
+    // Torn off: released over none of the app's windows.
+    log.borrow_mut().clear();
+    up(&source, 30., 10.);
+    down(&source, 10., 10.);
+    moved(&source, 30., 10.);
+    source.input.set_drag_away(&source.scene, true);
+    target.input.drag_out(&target.scene);
+    source.input.end_drag_elsewhere(&source.scene, false, true);
+    assert_eq!(*log.borrow(), ["end:3:false", "outside:3:true"]);
+}

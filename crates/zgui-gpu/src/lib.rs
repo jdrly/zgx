@@ -2055,9 +2055,14 @@ impl GpuRenderer {
         );
         let merged = (!self.fresh && !scene.has_backdrop_blur())
             .then(|| merge_damage(damage, viewport, self.scale));
+        // A popup window's renderer walks its root's subtree alone.
+        let start = self.plane_popup();
+        if start.is_some_and(|root| !scene.contains(root)) {
+            return Ok(GpuStats::default());
+        }
         let items = match &merged {
-            Some(regions) => scene.layer_items_within(None, Some(&self.plane_world(regions))),
-            None => scene.layer_items(None),
+            Some(regions) => scene.layer_items_within(start, Some(&self.plane_world(regions))),
+            None => scene.layer_items(start),
         };
         // Around native views, only this plane's paint (planes.rs).
         let items = self.plane_items(items);
@@ -5499,6 +5504,57 @@ impl GpuRenderer {
     /// encoded with Metal directly: the frame's own work, plus however long
     /// other work on the GPU (the window server's compositing, other apps)
     /// held it up. Taken: `None` until another such frame presents.
+    /// The frame its layer shows (a popup window's), for an image of it (a
+    /// drag image): width and height in pixels, then premultiplied BGRA rows.
+    /// Waits for the GPU to finish it.
+    #[cfg(target_os = "macos")]
+    pub fn shown_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+        unsafe extern "C" {
+            fn IOSurfaceLock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+            fn IOSurfaceUnlock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+            fn IOSurfaceGetBaseAddress(surface: *const c_void) -> *const u8;
+            fn IOSurfaceGetBytesPerRow(surface: *const c_void) -> usize;
+            fn IOSurfaceGetWidth(surface: *const c_void) -> usize;
+            fn IOSurfaceGetHeight(surface: *const c_void) -> usize;
+        }
+        use std::ffi::c_void;
+        let present = self.layer_present.as_ref()?;
+        let (buffer, _) = present.buffers.get(present.shown?)?;
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let surface = objc2_core_foundation::CFRetained::as_ptr(&buffer.surface)
+            .as_ptr()
+            .cast::<c_void>()
+            .cast_const();
+        // SAFETY: a live surface of the renderer's, locked read-only (1)
+        // while its rows are copied.
+        unsafe {
+            if IOSurfaceLock(surface, 1, std::ptr::null_mut()) != 0 {
+                return None;
+            }
+            let (width, height) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+            let (base, stride) = (
+                IOSurfaceGetBaseAddress(surface),
+                IOSurfaceGetBytesPerRow(surface),
+            );
+            let mut pixels = Vec::with_capacity(width * height * 4);
+            for row in 0..height {
+                pixels.extend_from_slice(std::slice::from_raw_parts(
+                    base.add(row * stride),
+                    width * 4,
+                ));
+            }
+            IOSurfaceUnlock(surface, 1, std::ptr::null_mut());
+            Some((width as u32, height as u32, pixels))
+        }
+    }
+    /// Whether a frame drawn into the renderer's own surfaces waits to be
+    /// presented (`present` then shows it; without one it does nothing).
+    #[cfg(target_os = "macos")]
+    pub fn frame_pending(&self) -> bool {
+        self.layer_present
+            .as_ref()
+            .is_some_and(|present| present.current.is_some())
+    }
     #[cfg(target_os = "macos")]
     pub fn take_gpu_time(&mut self) -> Option<std::time::Duration> {
         self.gpu_time.take()

@@ -1,4 +1,11 @@
-//! One window-local typed drag session. Native OS drag initiation is separate.
+//! One window's typed drag session, and drags from other windows over it.
+//!
+//! A host with several windows carries a drag between them: while the
+//! pointer is over another window, the source's session is away
+//! (`set_drag_away`) and that window's destinations hear it as a visit
+//! (`drag_over`, `drag_out`, `drag_drop`); the source then learns how it
+//! ended (`end_drag_elsewhere`). Hosts handing a drag to the platform (to
+//! other apps) read what it carries there from `drag_state`.
 use super::*;
 use crate::actions::Action;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +30,55 @@ pub struct DragEvent {
     pub grab_y: f32,
     /// True on End only when the accepted destination consumed Drop.
     pub accepted: bool,
+    /// On End: released outside every window of the app (where its host
+    /// can tell), as a tab torn off its window is.
+    pub outside: bool,
+    /// From another window of the app (`InputDispatcher::drag_over`):
+    /// `source` and the grab point are not this window's.
+    pub visiting: bool,
+}
+/// What a drag carries to other apps, when a host hands it to the platform
+/// as it leaves the app's windows (`View::drag_export`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DragItem {
+    Text(String),
+    Url(String),
+    File(std::path::PathBuf),
+    /// An encoded image (PNG, JPEG, TIFF).
+    Image(Rc<[u8]>),
+}
+/// A window's drag, as its host reads it (`InputDispatcher::drag_state`).
+#[derive(Clone, Debug)]
+pub struct DragState {
+    pub payload: Action,
+    pub source: NodeId,
+    /// The pointer, in the window's coordinates.
+    pub x: f32,
+    pub y: f32,
+    pub preview: Option<NodeId>,
+    /// Where the preview's top-left goes, where a host shows it in a window
+    /// of its own (`set_drag_preview_origin`).
+    pub preview_origin: Option<(f32, f32)>,
+    pub export: Option<Rc<[DragItem]>>,
+    /// Over another window (`set_drag_away`).
+    pub away: bool,
+}
+/// How a window's drag ended, for its host (a preview shown in a window of
+/// its own slides back to its source when nothing took it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragEnded {
+    pub source: NodeId,
+    pub preview: Option<NodeId>,
+    pub accepted: bool,
+    pub outside: bool,
+}
+/// A visit: another window's drag over this one.
+#[derive(Clone)]
+pub(super) struct Visit {
+    payload: Action,
+    x: f32,
+    y: f32,
+    destination: Option<NodeId>,
 }
 #[derive(Clone)]
 pub(super) struct DragSession {
@@ -33,6 +89,9 @@ pub(super) struct DragSession {
     grab: (f32, f32),
     destination: Option<NodeId>,
     preview: Option<NodeId>,
+    preview_origin: Option<(f32, f32)>,
+    export: Option<Rc<[DragItem]>>,
+    away: bool,
 }
 impl DragSession {
     fn event(&self, phase: DragPhase, accepted: bool) -> InputEvent {
@@ -45,6 +104,24 @@ impl DragSession {
             grab_x: self.grab.0,
             grab_y: self.grab.1,
             accepted,
+            outside: false,
+            visiting: false,
+        })
+    }
+}
+impl Visit {
+    fn event(&self, phase: DragPhase, root: NodeId) -> InputEvent {
+        InputEvent::Drag(DragEvent {
+            phase,
+            payload: self.payload.clone(),
+            source: root,
+            x: self.x,
+            y: self.y,
+            grab_x: 0.,
+            grab_y: 0.,
+            accepted: false,
+            outside: false,
+            visiting: true,
         })
     }
 }
@@ -57,6 +134,149 @@ impl InputDispatcher {
         if let Some(drag) = &mut self.state.borrow_mut().drag {
             drag.preview = node;
         }
+    }
+    /// Where the preview's top-left goes, in window coordinates, for a host
+    /// showing it in a window of its own (it is then not moved in the scene).
+    pub fn set_drag_preview_origin(&self, origin: Option<(f32, f32)>) {
+        if let Some(drag) = &mut self.state.borrow_mut().drag {
+            drag.preview_origin = origin;
+        }
+    }
+    /// What the drag carries to other apps (`View::drag_export`).
+    pub fn set_drag_export(&self, items: Option<Rc<[DragItem]>>) {
+        if let Some(drag) = &mut self.state.borrow_mut().drag {
+            drag.export = items;
+        }
+    }
+    /// How the last drag ended, once.
+    pub fn take_drag_ended(&self) -> Option<DragEnded> {
+        self.state.borrow_mut().drag_ended.take()
+    }
+    pub fn drag_state(&self) -> Option<DragState> {
+        self.state.borrow().drag.as_ref().map(|drag| DragState {
+            payload: drag.payload.clone(),
+            source: drag.source,
+            x: drag.x,
+            y: drag.y,
+            preview: drag.preview,
+            preview_origin: drag.preview_origin,
+            export: drag.export.clone(),
+            away: drag.away,
+        })
+    }
+    /// The pointer is over another window (or back over this one): no
+    /// destination here hears the drag meanwhile; the source still hears it
+    /// move.
+    pub fn set_drag_away(&self, scene: &Rc<RefCell<Scene>>, away: bool) {
+        let Some(drag) = self.state.borrow().drag.clone() else {
+            return;
+        };
+        if drag.away == away {
+            return;
+        }
+        if let Some(active) = &mut self.state.borrow_mut().drag {
+            active.away = away;
+            if away {
+                active.destination = None;
+            }
+        }
+        if away && let Some(id) = drag.destination.filter(|id| scene.borrow().contains(*id)) {
+            self.route(scene, id, drag.event(DragPhase::Leave, false));
+        }
+    }
+    /// The drag ended over another window (`accepted`: a destination there
+    /// took it) or, `outside`, over none of the app's: the source hears
+    /// that it ended, and nothing here is dropped on.
+    pub fn end_drag_elsewhere(&self, scene: &Rc<RefCell<Scene>>, accepted: bool, outside: bool) {
+        self.finish(scene, false, accepted, outside);
+    }
+    /// Another window's drag carrying `payload` is at window point `(x, y)`
+    /// here: destinations here hear it over them (`DragEvent::visiting`).
+    /// Returns whether one accepts it.
+    pub fn drag_over(&self, scene: &Rc<RefCell<Scene>>, payload: &Action, x: f32, y: f32) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let previous = {
+            let mut state = self.state.borrow_mut();
+            let visit = state.visit.get_or_insert_with(|| Visit {
+                payload: payload.clone(),
+                x,
+                y,
+                destination: None,
+            });
+            if visit.payload != *payload {
+                *visit = Visit {
+                    payload: payload.clone(),
+                    x,
+                    y,
+                    destination: None,
+                };
+            }
+            visit.x = x;
+            visit.y = y;
+            visit.clone()
+        };
+        let root = scene.borrow().root();
+        // Back over its own window, the drag's preview is not under it.
+        let preview = self
+            .state
+            .borrow()
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.preview);
+        let hit = self.drag_hit(&scene.borrow(), x, y, preview);
+        let destination = hit
+            .and_then(|hit| {
+                self.route(scene, hit, previous.event(DragPhase::Over, root))
+                    .drag_accepted
+            })
+            .filter(|id| self.enabled(&scene.borrow(), *id));
+        if previous.destination != destination
+            && let Some(old) = previous
+                .destination
+                .filter(|id| scene.borrow().contains(*id))
+        {
+            self.route(scene, old, previous.event(DragPhase::Leave, root));
+        }
+        if let Some(visit) = &mut self.state.borrow_mut().visit {
+            visit.destination = destination;
+        }
+        destination.is_some()
+    }
+    /// Another window's drag left this one.
+    pub fn drag_out(&self, scene: &Rc<RefCell<Scene>>) {
+        let Some(visit) = self.state.borrow_mut().visit.take() else {
+            return;
+        };
+        let root = scene.borrow().root();
+        if let Some(id) = visit.destination.filter(|id| scene.borrow().contains(*id)) {
+            self.route(scene, id, visit.event(DragPhase::Leave, root));
+        }
+    }
+    /// Another window's drag was released at window point `(x, y)` here:
+    /// whether a destination here took it.
+    pub fn drag_drop(&self, scene: &Rc<RefCell<Scene>>, payload: &Action, x: f32, y: f32) -> bool {
+        self.drag_over(scene, payload, x, y);
+        let Some(visit) = self.state.borrow_mut().visit.take() else {
+            return false;
+        };
+        let root = scene.borrow().root();
+        let accepted = visit
+            .destination
+            .filter(|id| self.enabled(&scene.borrow(), *id))
+            .is_some_and(|id| {
+                self.route(scene, id, visit.event(DragPhase::Drop, root))
+                    .prevented
+            });
+        if let Some(id) = visit.destination.filter(|id| scene.borrow().contains(*id)) {
+            self.route(scene, id, visit.event(DragPhase::Leave, root));
+        }
+        if accepted {
+            let hovered = self.hit_target(&scene.borrow(), x, y);
+            self.set_hover(scene, hovered);
+        }
+        accepted
     }
     pub fn cancel_drag(&self, scene: &Rc<RefCell<Scene>>) {
         self.finish_drag(scene, false);
@@ -106,6 +326,9 @@ impl InputDispatcher {
             grab: (pressed_at.0 - origin.x, pressed_at.1 - origin.y),
             destination: None,
             preview: None,
+            preview_origin: None,
+            export: None,
+            away: false,
         };
         let pressed = {
             let mut state = self.state.borrow_mut();
@@ -120,7 +343,12 @@ impl InputDispatcher {
             self.route(scene, pressed, InputEvent::PointerCancel);
         }
         self.route(scene, source, InputEvent::PointerCancel);
-        self.route(scene, source, drag.event(DragPhase::Start, false));
+        let started = self.route(scene, source, drag.event(DragPhase::Start, false));
+        if let Some(items) = started.drag_export
+            && let Some(active) = &mut self.state.borrow_mut().drag
+        {
+            active.export = Some(items);
+        }
         self.update_drag(scene, x, y);
     }
     fn drag_hit(&self, scene: &Scene, x: f32, y: f32, preview: Option<NodeId>) -> Option<NodeId> {
@@ -168,6 +396,7 @@ impl InputDispatcher {
             .drag
             .as_ref()
             .is_some_and(|active| active.source == drag.source && active.payload == drag.payload)
+            || drag.away
         {
             return;
         }
@@ -188,6 +417,11 @@ impl InputDispatcher {
         }
     }
     fn finish_drag(&self, scene: &Rc<RefCell<Scene>>, drop: bool) {
+        self.finish(scene, drop, false, false);
+    }
+    /// End the drag: dropped here (`drop`), or ended elsewhere, taken there
+    /// (`elsewhere`) or released `outside` the app's windows.
+    fn finish(&self, scene: &Rc<RefCell<Scene>>, drop: bool, elsewhere: bool, outside: bool) {
         let Some(drag) = self.state.borrow_mut().drag.take() else {
             return;
         };
@@ -198,14 +432,15 @@ impl InputDispatcher {
             state.captured = None;
             state.capture_button = None;
         }
-        let accepted = drop
-            && drag
-                .destination
-                .filter(|id| self.enabled(&scene.borrow(), *id))
-                .is_some_and(|id| {
-                    self.route(scene, id, drag.event(DragPhase::Drop, false))
-                        .prevented
-                });
+        let accepted = elsewhere
+            || drop
+                && drag
+                    .destination
+                    .filter(|id| self.enabled(&scene.borrow(), *id))
+                    .is_some_and(|id| {
+                        self.route(scene, id, drag.event(DragPhase::Drop, false))
+                            .prevented
+                    });
         if let Some(id) = drag.destination.filter(|id| scene.borrow().contains(*id)) {
             self.route(scene, id, drag.event(DragPhase::Leave, accepted));
         }
@@ -214,12 +449,22 @@ impl InputDispatcher {
             state.drag_ending = None;
             std::mem::take(&mut state.drag_orphans)
         };
+        self.state.borrow_mut().drag_ended = Some(DragEnded {
+            source: drag.source,
+            preview: drag.preview,
+            accepted,
+            outside,
+        });
+        let mut end = drag.event(DragPhase::End, accepted);
+        if let InputEvent::Drag(event) = &mut end {
+            event.outside = outside;
+        }
         if scene.borrow().contains(drag.source) {
-            self.route(scene, drag.source, drag.event(DragPhase::End, accepted));
+            self.route(scene, drag.source, end);
         } else {
             // The source went during the drag: its own listeners still learn
             // that it ended (and whether it was taken), at the target phase.
-            let mut cx = EventContext::new(drag.event(DragPhase::End, accepted), drag.source);
+            let mut cx = EventContext::new(end, drag.source);
             for callback in orphans {
                 if let Ok(mut callback) = callback.try_borrow_mut() {
                     callback(&mut cx);

@@ -118,6 +118,46 @@ Mount `Dialog` or `Popover` in a full-window `Layout::Overlay` layer. Populate t
 
 `Popover::item` creates menu items with Up/Down/Home/End navigation, disabled-item skipping, and dismissal before activation. `popover.show(&ui)` positions against its anchor and clamps to the current viewport. From a retained callback, use `show_with(&scene, &input)` instead of capturing the entire `Ui`. Position is refreshed on opening; continuous anchor-following while the menu remains open is not implemented.
 
+## Popups past the window
+
+On macOS anchored popups reach past their window, as AppKit's menus and
+popovers do, with nothing asked of the app: a menu at a window's bottom edge
+hangs below it, a tooltip at its top shows over the title bar. Each flips and
+clamps to the visible part of the screen its trigger is on (`Ui::set_popup_screens`,
+which the host keeps current). Its subtree stays in the window's scene, with
+its focus, keys and dismissal, but becomes a popup root (`Scene::set_popup`):
+the window's renderer leaves it out and a borderless, transparent,
+non-activating child panel shows it, drawn by a renderer of its own that
+shares the window's device and text caches. The window stays key, so typing
+reaches a field in a popover; the panel's pointer input reaches the window's
+scene in its coordinates, past its edges.
+
+A panel with a translucent background gets AppKit's material behind it (the
+menu material for menus, the popover material otherwise), cut to its rounded
+corners; an opaque one shows as it is. Popups close as their window or the app
+loses focus, on a press in the window's title bar, and on Escape or a press
+outside them, as before. Panels are pooled and reused hidden: three are made
+once the first window has shown, so opening one is a move and one small frame
+(2–5 ms from the click to the popup showing; 10 ms for the first). Hidden,
+they draw nothing and never wake; a pooled panel never shown costs no
+measurable memory, one shown once about 1.7 MB (its glyph atlas and last
+frame). `ZGUI_POPUP_WINDOWS=0` keeps popups inside the window, as on Windows
+and Linux, where they need owned tool windows (Windows), override-redirect
+windows (X11) or `xdg_popup` (Wayland; winit has no way to make one).
+
+## Several windows
+
+`cx.windows.open(options, build)` opens another window. On macOS a window
+opened without a position is cascaded from the app's front window, as
+AppKit's document windows are; `WindowOptions::under_pointer` opens one with
+a given point of its content under the pointer (a tab torn off its window,
+see [drag and drop](drag-drop.md)), and `frame_autosave` reopens one where it
+was last left. Windows join AppKit's window tabs as the user's settings say
+(Window ▸ Merge All Windows); `tabbing` prefers or disallows them (for a
+window with tabs of its own) and `tabbing_identifier` groups them. The menu
+bar always has a Window menu (Minimize, Zoom, Bring All to Front, and the
+window list and tab commands AppKit adds), whether or not the app gives menus.
+
 ## Ownership, tasks, and disposal
 
 A mounted component owns its local state, bindings, child components and tasks

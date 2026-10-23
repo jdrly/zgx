@@ -1974,12 +1974,20 @@ fn mount_portal_panel(
     let has_max_width = view.styles.rare().max_width.is_some();
     let has_max_height = view.styles.rare().max_height.is_some();
     let viewport = ui.observe_bounds(ui.root());
+    // Anchored, it may reach past the window, to the screen's edges.
+    let area = anchor.map(|anchor| (ui.popup_screens(), ui.observe_bounds(anchor)));
     let mut dynamic = view.reactive_style.take();
     view.reactive_style = Some(Box::new(move || {
         let mut styles = dynamic
             .as_mut()
             .map_or_else(Styles::new, |compute| compute());
-        let bounds = viewport.get();
+        let bounds = area
+            .as_ref()
+            .and_then(|(screens, anchor)| {
+                let anchor = anchor.get();
+                screens.with(|screens| crate::compose_popover::screen_of(screens, anchor))
+            })
+            .unwrap_or_else(|| viewport.get());
         let margin = if anchored { 8. } else { 32. };
         if !has_max_width && styles.rare().max_width.is_none() {
             styles.rare_mut().max_width = Some((bounds.width - margin).max(0.));
@@ -2074,6 +2082,7 @@ fn mount_portal_panel(
             None => crate::compose_modal::center(ui, owner, portal.position),
         }
     }
+    let open_signal = open.clone();
     crate::compose_modal::activate(
         ui,
         owner,
@@ -2094,6 +2103,22 @@ fn mount_portal_panel(
         autofocus.unwrap_or(true),
         is_layer,
     );
+    // Open, where the host shows popups past the window
+    // (`Ui::set_popup_screens`), an anchored popup is a popup root: drawn in
+    // a window of its own (`Scene::set_popup`). Closed, it is none, so a
+    // list's hundred row menus cost the host nothing.
+    if anchored {
+        let (screens, visible, position) =
+            (ui.popup_screens(), portal.visible.clone(), portal.position);
+        let weak = ui.downgrade();
+        ui.bind(owner, move || {
+            let popup = visible.get() && screens.with(|screens| !screens.is_empty());
+            if let Some(ui) = weak.upgrade() {
+                ui.scene.borrow_mut().set_popup(position, popup);
+            }
+        });
+        ui.register_popup(portal.position, open_signal);
+    }
     // A submenu's layer lets the pointer through to its parent menu.
     if is_submenu {
         let mut options = ui.input.options(portal.overlay).unwrap_or_default();

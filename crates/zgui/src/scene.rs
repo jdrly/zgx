@@ -1042,6 +1042,8 @@ struct Slot {
 #[derive(Default, Debug)]
 pub struct FrameReport {
     pub damage: Vec<Rect>,
+    /// Damage past the viewport, for popup windows (`Scene::set_popup`).
+    pub popup_damage: Vec<Rect>,
     pub layout_nodes: usize,
     pub paint_nodes: usize,
     pub composite_nodes: usize,
@@ -1049,6 +1051,7 @@ pub struct FrameReport {
 impl FrameReport {
     pub fn is_idle(&self) -> bool {
         self.damage.is_empty()
+            && self.popup_damage.is_empty()
             && self.layout_nodes == 0
             && self.paint_nodes == 0
             && self.composite_nodes == 0
@@ -1212,6 +1215,10 @@ pub struct Scene {
     recent_damage: [Rect; 4],
     damage_grid: Option<DamageGrid>,
     viewport: Rect,
+    /// Roots of subtrees shown in popup windows of their own (`set_popup`).
+    popups: Vec<NodeId>,
+    /// Damage outside the viewport, where popup windows may show it.
+    popup_damage: Vec<Rect>,
     blur_nodes: Vec<NodeId>,
     /// `fade_overflow` nodes, with how far their content runs past each edge
     /// (top, right, bottom, left; at most the band there).
@@ -1346,6 +1353,8 @@ impl Scene {
             recent_damage: [Rect::default(); 4],
             damage_grid: None,
             viewport: Rect::new(0.0, 0.0, width, height),
+            popups: Vec::new(),
+            popup_damage: Vec::new(),
             blur_nodes: Vec::new(),
             overflow_fades: Vec::new(),
             platform_nodes: Vec::new(),
@@ -1400,6 +1409,62 @@ impl Scene {
     }
     pub fn is_inert(&self, id: NodeId) -> bool {
         self.inert.contains(&id)
+    }
+    /// Show `id`'s subtree in a popup window of its own rather than in this
+    /// scene's window (a menu or popover reaching past the window's edges):
+    /// the viewport no longer clips it, for paint, damage or hit testing; the
+    /// window's paint walk (`layer_items(None)`) leaves it out, and a popup
+    /// renderer draws it alone (`layer_items(Some(id))`). Its damage outside
+    /// the viewport is reported apart (`FrameReport::popup_damage`).
+    pub fn set_popup(&mut self, id: NodeId, popup: bool) {
+        if !self.contains(id) || popup == self.popups.contains(&id) {
+            return;
+        }
+        // Where it painted, then where it paints now.
+        self.damage_subtree(id);
+        if popup {
+            self.popups.push(id);
+        } else {
+            self.popups.retain(|n| *n != id);
+        }
+        self.damage_subtree(id);
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.invalidate(id, COMPOSITE);
+    }
+    /// Roots shown in popup windows (`set_popup`), in the order set.
+    pub fn popups(&self) -> &[NodeId] {
+        &self.popups
+    }
+    /// What popup root `id`'s subtree paints, in window coordinates (past
+    /// the viewport as it may be); `None` while it shows nothing (it or what
+    /// holds it is hidden or transparent).
+    pub fn popup_bounds(&self, id: NodeId) -> Option<Rect> {
+        if !self.contains(id) || !self.layout_visible(id) || self.world(id).1.opacity <= 0. {
+            return None;
+        }
+        let mut offset = Transform::default();
+        let mut parent = self.node(id).parent;
+        while let Some(ancestor) = parent {
+            let node = self.node(ancestor);
+            offset.x += node.transform.x;
+            offset.y += node.transform.y;
+            parent = node.parent;
+        }
+        self.ink(id)
+            .map(|ink| ink.translated(offset))
+            .filter(|ink| ink.width > 0. && ink.height > 0.)
+    }
+    pub fn is_popup(&self, id: NodeId) -> bool {
+        !self.popups.is_empty() && self.popups.contains(&id)
+    }
+    /// The clip `id` paints within given its parent's: none past the
+    /// viewport for a popup root.
+    fn escape(&self, id: NodeId, clip: Option<Rect>) -> Option<Rect> {
+        if self.is_popup(id) {
+            Some(UNCLIPPED)
+        } else {
+            clip
+        }
     }
     /// Stable identity separates renderer caches when a whole scene is replaced.
     pub fn identity(&self) -> u64 {
@@ -1519,6 +1584,7 @@ impl Scene {
             Some(parent) => self.context(parent),
             None => (Transform::default(), Some(self.viewport), None),
         };
+        let clip = self.escape(id, clip);
         let (_, bounds, clip, placement) = self.descend(self.node(id), transform, clip, placement);
         (bounds, clip, placement)
     }
@@ -1800,6 +1866,10 @@ impl Scene {
         let mut stack = vec![(self.root, Transform::default(), 1.0, self.viewport, (x, y))];
         while let Some((id, parent_transform, parent_opacity, parent_clip, point)) = stack.pop() {
             let node = self.node(id);
+            let parent_clip = match self.is_popup(id) {
+                true => UNCLIPPED,
+                false => parent_clip,
+            };
             let transform = Transform {
                 x: parent_transform.x + node.transform.x,
                 y: parent_transform.y + node.transform.y,
@@ -2410,6 +2480,9 @@ impl Scene {
         if node.effects.blur_radius > 0.0 {
             self.blur_nodes.retain(|entry| *entry != id);
         }
+        if !self.popups.is_empty() {
+            self.popups.retain(|entry| *entry != id);
+        }
         if node.style.fade_overflow {
             self.overflow_fades.retain(|(entry, _)| *entry != id);
         }
@@ -2807,6 +2880,9 @@ impl Scene {
             (rect.x + rect.width).ceil() - rect.x.floor(),
             (rect.y + rect.height).ceil() - rect.y.floor(),
         );
+        if !self.popups.is_empty() && rect.intersection(self.viewport) != Some(rect) {
+            self.add_popup_damage(rect);
+        }
         let Some(mut rect) = rect.intersection(self.viewport) else {
             return;
         };
@@ -2843,6 +2919,24 @@ impl Scene {
             self.damage_grid = Some(grid);
         }
     }
+    /// Damage past the viewport (whole, inside too: popup windows clip it to
+    /// their own boxes). A few rectangles, merged as they overlap.
+    fn add_popup_damage(&mut self, mut rect: Rect) {
+        let mut index = 0;
+        while index < self.popup_damage.len() {
+            if self.popup_damage[index].intersects(rect) {
+                rect = self.popup_damage.swap_remove(index).union(rect);
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        self.popup_damage.push(rect);
+        if self.popup_damage.len() > DAMAGE_RECTS {
+            let all = self.popup_damage.drain(..).reduce(Rect::union);
+            self.popup_damage.extend(all);
+        }
+    }
     fn world(&self, id: NodeId) -> (Rect, Effects, Option<Rect>) {
         let node = self.node(id);
         let mut transform = node.transform;
@@ -2863,7 +2957,12 @@ impl Scene {
             parent = ancestor.parent;
         }
         let bounds = node.bounds.translated(transform);
-        let mut clip = Some(self.viewport);
+        // Under a popup root, the viewport and what holds the root clip nothing.
+        let mut clip = Some(match self.popups.is_empty() {
+            true => self.viewport,
+            false => UNCLIPPED,
+        });
+        let mut escaped = false;
         let mut current = Some(id);
         while let Some(id) = current {
             let ancestor = self.node(id);
@@ -2878,7 +2977,14 @@ impl Scene {
                 }
                 clip = clipped_bounds(clip, ancestor.bounds.translated(offset), &ancestor.style);
             }
+            if self.is_popup(id) {
+                escaped = true;
+                break;
+            }
             current = ancestor.parent;
+        }
+        if !escaped && !self.popups.is_empty() {
+            clip = clip.and_then(|clip| clip.intersection(self.viewport));
         }
         (bounds, effects, clip)
     }
@@ -2903,6 +3009,7 @@ impl Scene {
         self.damage_subtree_in(id, transform, clip);
     }
     fn damage_subtree_in(&mut self, id: NodeId, parent: Transform, parent_clip: Option<Rect>) {
+        let parent_clip = self.escape(id, parent_clip);
         let node = self.node(id);
         // Not laid out since it was appended, so never painted: nothing to
         // repaint yet (a mounting row styles each node before its first
@@ -2939,6 +3046,7 @@ impl Scene {
         parent_clip: Option<Rect>,
         placement: Option<Placement>,
     ) {
+        let parent_clip = self.escape(id, parent_clip);
         let node = self.node(id);
         let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
         if !own_visible(&node.style) || unplaced || self.damage_is_full() {
@@ -3020,6 +3128,7 @@ impl Scene {
             Some(parent) => self.context(parent),
             None => (Transform::default(), Some(self.viewport), None),
         };
+        let clip = self.escape(id, clip);
         let (transform, _, clip, placement) = self.descend(node, transform, clip, placement);
         (transform, clip, placement)
     }
@@ -4458,8 +4567,9 @@ impl Scene {
             Some(grid) => grid.rects(self.viewport),
             None => std::mem::take(&mut self.damage),
         };
+        report.popup_damage = std::mem::take(&mut self.popup_damage);
         self.recent_damage = Default::default();
-        if !report.damage.is_empty() || !self.moves.is_empty() {
+        if !report.damage.is_empty() || !report.popup_damage.is_empty() || !self.moves.is_empty() {
             self.flush_serial += 1;
             for scroll in &mut self.moves {
                 scroll.serial = self.flush_serial;
@@ -4814,12 +4924,16 @@ impl Scene {
             stack.pop()
         {
             let node = self.node(id);
+            let is_root = root == Some(id);
+            // A popup window draws it (`set_popup`).
+            if !is_root && self.is_popup(id) {
+                continue;
+            }
             let transform = Transform {
                 x: parent_transform.x + node.transform.x,
                 y: parent_transform.y + node.transform.y,
             };
             let bounds = node.bounds.translated(transform);
-            let is_root = root == Some(id);
             let transformed = node.transformed();
             let effect = node.effect_layer();
             let isolated = (node.isolated || transformed || effect) && !is_root;
@@ -5361,6 +5475,65 @@ mod tests {
         scene.flush();
         assert_eq!(scene.bounds(a), Rect::new(0.0, 0.0, 100.0, 23.0));
         assert_eq!(scene.bounds(b), Rect::new(0.0, 77.0, 100.0, 23.0));
+    }
+    #[test]
+    fn popup_roots_escape_the_viewport_and_the_windows_paint() {
+        let mut scene = Scene::new(100.0, 100.0);
+        scene.set_kind(scene.root(), NodeKind::Container(Layout::Overlay));
+        let quad = |fill| {
+            NodeKind::Quad(QuadStyle {
+                fill,
+                ..Default::default()
+            })
+        };
+        let root = scene.root();
+        let popup = scene.append(root, NodeKind::Container(Layout::Overlay), Style::default());
+        // Past the window's right edge, as a menu hangs.
+        let item = scene.append(
+            popup,
+            quad(Color(1, 2, 3, 255)),
+            Style {
+                absolute: true,
+                width: Some(60.),
+                height: Some(20.),
+                ..Default::default()
+            },
+        );
+        scene.set_transform(item, Transform { x: 90., y: 10. });
+        scene.flush();
+        assert_eq!(scene.hit_test(120., 20.), None);
+        scene.set_popup(popup, true);
+        scene.flush();
+        // Hit past the viewport, left out of the window's paint, drawn alone.
+        assert_eq!(scene.hit_test(120., 20.), Some(item));
+        assert!(!scene.layer_items(None).iter().any(|i| i.id == item));
+        let alone = scene.layer_items(Some(popup));
+        assert!(alone.iter().any(|i| i.id == item && i.clip.is_none()));
+        assert_eq!(
+            scene.popup_bounds(popup),
+            Some(Rect::new(90., 10., 60., 20.))
+        );
+        // Damage past the viewport is reported apart.
+        scene.set_kind(item, quad(Color(4, 5, 6, 255)));
+        let report = scene.flush();
+        assert!(report.damage.iter().all(|r| r.x + r.width <= 100.));
+        assert!(
+            report
+                .popup_damage
+                .iter()
+                .any(|r| r.x <= 90. && r.x + r.width >= 150.)
+        );
+        // Hidden, it shows nothing; gone, it is no popup root.
+        scene.set_effects(
+            popup,
+            Effects {
+                opacity: 0.,
+                ..Default::default()
+            },
+        );
+        assert_eq!(scene.popup_bounds(popup), None);
+        scene.remove(popup);
+        assert!(scene.popups().is_empty());
     }
     #[test]
     fn hit_testing_respects_stacking_clip_transform_and_opacity() {

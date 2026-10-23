@@ -43,6 +43,8 @@ impl Default for Placement {
 
 /// Position the private placement host, preserving the public panel's styles.
 /// Registrations belong to the logical owner so disposal removes subscriptions.
+/// Where the host shows popups past the window (`Ui::set_popup_screens`),
+/// it flips and clamps to the screen its anchor is on.
 pub(crate) fn mount(
     ui: &mut Ui,
     owner: NodeId,
@@ -81,10 +83,13 @@ fn mount_placement(
     let viewport = ui.observe_bounds(overlay);
     let panel_bounds = ui.observe_bounds(panel);
     let position_bounds = ui.observe_bounds(position);
+    let screens = ui.popup_screens();
     let weak = ui.downgrade();
     ui.bind(owner, move || {
         let anchor = anchor_bounds.get();
-        let viewport = viewport.get();
+        let viewport = screens
+            .with(|screens| screen_of(screens, anchor))
+            .unwrap_or_else(|| viewport.get());
         let panel = panel_bounds.get();
         let current = position_bounds.get();
         let desired = match at {
@@ -112,6 +117,21 @@ fn mount_placement(
             );
         }
     });
+}
+
+/// The screen of `screens` an anchored popup opens on: the one holding its
+/// anchor's centre, else the nearest.
+pub(crate) fn screen_of(screens: &[Rect], anchor: Rect) -> Option<Rect> {
+    let (x, y) = (anchor.x + anchor.width / 2., anchor.y + anchor.height / 2.);
+    let distance = |screen: &Rect| {
+        let dx = (screen.x - x).max(x - (screen.x + screen.width)).max(0.);
+        let dy = (screen.y - y).max(y - (screen.y + screen.height)).max(0.);
+        dx.hypot(dy)
+    };
+    screens
+        .iter()
+        .copied()
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
 }
 
 fn placement(anchor: Rect, viewport: Rect, width: f32, height: f32, at: Placement) -> (f32, f32) {
@@ -232,6 +252,22 @@ mod tests {
             placement(low, viewport, 120., 60., Placement::default()),
             (100., 196.)
         );
+    }
+    #[test]
+    fn popups_open_on_their_anchors_screen() {
+        let screens = [
+            Rect::new(-1920., -200., 1920., 1080.),
+            Rect::new(0., -40., 1512., 942.),
+        ];
+        // On the right screen, and on the left one.
+        let right = Rect::new(400., 300., 80., 20.);
+        assert_eq!(screen_of(&screens, right), Some(screens[1]));
+        let left = Rect::new(-300., 300., 80., 20.);
+        assert_eq!(screen_of(&screens, left), Some(screens[0]));
+        // Under both, nearer the right one.
+        let below = Rect::new(20., 1000., 60., 20.);
+        assert_eq!(screen_of(&screens, below), Some(screens[1]));
+        assert_eq!(screen_of(&[], right), None);
     }
     #[test]
     fn submenu_placement_flips_and_clamps_with_nonzero_viewport_origin() {
