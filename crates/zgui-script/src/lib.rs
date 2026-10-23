@@ -719,6 +719,8 @@ struct Inner {
     /// The check running since the last reload.
     checker: RefCell<Option<check::Background>>,
     type_errors: Signal<Option<String>>,
+    /// What `zgui lint` finds in the scripts as loaded (debug builds).
+    lint: Signal<Option<String>>,
     /// The theme file error shown, if any (cleared when the file reads).
     theme_error: RefCell<Option<String>>,
 }
@@ -847,6 +849,7 @@ impl ScriptHost {
             ),
             checker: RefCell::default(),
             type_errors: runtime.signal(None),
+            lint: runtime.signal(None),
             theme_error: RefCell::default(),
         }));
         host.0
@@ -1128,6 +1131,12 @@ impl ScriptHost {
     pub fn type_errors(&self) -> Signal<Option<String>> {
         self.0.type_errors.clone()
     }
+    /// What `zgui lint` found in the scripts at the last load, in a debug
+    /// build (see `docs/scripting.md`), shown over the interface while there
+    /// is no error or type error.
+    pub fn lint_findings(&self) -> Signal<Option<String>> {
+        self.0.lint.clone()
+    }
     /// Turns the window's layout inspector on or off (`zgui::inspect`):
     /// boxes outlined, the one under the pointer described with the script
     /// line that created it, and layout warnings. Before the view mounts,
@@ -1201,6 +1210,55 @@ impl ScriptHost {
         }
         self.0.type_errors.set(shown);
     }
+    /// In a debug build, `zgui lint` over the scripts as loaded, after each
+    /// load: each finding once on stderr and in `warnings`, and over the
+    /// interface while there is no error. Scripts read from a bundle, and
+    /// `ZGUI_LINT=0`, skip it.
+    fn lint_loaded(&self) {
+        if !cfg!(debug_assertions)
+            || matches!(self.0.files, Files::Bundle(_))
+            || std::env::var_os("ZGUI_LINT").is_some_and(|v| v == "0")
+        {
+            return;
+        }
+        let mut files: Vec<PathBuf> = self
+            .0
+            .stamps
+            .borrow()
+            .iter()
+            .map(|(path, _)| path.clone())
+            .filter(|path| path.extension().is_some_and(|e| e == "luau"))
+            .collect();
+        files.sort();
+        files.dedup();
+        let mut found = Vec::new();
+        for file in &files {
+            let Ok(source) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            for d in lint::lint_source(file, &source) {
+                let name = d.file.file_name().unwrap_or(d.file.as_os_str());
+                let line = format!(
+                    "{}:{}:{}: lint[{}]: {}",
+                    name.to_string_lossy(),
+                    d.line,
+                    d.column,
+                    d.code,
+                    d.message
+                );
+                warning(Some(&self.0.warnings), line.clone());
+                found.push(line);
+            }
+        }
+        self.0.lint.set((!found.is_empty()).then(|| {
+            format!(
+                "zgui lint: {} finding{}\n{}",
+                found.len(),
+                if found.len() == 1 { "" } else { "s" },
+                found.join("\n")
+            )
+        }));
+    }
     fn start_check(&self) {
         if self.0.check.get() != Some(true) {
             return;
@@ -1266,6 +1324,7 @@ impl ScriptHost {
                 if let Some(rewatch) = &*self.0.rewatch.borrow() {
                     rewatch.send(());
                 }
+                self.lint_loaded();
                 self.start_check();
                 Ok(())
             }
@@ -1418,7 +1477,9 @@ impl ScriptHost {
             },
         );
         let (error, type_errors) = (self.0.error.clone(), self.0.type_errors.clone());
-        let (dismiss_error, dismiss_types) = (error.clone(), type_errors.clone());
+        let lint = self.0.lint.clone();
+        let (dismiss_error, dismiss_types, dismiss_lint) =
+            (error.clone(), type_errors.clone(), lint.clone());
         let show_errors = self.0.show_errors;
         let engine = self.0.engine.clone();
         let persist = self.0.persist.clone();
@@ -1458,8 +1519,12 @@ impl ScriptHost {
             // The banner exists only while there is an error: no node, no
             // work otherwise. It is absolute, over the interface and taking
             // none of its room; insets resolve against the window.
-            let (error, type_errors) = (error.clone(), type_errors.clone());
-            let (dismiss_error, dismiss_types) = (dismiss_error.clone(), dismiss_types.clone());
+            let (error, type_errors, lint) = (error.clone(), type_errors.clone(), lint.clone());
+            let (dismiss_error, dismiss_types, dismiss_lint) = (
+                dismiss_error.clone(),
+                dismiss_types.clone(),
+                dismiss_lint.clone(),
+            );
             overlay()
                 .w_full()
                 .h_full()
@@ -1467,14 +1532,24 @@ impl ScriptHost {
                 .child_when(
                     move || {
                         show_errors
-                            .then(|| error.get().or_else(|| type_errors.get()))
+                            .then(|| {
+                                error
+                                    .get()
+                                    .or_else(|| type_errors.get())
+                                    .or_else(|| lint.get())
+                            })
                             .flatten()
                     },
                     move |message, _| {
-                        let (error, types) = (dismiss_error.clone(), dismiss_types.clone());
+                        let (error, types, lint) = (
+                            dismiss_error.clone(),
+                            dismiss_types.clone(),
+                            dismiss_lint.clone(),
+                        );
                         banner(&message, move || {
                             error.set(None);
                             types.set(None);
+                            lint.set(None);
                         })
                     },
                 )

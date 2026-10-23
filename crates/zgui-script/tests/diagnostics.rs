@@ -225,3 +225,42 @@ fn a_watching_host_reloads_when_a_file_is_saved() {
     assert!(wait_for(&mut h, "Sum: 0"), "{}", h.text("label"));
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn a_debug_build_lints_its_scripts_after_each_load() {
+    let dir = std::env::temp_dir().join(format!("zgui-lint-on-load-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = dir.join("app.luau");
+    std::fs::write(
+        &app,
+        "local n = ui.state(\"n\", 0)\nreturn ui.text { \"n: \" .. n:get() }\n",
+    )
+    .unwrap();
+    let h = Harness::new(|runtime| ScriptHost::new(runtime, app.clone()));
+    let findings = h.host.lint_findings().with_untracked(|f| f.clone());
+    let text = findings.expect("the untracked read is found");
+    assert!(
+        text.contains("app.luau:2:") && text.contains("untracked-get"),
+        "{text}"
+    );
+    assert!(
+        h.host
+            .warnings()
+            .iter()
+            .any(|w| w.contains("lint[untracked-get]")),
+        "{:?}",
+        h.host.warnings()
+    );
+    std::fs::write(
+        &app,
+        "local n = ui.state(\"n\", 0)\nreturn ui.text { \"n: {n}\" }\n",
+    )
+    .unwrap();
+    h.host.reload().unwrap();
+    assert_eq!(
+        h.host.lint_findings().with_untracked(|f| f.clone()),
+        None,
+        "fixed, it goes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
