@@ -160,7 +160,8 @@ mod win {
                 HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed, PostMessageW,
                 SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_MOUSEMOVE, WM_NCDESTROY,
                 WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SYSCOMMAND,
+                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE,
+                WM_SYSCOMMAND,
             },
         },
     };
@@ -202,7 +203,12 @@ mod win {
 
     /// What the window procedure knows of the caption, shared with its host.
     struct Caption {
+        /// The window has no frame (Inset, Hidden): its edges resize it.
+        frameless: bool,
         buttons: bool,
+        /// The system's settings or colours changed (high contrast, the
+        /// accent, animations) since the host last read them.
+        settings_changed: Cell<bool>,
         hovered: Cell<Option<CaptionButton>>,
         pressed: Cell<Option<CaptionButton>>,
         tracking: Cell<bool>,
@@ -295,23 +301,26 @@ mod win {
                 window.theme() != Some(winit::window::Theme::Light),
             );
         }
-        if titlebar == Titlebar::Standard {
-            return 0.;
-        }
         // A frameless window is square unless asked; Windows 10 has no
         // rounded windows and refuses.
+        let frameless = titlebar != Titlebar::Standard;
         // SAFETY: sets one documented attribute on our own window.
-        let rounded = unsafe {
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &DWMWCP_ROUND as *const _ as *const _,
-                size_of_val(&DWMWCP_ROUND) as u32,
-            )
-        }
-        .is_ok();
+        let rounded = frameless
+            && unsafe {
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &DWMWCP_ROUND as *const _ as *const _,
+                    size_of_val(&DWMWCP_ROUND) as u32,
+                )
+            }
+            .is_ok();
+        // Every window is subclassed: for the frame's work of a frameless
+        // one, and to hear the system's settings change.
         let caption = Rc::new(Caption {
+            frameless,
             buttons: titlebar == Titlebar::Inset,
+            settings_changed: Cell::new(false),
             hovered: Cell::new(None),
             pressed: Cell::new(None),
             tracking: Cell::new(false),
@@ -411,12 +420,21 @@ mod win {
             )
         };
         match message {
-            WM_NCHITTEST => {
+            // High contrast on or off, the accent, animations, the colours.
+            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+                caption.settings_changed.set(true);
+                if let Some(wake) = &*caption.wake.borrow() {
+                    wake();
+                }
+            }
+            WM_NCHITTEST if caption.frameless => {
                 let (x, y) = point();
                 if let Some(hit) = hit_test(hwnd, caption, x, y) {
                     return LRESULT(hit as isize);
                 }
             }
+            // A standard frame's own buttons are the frame's.
+            _ if !caption.buttons => {}
             WM_NCMOUSEMOVE => {
                 if !caption.tracking.replace(true) {
                     let mut track = TRACKMOUSEEVENT {
@@ -490,9 +508,11 @@ mod win {
         unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
     }
 
-    /// The caption buttons of a window with `Titlebar::Inset`, drawn over
-    /// its content: hovered, pressed, the window's state and appearance
-    /// follow the window procedure, a frame after they change.
+    /// A window's side of its procedure: the caption buttons of a window
+    /// with `Titlebar::Inset`, drawn over its content (hovered, pressed, the
+    /// window's state and appearance follow the window procedure, a frame
+    /// after they change), and the system's settings read again when they
+    /// change.
     pub(crate) struct CaptionHost {
         caption: Rc<Caption>,
         window: std::sync::Weak<Window>,
@@ -504,7 +524,7 @@ mod win {
         view: Option<zgui::compose::ViewHandle>,
     }
     impl CaptionHost {
-        /// For a window `apply` gave caption buttons; `wake` asks for a frame.
+        /// For a window `apply` subclassed; `wake` asks for a frame.
         pub(crate) fn new(
             window: &Arc<Window>,
             ui: &Ui,
@@ -518,9 +538,6 @@ mod win {
                     .find(|(window, _)| *window == hwnd)
                     .map(|(_, caption)| caption.clone())
             })?;
-            if !caption.buttons {
-                return None;
-            }
             *caption.wake.borrow_mut() = Some(Box::new(wake));
             Some(Self {
                 caption,
@@ -536,6 +553,12 @@ mod win {
         /// Before a frame: bring the buttons up to date, and back if the
         /// content was rendered again over them.
         pub(crate) fn sync(&mut self, ui: &mut Ui) {
+            if self.caption.settings_changed.take() {
+                crate::system_colors::sync(ui);
+            }
+            if !self.caption.buttons {
+                return;
+            }
             if let Some(window) = self.window.upgrade() {
                 self.maximized.set(window.is_maximized());
                 self.active.set(window.has_focus());

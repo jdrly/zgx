@@ -83,8 +83,10 @@ def main():
         win.click(window, *button(window, MINIMIZE))
         wait_for(lambda: user32.IsIconic(window), "minimize")
         user32.ShowWindow(window, 9)  # SW_RESTORE
-        time.sleep(0.5)
+        # Restoring animates: the buttons take presses once it has ended.
+        time.sleep(1.5)
         win.activate(window)
+        time.sleep(0.3)
         win.click(window, *button(window, CLOSE))
         proc.wait(timeout=5)
         print(f"PASS: caption buttons (close hover {red}), maximize {size} -> {maximized} -> restore, "
