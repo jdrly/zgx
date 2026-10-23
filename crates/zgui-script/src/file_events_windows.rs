@@ -163,3 +163,57 @@ impl Drop for FileEvents {
         self.shared.wake();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FileEvents;
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+        time::{Duration, Instant},
+    };
+
+    /// Whether a change is heard within `within`.
+    fn heard(events: &mut FileEvents, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        let mut changed = pin!(events.changed());
+        let mut cx = Context::from_waker(Waker::noop());
+        while Instant::now() < deadline {
+            if let Poll::Ready(more) = changed.as_mut().poll(&mut cx) {
+                return more;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn a_watched_file_written_or_replaced_and_a_new_file_in_a_watched_folder_are_heard() {
+        let dir = std::env::temp_dir().join(format!("zgui-file-events-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.luau");
+        std::fs::write(&file, "return 1").unwrap();
+        let mut events = FileEvents::new().expect("change notifications");
+        let plugins = dir.join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        events.watch(vec![file.clone()], vec![plugins.clone()], false);
+        // Settle: nothing changes, nothing is heard.
+        assert!(!heard(&mut events, Duration::from_millis(200)));
+        std::fs::write(&file, "return 2").unwrap();
+        assert!(
+            heard(&mut events, Duration::from_secs(5)),
+            "a write in place"
+        );
+        // As an editor saves: a new file renamed over the old.
+        let temp = dir.join("app.luau.tmp");
+        std::fs::write(&temp, "return 3").unwrap();
+        std::fs::rename(&temp, &file).unwrap();
+        assert!(heard(&mut events, Duration::from_secs(5)), "a replacement");
+        // A folder watched whole: a file added to it.
+        std::fs::write(plugins.join("new.luau"), "return {}").unwrap();
+        assert!(heard(&mut events, Duration::from_secs(5)), "a new plugin");
+        drop(events);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

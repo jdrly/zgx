@@ -511,22 +511,40 @@ mod win {
                 return None;
             }
         }
-        let scale = scale(hwnd);
         // SAFETY: reads our own window's state.
         let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+        hit(
+            (point.x, point.y),
+            (client.right, client.bottom),
+            scale(hwnd),
+            maximized,
+            caption.buttons,
+        )
+    }
+
+    /// What client point (`x`, `y`) of a frameless window `width` by
+    /// `height` physical pixels is at `scale`, if not its content: a resize
+    /// band or one of its caption buttons (`buttons`).
+    fn hit(
+        (x, y): (i32, i32),
+        (width, height): (i32, i32),
+        scale: f64,
+        maximized: bool,
+        buttons: bool,
+    ) -> Option<u32> {
         let band = if maximized {
             0
         } else {
             (RESIZE_BAND * scale).round() as i32
         };
-        let (left, right) = (point.x < band, point.x >= client.right - band);
-        let (top, bottom) = (point.y < band, point.y >= client.bottom - band);
+        let (left, right) = (x < band, x >= width - band);
+        let (top, bottom) = (y < band, y >= height - band);
         // The caption buttons keep all but the window's outermost pixels.
-        if caption.buttons && point.y >= band.min(1) && f64::from(point.y) < BUTTON_HEIGHT * scale {
-            let width = (BUTTON_WIDTH * scale).round() as i32;
-            let from_right = client.right - 1 - point.x;
-            if (band.min(1)..3 * width).contains(&from_right) {
-                return Some(match from_right / width {
+        if buttons && y >= band.min(1) && f64::from(y) < BUTTON_HEIGHT * scale {
+            let button = (BUTTON_WIDTH * scale).round() as i32;
+            let from_right = width - 1 - x;
+            if (band.min(1)..3 * button).contains(&from_right) {
+                return Some(match from_right / button {
                     0 => HTCLOSE,
                     1 => HTMAXBUTTON,
                     _ => HTMINBUTTON,
@@ -788,6 +806,51 @@ mod win {
                 .child(button(CaptionButton::Minimize))
                 .child(button(CaptionButton::Maximize))
                 .child(button(CaptionButton::Close))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_frameless_windows_edges_resize_and_its_corner_buttons_answer() {
+            let size = (800, 600);
+            let at = |x, y| hit((x, y), size, 1., false, true);
+            assert_eq!(at(400, 300), None, "content");
+            assert_eq!(at(0, 300), Some(HTLEFT));
+            assert_eq!(at(799, 300), Some(HTRIGHT));
+            assert_eq!(at(400, 599), Some(HTBOTTOM));
+            assert_eq!(at(0, 0), Some(HTTOPLEFT));
+            assert_eq!(at(799, 599), Some(HTBOTTOMRIGHT));
+            // The buttons, 46 wide from the right, 32 tall; the outermost
+            // pixel stays the resize band.
+            assert_eq!(at(790, 10), Some(HTCLOSE));
+            assert_eq!(at(799, 10), Some(HTRIGHT));
+            assert_eq!(at(799, 2), Some(HTTOPRIGHT));
+            assert_eq!(at(740, 10), Some(HTMAXBUTTON));
+            assert_eq!(at(700, 10), Some(HTMINBUTTON));
+            assert_eq!(at(640, 10), None, "left of the buttons");
+            assert_eq!(at(790, 40), None, "below the buttons");
+            // Without buttons (`Titlebar::Hidden`) the corner resizes.
+            assert_eq!(hit((790, 2), size, 1., false, false), Some(HTTOP));
+        }
+
+        #[test]
+        fn bands_and_buttons_scale_and_a_maximized_window_has_no_bands() {
+            let size = (1600, 1200);
+            // At 200% the band is 10 pixels and the buttons 92 by 64.
+            assert_eq!(hit((9, 600), size, 2., false, false), Some(HTLEFT));
+            assert_eq!(hit((10, 600), size, 2., false, false), None);
+            assert_eq!(hit((1599 - 91, 60), size, 2., false, true), Some(HTCLOSE));
+            assert_eq!(
+                hit((1599 - 92, 60), size, 2., false, true),
+                Some(HTMAXBUTTON)
+            );
+            // Maximized, the edges are the screen's: nothing resizes, and the
+            // buttons reach the very corner.
+            assert_eq!(hit((0, 600), size, 1., true, true), None);
+            assert_eq!(hit((1599, 0), size, 1., true, true), Some(HTCLOSE));
         }
     }
 }
