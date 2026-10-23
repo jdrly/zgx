@@ -1257,6 +1257,8 @@ pub struct Scene {
     pending_layout_nodes: usize,
     layout_revision: u64,
     layout_pass: u64,
+    /// How deep the measure running now is (`crate::deep`).
+    measure_depth: u32,
     content_revision: u64,
     /// The deepest stack and the item count of the last paint walk
     /// (`layer_items_within`): the next one starts at those sizes.
@@ -1386,6 +1388,7 @@ impl Scene {
             pending_layout_nodes: 0,
             layout_revision: 0,
             layout_pass: 0,
+            measure_depth: 0,
             content_revision: 0,
             walk_hints: Default::default(),
             layout_roots: Vec::new(),
@@ -3543,6 +3546,16 @@ impl Scene {
         {
             return kept.size;
         }
+        // Measuring recurses into the children: one level of the tree more.
+        self.measure_depth += 1;
+        let size = crate::deep(self.measure_depth, || {
+            self.measure_uncached(id, constraints)
+        });
+        self.measure_depth -= 1;
+        size
+    }
+    /// `measured`, when nothing kept serves.
+    fn measure_uncached(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
         let node = self.node(id);
         if node.contents && !node.children.is_empty() {
             return self.measure_contents(id, constraints);

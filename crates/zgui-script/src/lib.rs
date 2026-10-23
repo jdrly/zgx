@@ -1682,6 +1682,7 @@ impl ScriptHost {
                 runtime: self.0.runtime.clone(),
                 assets: self.0.assets.clone(),
                 inspector: self.0.inspector.clone(),
+                depth: Default::default(),
             }),
         })
     }

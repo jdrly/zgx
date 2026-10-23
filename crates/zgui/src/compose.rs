@@ -1750,35 +1750,88 @@ pub(crate) fn mount(
     ui: &mut Ui,
     parent: NodeId,
     mut view: View,
-    mut environment: Environment,
+    environment: Environment,
 ) -> NodeId {
+    let depth = ui.mount_depth();
+    if crate::stack_low(depth) {
+        return stacker::grow(crate::STACK_SEGMENT, || {
+            mount(ui, parent, view, environment)
+        });
+    }
     // Extract closures while retaining the root refinements on their wrapper.
     let kind = std::mem::replace(&mut view.kind, Kind::Container(Layout::Column));
-    match kind {
-        Kind::Component(build) => {
-            let mut cx = Context::new(ui.runtime.clone(), environment.clone());
-            let inner = ui.runtime.untracked(|| build(&mut cx));
-            let root = mount(ui, parent, view.refine(inner), environment);
-            cx.finish(ui, root);
-            root
-        }
+    // Each kind mounts in a function of its own: mounting recurses once per
+    // view, and in a debug build every value a function holds takes stack.
+    ui.set_mount_depth(depth + 1);
+    let root = match kind {
+        Kind::Component(build) => mount_component(ui, parent, build, view, environment),
         Kind::Provider(provide, child) => {
-            environment.services = environment.services.child();
-            let mut cx = Context::new(ui.runtime.clone(), environment);
-            ui.runtime.untracked(|| provide(&mut cx));
-            let environment = cx.environment.clone();
-            let root = mount(ui, parent, view.refine(*child), environment);
-            cx.finish(ui, root);
-            root
+            mount_provider(ui, parent, provide, *child, view, environment)
         }
-        Kind::Slot(slot) => {
-            environment.services = slot.services;
-            let mut cx = Context::new(ui.runtime.clone(), environment.clone());
-            let inner = ui.runtime.untracked(|| (slot.build)(&mut cx));
-            let root = mount(ui, parent, view.refine(inner), environment);
-            cx.finish(ui, root);
-            root
+        Kind::Slot(slot) => mount_slot(ui, parent, slot, view, environment),
+        kind @ (Kind::Modal { .. } | Kind::Menu { .. } | Kind::Submenu { .. }) => {
+            mount_overlay(ui, parent, kind, view, environment)
         }
+        primitive => mount_element(ui, parent, primitive, view, environment),
+    };
+    ui.set_mount_depth(depth);
+    root
+}
+#[cfg_attr(debug_assertions, inline(never))]
+fn mount_component(
+    ui: &mut Ui,
+    parent: NodeId,
+    build: Builder,
+    view: View,
+    environment: Environment,
+) -> NodeId {
+    let mut cx = Context::new(ui.runtime.clone(), environment.clone());
+    let inner = ui.runtime.untracked(|| build(&mut cx));
+    let root = mount(ui, parent, view.refine(inner), environment);
+    cx.finish(ui, root);
+    root
+}
+#[cfg_attr(debug_assertions, inline(never))]
+fn mount_provider(
+    ui: &mut Ui,
+    parent: NodeId,
+    provide: Box<dyn FnOnce(&mut Context)>,
+    child: View,
+    view: View,
+    mut environment: Environment,
+) -> NodeId {
+    environment.services = environment.services.child();
+    let mut cx = Context::new(ui.runtime.clone(), environment);
+    ui.runtime.untracked(|| provide(&mut cx));
+    let environment = cx.environment.clone();
+    let root = mount(ui, parent, view.refine(child), environment);
+    cx.finish(ui, root);
+    root
+}
+#[cfg_attr(debug_assertions, inline(never))]
+fn mount_slot(
+    ui: &mut Ui,
+    parent: NodeId,
+    slot: Slot,
+    view: View,
+    mut environment: Environment,
+) -> NodeId {
+    environment.services = slot.services;
+    let mut cx = Context::new(ui.runtime.clone(), environment.clone());
+    let inner = ui.runtime.untracked(|| (slot.build)(&mut cx));
+    let root = mount(ui, parent, view.refine(inner), environment);
+    cx.finish(ui, root);
+    root
+}
+#[cfg_attr(debug_assertions, inline(never))]
+fn mount_overlay(
+    ui: &mut Ui,
+    parent: NodeId,
+    kind: Kind,
+    mut view: View,
+    environment: Environment,
+) -> NodeId {
+    match kind {
         Kind::Modal {
             label,
             open,
@@ -1832,7 +1885,7 @@ pub(crate) fn mount(
                 true,
             )
         }
-        primitive => mount_element(ui, parent, primitive, view, environment),
+        _ => unreachable!("an overlay kind"),
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -2195,7 +2248,7 @@ fn mount_element(
     parent: NodeId,
     kind: Kind,
     mut view: View,
-    mut environment: Environment,
+    environment: Environment,
 ) -> NodeId {
     assert!(
         view.trigger_id.is_none(),
@@ -2248,6 +2301,60 @@ fn mount_element(
             );
         }
     }
+    let mut opened = open_element(
+        ui,
+        parent,
+        kind,
+        view,
+        environment,
+        keyboard_navigation,
+        scrollbar,
+        follow_end,
+    );
+    for child in std::mem::take(&mut opened.children) {
+        mount(ui, opened.child_parent, child, opened.environment.clone());
+    }
+    close_element(ui, opened)
+}
+/// An element mounted up to its children: what the rest of its mounting
+/// needs once they are in (`mount_element`).
+struct Opened {
+    children: Vec<View>,
+    conditional: Vec<RegionBuilder>,
+    row_text: Option<crate::selection::RowText>,
+    pointer_events: Option<Box<dyn FnMut() -> bool>>,
+    accessible_label: Option<String>,
+    mounted: Vec<Box<dyn FnOnce(NodeHandle)>>,
+    /// Whether the view said if it takes focus.
+    focusable_set: bool,
+    environment: Environment,
+    root: NodeId,
+    child_parent: NodeId,
+    submenu_indicator: bool,
+    scroll_offset: Option<(Signal<f32>, bool)>,
+    scroll_nodes: Option<(NodeId, NodeId)>,
+    scrollbar: bool,
+    follow_end: bool,
+    compute: Option<Box<dyn FnMut() -> String>>,
+    region: Option<RegionBuilder>,
+    focusable: bool,
+}
+/// The element's node, before its children. Apart from `mount_element`,
+/// whose frame stays live while they mount: in a debug build each of this
+/// function's values takes stack of its own, and trees nest deep.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+#[allow(clippy::too_many_arguments)]
+fn open_element(
+    ui: &mut Ui,
+    parent: NodeId,
+    kind: Kind,
+    mut view: View,
+    mut environment: Environment,
+    keyboard_navigation: bool,
+    scrollbar: bool,
+    follow_end: bool,
+) -> Opened {
     let is_scroll = matches!(kind, Kind::Scroll { .. });
     let mut scroll_offset = None;
     let is_image = matches!(kind, Kind::Image { .. });
@@ -3101,10 +3208,52 @@ fn mount_element(
         (viewport, content)
     });
     let child_parent = scroll_nodes.map_or(root, |(_, content)| content);
-    for child in view.children {
-        mount(ui, child_parent, child, environment.clone());
+    Opened {
+        children: view.children,
+        conditional: view.conditional,
+        row_text: view.row_text,
+        pointer_events: view.pointer_events,
+        accessible_label: view.accessible_label,
+        mounted: view.mounted,
+        focusable_set: view.focusable.is_some(),
+        environment,
+        root,
+        child_parent,
+        submenu_indicator,
+        scroll_offset,
+        scroll_nodes,
+        scrollbar,
+        follow_end,
+        compute,
+        region,
+        focusable,
     }
-    for conditional in view.conditional {
+}
+/// The rest of an element's mounting, once its children are in.
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+fn close_element(ui: &mut Ui, opened: Opened) -> NodeId {
+    let Opened {
+        children: _,
+        conditional,
+        mut row_text,
+        pointer_events,
+        accessible_label,
+        mounted,
+        focusable_set,
+        environment,
+        root,
+        child_parent,
+        submenu_indicator,
+        scroll_offset,
+        scroll_nodes,
+        scrollbar,
+        follow_end,
+        compute,
+        region,
+        focusable,
+    } = opened;
+    for conditional in conditional {
         conditional(ui, child_parent, environment.clone());
     }
     if submenu_indicator {
@@ -3134,21 +3283,21 @@ fn mount_element(
         });
     }
     assert!(
-        view.row_text.is_none() || region.is_some(),
+        row_text.is_none() || region.is_some(),
         "row_text is only supported on virtual lists"
     );
     if let Some(build) = region {
         build(ui, root, environment);
     }
-    if let Some(text) = view.row_text.take() {
+    if let Some(text) = row_text.take() {
         crate::selection::mount_row_text(ui, root, text);
     }
     let mut options = ui.input.options(root).unwrap_or_default();
     options.focusable = focusable;
-    if view.focusable.is_some() || ui.input.options(root).is_some() {
+    if focusable_set || ui.input.options(root).is_some() {
         ui.input.set_options(root, options);
     }
-    if let Some(mut enabled) = view.pointer_events {
+    if let Some(mut enabled) = pointer_events {
         let weak = ui.downgrade();
         ui.bind(root, move || {
             let pass_through = !enabled();
@@ -3165,7 +3314,7 @@ fn mount_element(
             }
         });
     }
-    if let Some(label) = view.accessible_label {
+    if let Some(label) = accessible_label {
         let mut semantics = ui.semantics.borrow_mut();
         if semantics.get(root).is_some() {
             semantics.update(root, |node| {
@@ -3179,7 +3328,7 @@ fn mount_element(
         }
     }
     update_button_labels(ui, root);
-    for mounted in view.mounted {
+    for mounted in mounted {
         mounted(NodeHandle {
             ui: ui.downgrade(),
             node: root,

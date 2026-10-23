@@ -96,3 +96,26 @@ pub(crate) fn shrink_sparse<K: std::hash::Hash + Eq, V, S: std::hash::BuildHashe
         map.shrink_to(map.len() * 2);
     }
 }
+
+/// Runs `f`, level `level` of a recursion over a tree (mounting, lowering,
+/// layout), with room on the stack for it: when the thread's stack runs
+/// low, `f` runs on a fresh segment instead. Trees nest as deep as an app
+/// makes them and a debug build's frames are large; a 1 MB stack (the main
+/// thread's on Windows) would otherwise end the process. The stack is
+/// looked at every fourth level, which costs less than the levels between;
+/// the room kept covers them.
+pub fn deep<R>(level: u32, f: impl FnOnce() -> R) -> R {
+    if stack_low(level) {
+        stacker::grow(STACK_SEGMENT, f)
+    } else {
+        f()
+    }
+}
+/// Whether level `level` of a recursion should go on a fresh stack segment
+/// (`deep`), for a caller that would rather not move what it passes into a
+/// closure on the common path.
+pub(crate) fn stack_low(level: u32) -> bool {
+    level.is_multiple_of(4) && stacker::remaining_stack().is_none_or(|left| left < 256 * 1024)
+}
+/// The stack a recursion goes on when the thread's runs low (`deep`).
+pub(crate) const STACK_SEGMENT: usize = 2 * 1024 * 1024;

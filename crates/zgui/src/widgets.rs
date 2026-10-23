@@ -462,6 +462,8 @@ struct UiStorage {
     /// Run after every layout pass that changes the layout, by owning node.
     layout_listeners: RefCell<crate::scene::NodeMap<Vec<LayoutListener>>>,
     mount_initialization: RefCell<Option<Rc<MountInitialization>>>,
+    /// Views mounting now, nested (`Ui::mounting`).
+    mounting: Cell<u32>,
     interaction: RefCell<Option<InteractionDeadline>>,
     advancing_interaction: Cell<bool>,
     window_gesture: Cell<Option<WindowGesture>>,
@@ -647,6 +649,7 @@ impl Ui {
             after_layout: RefCell::new(Vec::new()),
             layout_listeners: RefCell::default(),
             mount_initialization: RefCell::new(None),
+            mounting: Cell::new(0),
             interaction: RefCell::new(None),
             advancing_interaction: Cell::new(false),
             window_gesture: Cell::new(None),
@@ -1211,7 +1214,12 @@ impl Ui {
         if let Some(signal) = self.storage.content_sizes.borrow().get(&node) {
             return signal.clone();
         }
-        self.scene.borrow_mut().prepare_layout();
+        // While views mount, the frame's layout pass gives it its size,
+        // once for the whole tree: laying out here would do it per node,
+        // and inside the mount's recursion.
+        if self.storage.mounting.get() == 0 {
+            self.scene.borrow_mut().prepare_layout();
+        }
         let size = allocated_content_size(&self.scene.borrow(), node);
         let signal = self.signal(size);
         self.storage
@@ -1220,6 +1228,14 @@ impl Ui {
             .insert(node, signal.clone());
         self.storage.editor_layout_revision.set(None);
         signal
+    }
+    /// How many views are mounting now, each inside the last (see
+    /// `observe_content_size`).
+    pub(crate) fn mount_depth(&self) -> u32 {
+        self.storage.mounting.get()
+    }
+    pub(crate) fn set_mount_depth(&self, depth: u32) {
+        self.storage.mounting.set(depth);
     }
     /// Register newly mounted intrinsic content without forcing a layout for
     /// every row. The sentinel is replaced by the next prepared layout.

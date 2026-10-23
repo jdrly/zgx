@@ -132,9 +132,18 @@ pub(crate) struct Lowering {
     /// The window's layout inspector, once the host view mounted: nodes
     /// with a recorded source are labelled for it while it records.
     pub inspector: Rc<std::cell::RefCell<Option<zgui::inspect::Inspector>>>,
+    /// How deep the lowering running now is (`zgui::deep`).
+    pub depth: std::cell::Cell<u32>,
 }
 
 pub(crate) fn lower(node: &Rc<Node>, low: &Rc<Lowering>) -> View {
+    let depth = low.depth.get();
+    low.depth.set(depth + 1);
+    let view = zgui::deep(depth, || lower_node(node, low));
+    low.depth.set(depth);
+    view
+}
+fn lower_node(node: &Rc<Node>, low: &Rc<Lowering>) -> View {
     let Some(vm) = node.owner.upgrade() else {
         return div();
     };
@@ -144,6 +153,14 @@ pub(crate) fn lower(node: &Rc<Node>, low: &Rc<Lowering>) -> View {
     } else {
         build(node, &vm, low, None)
     };
+    decorated(view, node, &vm, low)
+}
+
+/// A lowered node with what wraps it: its inspector label, tooltip and
+/// theme. Apart from `lower`, whose frame stays live while the node's
+/// children lower (debug builds give each view a stack slot of its own).
+#[cfg_attr(debug_assertions, inline(never))]
+fn decorated(view: View, node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
     // Labelled for the layout inspector while it records.
     let view = match (&node.source, low.inspector.borrow().as_ref()) {
         (Some(source), Some(inspector)) if inspector.recording() => {
@@ -162,7 +179,7 @@ pub(crate) fn lower(node: &Rc<Node>, low: &Rc<Lowering>) -> View {
     };
     match &node.theme {
         None => view,
-        Some(spec) => themed(spec, &vm, view),
+        Some(spec) => themed(spec, vm, view),
     }
 }
 
@@ -664,17 +681,18 @@ fn built(vm: &Rc<Vm>, result: mlua::Result<mlua::Value>, low: &Rc<Lowering>) -> 
     }
 }
 
-fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut Context>) -> View {
-    // Layout moves animate through an element too, one selectors do not find.
-    let element = (node.targetable() || node.tracks_layout()).then(|| {
-        Element::new(
-            &low.runtime,
-            node.id.clone(),
-            node.classes.clone(),
-            node.tag(),
-        )
-    });
-    let mut view = match &node.kind {
+/// The view a node's kind makes, before its styles, handlers and
+/// children. Apart from `build`, whose frame stays live while its children
+/// lower: in a debug build each arm's views take stack of their own.
+#[cfg_attr(debug_assertions, inline(never))]
+fn kind_view(
+    node: &Rc<Node>,
+    vm: &Rc<Vm>,
+    low: &Rc<Lowering>,
+    mut cx: Option<&mut Context>,
+    element: Option<&Element>,
+) -> View {
+    match &node.kind {
         Kind::Column => column(),
         Kind::Row => row(),
         Kind::Div => div(),
@@ -1203,7 +1221,20 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
                     None => lower(n, low),
                 }),
         ),
-    };
+    }
+}
+
+fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut Context>) -> View {
+    // Layout moves animate through an element too, one selectors do not find.
+    let element = (node.targetable() || node.tracks_layout()).then(|| {
+        Element::new(
+            &low.runtime,
+            node.id.clone(),
+            node.classes.clone(),
+            node.tag(),
+        )
+    });
+    let mut view = kind_view(node, vm, low, cx.as_deref_mut(), element.as_deref());
     if let Some(mask) = &node.mask {
         view = view
             .mask(mask.image.clone(), mask.size)
@@ -1232,7 +1263,20 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
             }
         }));
     }
+    styled(view, node, vm, low, cx, element)
+}
 
+/// What a node sets on its view, after its children: styles, handlers,
+/// observers. Apart from `build` for its frame, as `kind_view`.
+#[cfg_attr(debug_assertions, inline(never))]
+fn styled(
+    mut view: View,
+    node: &Rc<Node>,
+    vm: &Rc<Vm>,
+    low: &Rc<Lowering>,
+    mut cx: Option<&mut Context>,
+    element: Option<Rc<Element>>,
+) -> View {
     // Literal styles apply once. Anything that can change, and an element's
     // animated values, share one reactive style.
     let mut statics = Vec::with_capacity(node.props.len());
