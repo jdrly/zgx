@@ -223,6 +223,13 @@ fn a_watching_host_reloads_when_a_file_is_saved() {
     std::fs::write(&beside, APP.replace("Count:", "Sum:")).unwrap();
     std::fs::rename(&beside, &path).unwrap();
     assert!(wait_for(&mut h, "Sum: 0"), "{}", h.text("label"));
+    // A burst of writes, as a save in several parts: what shows is the
+    // last (a reload waits for the writes to stop).
+    for word in ["One:", "Two:", "Three:"] {
+        rewrite(&path, &APP.replace("Count:", word));
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(wait_for(&mut h, "Three: 0"), "{}", h.text("label"));
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 

@@ -1498,40 +1498,31 @@ impl ScriptHost {
                     // After a change, open them again: a file an editor
                     // replaced is a new file.
                     events.watch(host.watched_files(), host.watched_dirs(), heard);
-                    if host.0.checker.borrow().is_some() {
-                        // A type check runs on a thread of its own: look for
-                        // its result as often as files were polled.
-                        zgui::timer::sleep(every).await;
-                        heard = false;
-                    } else {
-                        let woke = {
-                            let mut changed = std::pin::pin!(events.changed());
-                            let mut reloaded = std::pin::pin!(rewatched.recv());
-                            std::future::poll_fn(|cx| {
-                                use std::task::Poll;
-                                if let Poll::Ready(more) = changed.as_mut().poll(cx) {
-                                    return Poll::Ready(Some(more));
+                    // While a type check runs on its thread, its result is
+                    // looked for this often; a change still wakes this at
+                    // once.
+                    let poll = host.0.checker.borrow().is_some().then_some(every);
+                    match wake(&mut events, &mut rewatched, poll).await {
+                        Woke::Changed => {
+                            // An editor's save can be several writes: reload
+                            // once they stop.
+                            let mut waited = Duration::ZERO;
+                            while waited < SETTLE_MAX {
+                                match wake(&mut events, &mut rewatched, Some(SETTLE)).await {
+                                    Woke::Changed => waited += SETTLE,
+                                    Woke::Ended => return,
+                                    Woke::Timer | Woke::Reloaded => break,
                                 }
-                                if reloaded.as_mut().poll(cx).is_ready() {
-                                    return Poll::Ready(None);
-                                }
-                                Poll::Pending
-                            })
-                            .await
-                        };
-                        match woke {
-                            // An editor's save can be several writes.
-                            Some(true) => {
-                                zgui::timer::sleep(Duration::from_millis(30)).await;
-                                heard = true;
                             }
-                            Some(false) => return,
-                            // Reloaded: watch what it loads now.
-                            None => {
-                                heard = true;
-                                continue;
-                            }
+                            heard = true;
                         }
+                        Woke::Ended => return,
+                        // Reloaded: watch what it loads now.
+                        Woke::Reloaded => {
+                            heard = true;
+                            continue;
+                        }
+                        Woke::Timer => heard = false,
                     }
                     host.reload_if_changed();
                     host.poll_check();
@@ -2005,4 +1996,55 @@ impl ScriptHost {
             .unwrap_or_default();
         Ok((vm, root, contributions))
     }
+}
+
+/// How long a save's writes must stop for before it reloads (`watch`): an
+/// editor's save as a write and a rename comes within a millisecond or two.
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+const SETTLE: Duration = Duration::from_millis(10);
+/// At most this long after a change, it reloads even if writes go on.
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+const SETTLE_MAX: Duration = Duration::from_millis(100);
+
+/// What woke `watch`.
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+enum Woke {
+    /// A watched file changed.
+    Changed,
+    /// Nothing can change any more.
+    Ended,
+    /// A reload asks for the watched files to be looked at again.
+    Reloaded,
+    /// `after` went by.
+    Timer,
+}
+/// The first of a change, a reload's rewatch, or `after` going by.
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+async fn wake(
+    events: &mut file_events::FileEvents,
+    rewatched: &mut zgui::task::LatestReceiver<()>,
+    after: Option<Duration>,
+) -> Woke {
+    let mut changed = std::pin::pin!(events.changed());
+    let mut reloaded = std::pin::pin!(rewatched.recv());
+    let mut timer = std::pin::pin!(async move {
+        match after {
+            Some(after) => zgui::timer::sleep(after).await,
+            None => std::future::pending::<()>().await,
+        }
+    });
+    std::future::poll_fn(|cx| {
+        use std::task::Poll;
+        if let Poll::Ready(more) = changed.as_mut().poll(cx) {
+            return Poll::Ready(if more { Woke::Changed } else { Woke::Ended });
+        }
+        if reloaded.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Woke::Reloaded);
+        }
+        if timer.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Woke::Timer);
+        }
+        Poll::Pending
+    })
+    .await
 }
