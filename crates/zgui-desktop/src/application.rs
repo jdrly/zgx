@@ -2298,6 +2298,9 @@ impl Host {
                     self.scroll.position = self.cursor;
                     match delta {
                         MouseScrollDelta::PixelDelta(_) => self.scroll.push_precise(now, (dx, dy)),
+                        MouseScrollDelta::LineDelta(x, y) if continuous_lines(x, y) => {
+                            self.scroll.push_precise(now, (dx, dy))
+                        }
                         MouseScrollDelta::LineDelta(..) => self.scroll.push_wheel(now, (dx, dy)),
                     }
                 } else {
@@ -3428,6 +3431,14 @@ fn wheel_delta(delta: MouseScrollDelta, scale: f64) -> (f32, f32) {
         }
     }
 }
+/// Whether wheel lines are continuous motion rather than notches. Windows
+/// reports a precision touchpad's (and a free-spinning wheel's) motion as
+/// wheel deltas of less than a notch (120); eased like notches, a swipe
+/// trailed the fingers. Whole notches stay notches.
+fn continuous_lines(x: f32, y: f32) -> bool {
+    let fraction = |lines: f32| (lines * 120.).round() as i32 % 120 != 0;
+    cfg!(windows) && (fraction(x) || fraction(y))
+}
 /// Report where a partially repainted frame differs from a full repaint:
 /// the bounding box of stale device pixels, and the frame's damage.
 fn check_damage(
@@ -3779,6 +3790,11 @@ mod tests {
             wheel_delta(MouseScrollDelta::LineDelta(1., -2.), 2.),
             (-28., 56.)
         );
+        // Windows: a precision touchpad's fractions of a notch are motion.
+        assert!(!continuous_lines(0., -1.));
+        assert!(!continuous_lines(2., 0.));
+        assert_eq!(continuous_lines(0., 10. / 120.), cfg!(windows));
+        assert_eq!(continuous_lines(-1.25, 0.), cfg!(windows));
         assert_eq!(
             wheel_delta(
                 MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(20., -40.)),
