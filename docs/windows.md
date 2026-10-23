@@ -51,7 +51,8 @@ from their edges. `Inset` adds Windows 11's caption buttons over the content's
 top right, drawn by zgui and reported to Windows as its own (`WM_NCHITTEST`),
 so they get the system's tooltips and the maximize button's snap layouts; the
 buttons minimize, maximize, restore and close through the system's commands.
-The title bar follows the system's light or dark mode.
+The title bar and the window menu (Alt+Space) follow the system's light or
+dark mode.
 
 Windows present through a DirectComposition visual, so `WindowOptions::transparent`
 windows are transparent where zgui paints nothing, and `WindowOptions::glass`

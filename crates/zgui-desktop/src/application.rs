@@ -2345,6 +2345,10 @@ impl Host {
                     .set_system_appearance(appearance_of(appearance));
                 crate::system_colors::sync(&self.context.ui);
                 crate::scrollers::sync(&self.context.ui);
+                #[cfg(windows)]
+                if let Some(window) = &self.window {
+                    crate::window_chrome::menu_theme(window);
+                }
             }
             WindowEvent::Focused(true) => {
                 // The user may have changed the accent while it was at the back.

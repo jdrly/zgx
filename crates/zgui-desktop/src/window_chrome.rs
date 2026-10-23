@@ -120,7 +120,7 @@ pub(crate) fn apply(
 }
 
 #[cfg(windows)]
-pub(crate) use win::CaptionHost;
+pub(crate) use win::{CaptionHost, menu_theme};
 
 #[cfg(windows)]
 mod win {
@@ -158,10 +158,10 @@ mod win {
             WindowsAndMessaging::{
                 GetClientRect, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCLOSE, HTLEFT, HTMAXBUTTON,
                 HTMINBUTTON, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IsZoomed, PostMessageW,
-                SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, WM_MOUSEMOVE, WM_NCDESTROY,
-                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
+                SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SendMessageW, WM_MOUSEMOVE,
+                WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
                 WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE,
-                WM_SYSCOMMAND,
+                WM_SYSCOMMAND, WM_THEMECHANGED,
             },
         },
     };
@@ -290,10 +290,74 @@ mod win {
         }
     }
 
+    /// Windows' own menu for the window (Alt+Space, a right click on its
+    /// title bar) follows the system's dark mode, as Explorer's and
+    /// Terminal's do; winit darkens only the title bar. Called as the window
+    /// is made and when the mode changes. uxtheme exports this only by
+    /// ordinal, its numbers other functions' before Windows 10 1903 (18362).
+    /// "Allow dark", not forced: winit reads the system's mode through
+    /// uxtheme, and a forced mode would hide its changes.
+    pub(crate) fn menu_theme(window: &Window) {
+        use std::sync::OnceLock;
+        use windows::{
+            Wdk::System::SystemServices::RtlGetVersion,
+            Win32::System::{
+                LibraryLoader::{GetProcAddress, LoadLibraryW},
+                SystemInformation::OSVERSIONINFOW,
+            },
+            core::{BOOL, PCSTR, w},
+        };
+        type Proc = unsafe extern "system" fn() -> isize;
+        type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
+        type Refresh = unsafe extern "system" fn();
+        type AllowDarkModeForWindow = unsafe extern "system" fn(HWND, BOOL) -> BOOL;
+        type Uxtheme = (SetPreferredAppMode, [Refresh; 2], AllowDarkModeForWindow);
+        static UXTHEME: OnceLock<Option<Uxtheme>> = OnceLock::new();
+        let uxtheme = UXTHEME.get_or_init(|| {
+            let mut version = OSVERSIONINFOW {
+                dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: fills `version`, whose size it is given.
+            if unsafe { RtlGetVersion(&mut version) }.is_err()
+                || version.dwMajorVersion < 10
+                || version.dwBuildNumber < 18362
+            {
+                return None;
+            }
+            // SAFETY: uxtheme stays loaded (comctl32's controls use it), and
+            // from 1903 (18362) the ordinals are these functions.
+            unsafe {
+                let uxtheme = LoadLibraryW(w!("uxtheme.dll")).ok()?;
+                let ordinal = |n: usize| GetProcAddress(uxtheme, PCSTR(n as _));
+                let refresh = |n| Some(std::mem::transmute::<Proc, Refresh>(ordinal(n)?));
+                Some((
+                    std::mem::transmute::<Proc, SetPreferredAppMode>(ordinal(135)?),
+                    // RefreshImmersiveColorPolicyState, FlushMenuThemes.
+                    [refresh(104)?, refresh(136)?],
+                    std::mem::transmute::<Proc, AllowDarkModeForWindow>(ordinal(133)?),
+                ))
+            }
+        });
+        let (Some((set_mode, refresh, allow)), Some(hwnd)) = (uxtheme, hwnd(window)) else {
+            return;
+        };
+        // SAFETY: our own window; none of these keeps anything of ours. The
+        // window opened its menu's theme when created: it opens it again
+        // for the new mode on WM_THEMECHANGED.
+        unsafe {
+            let _ = allow(hwnd, true.into());
+            set_mode(1); // Allow dark.
+            refresh.iter().for_each(|refresh| refresh());
+            SendMessageW(hwnd, WM_THEMECHANGED, None, None);
+        }
+    }
+
     pub(super) fn apply(window: &Window, titlebar: Titlebar, glass: Option<Glass>) -> f64 {
         let Some(hwnd) = hwnd(window) else {
             return 0.;
         };
+        menu_theme(window);
         if let Some(glass) = glass {
             frost(
                 hwnd,
