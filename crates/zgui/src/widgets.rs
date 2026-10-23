@@ -3319,7 +3319,9 @@ impl Ui {
                             Key::Character(ref k) if command && k.eq_ignore_ascii_case("y") => {
                                 changed = e.redo();
                             }
-                            Key::Escape => e.cancel_preedit(),
+                            // A composition to cancel takes it; otherwise it goes
+                            // on (a dialog around the field closes).
+                            Key::Escape if e.preedit().is_some() => e.cancel_preedit(),
                             _ => return,
                         }
                     }

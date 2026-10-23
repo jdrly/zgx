@@ -112,6 +112,39 @@ fn modal_focus_traps_dismisses_and_restores_without_click_through() {
     assert_eq!(ui.input.focused(), Some(trigger));
 }
 #[test]
+fn escape_in_a_text_field_closes_its_dialog_unless_it_cancels_a_composition() {
+    let mut ui = Ui::new(400., 300.);
+    let open = ui.signal(false);
+    let value = ui.signal(String::new());
+    let view = ui.mount(
+        column().child(button().w(50.).h(30.).id("trigger")).child(
+            modal("New Message", open.clone())
+                .w(300.)
+                .h(120.)
+                .child(text_input("To", value.clone()).id("to").w(200.)),
+        ),
+    );
+    ui.prepare_frame();
+    let trigger = view.find("trigger").unwrap();
+    ui.input.focus(&ui.scene, Some(trigger));
+    open.set(true);
+    ui.prepare_frame();
+    let field = view.find("to").unwrap();
+    ui.input.focus(&ui.scene, Some(field));
+    // Composing: Escape cancels the composition and the dialog stays.
+    ui.dispatch(InputEvent::ImePreedit {
+        text: "ㅎ".into(),
+        cursor: Some((3, 3)),
+    });
+    escape(&mut ui);
+    assert!(open.get(), "Escape cancelled the composition only");
+    // Nothing composing: Escape closes the dialog, focus goes back.
+    escape(&mut ui);
+    assert!(!open.get());
+    assert_eq!(ui.input.focused(), Some(trigger));
+}
+
+#[test]
 fn nested_escape_closes_only_top_and_parent_close_unwinds_children() {
     let mut ui = Ui::new(400., 300.);
     let outer = ui.signal(false);
