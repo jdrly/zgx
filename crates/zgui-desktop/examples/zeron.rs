@@ -219,6 +219,7 @@ fn waiting(message: Signal<Option<String>>) -> View {
         .child(drag_region(div().w_full().h(52.)))
         .child(
             column()
+                .w_full()
                 .grow()
                 .items_center()
                 .justify_center()

@@ -445,10 +445,18 @@ fn ime_section(cx: &mut Context, log: &Log) -> View {
         .child(header(
             "Input & IME",
             &[
-                "Add Pinyin – Simplified in System Settings › Keyboard › Text Input, switch with 🌐.",
+                if cfg!(windows) {
+                    "Add Microsoft Pinyin in Settings › Time & language, switch with Win+Space."
+                } else {
+                    "Add Pinyin – Simplified in System Settings › Keyboard › Text Input, switch with 🌐."
+                },
                 "Type nihao + Space in the first field: candidates sit at the caret, one COMMIT.",
                 "Type zhong + Escape: preedit clears, nothing commits.",
-                "Type shi, then click the second field (or ⌘-Tab away and back): no stray text.",
+                if cfg!(windows) {
+                    "Type shi, then click the second field (or Alt+Tab away and back): no stray text."
+                } else {
+                    "Type shi, then click the second field (or ⌘-Tab away and back): no stray text."
+                },
                 "Move the window and type again: the candidate window follows.",
             ],
         ))
@@ -573,7 +581,14 @@ fn drag_section(cx: &mut Context, log: &Log) -> View {
             tint: Color(140, 150, 255, 74),
         },
     ];
-    let status = cx.state("Drop a card or Finder files here".to_owned());
+    let status = cx.state(
+        if cfg!(windows) {
+            "Drop a card or Explorer files here"
+        } else {
+            "Drop a card or Finder files here"
+        }
+        .to_owned(),
+    );
     let hover = cx.state(false);
     let (shown, lit) = (status.clone(), hover.clone());
     let (drops, files, cancels, hovering) =
@@ -587,7 +602,11 @@ fn drag_section(cx: &mut Context, log: &Log) -> View {
             &[
                 "Drag a card by any corner: it lifts from exactly where you grabbed it.",
                 "Drop it in the zone (accepted) and outside it (rejected); Escape mid-drag cancels.",
-                "Drag two files from Finder into the zone, then drag one in and back out.",
+                if cfg!(windows) {
+                    "Drag two files from Explorer into the zone, then drag one in and back out."
+                } else {
+                    "Drag two files from Finder into the zone, then drag one in and back out."
+                },
             ],
         ))
         .child(row().gap(16.).children(cards.into_iter().map(|card| {
@@ -761,7 +780,11 @@ fn controls_section(cx: &mut Context, log: &Log) -> View {
         .child(header(
             "Controls",
             &[
-                "Turn on VoiceOver (⌘F5) and move with Control-Option-→ through the controls.",
+                if cfg!(windows) {
+                    "Turn on Narrator (Win+Ctrl+Enter) and move with Caps Lock+→ through the controls."
+                } else {
+                    "Turn on VoiceOver (⌘F5) and move with Control-Option-→ through the controls."
+                },
                 "Each control announces its name and role; toggling announces the new value.",
                 "Also try Tab / Shift-Tab and Space to operate everything by keyboard.",
             ],
