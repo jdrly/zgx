@@ -290,6 +290,49 @@ async fn native_select(
 ) -> FileDialogResult<Vec<PathBuf>> {
     background(move || crate::portal_dialog::select(kind, options, parent, cancel))?.await?
 }
+/// A window's handle, taken on its UI thread, for a worker to own a native
+/// dialog with: winit gives raw handles on its own thread only, so rfd,
+/// asking on the worker, got none and showed every dialog unowned (not
+/// modal to the window, at the screen's corner). It keeps the window alive
+/// until the dialog returns, even when the UI future is cancelled.
+#[cfg(target_os = "windows")]
+pub(crate) struct Owner {
+    hwnd: std::num::NonZeroIsize,
+    _window: Arc<Window>,
+}
+#[cfg(target_os = "windows")]
+impl Owner {
+    pub(crate) fn new(window: Arc<Window>) -> Option<Self> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+            return None;
+        };
+        Some(Self {
+            hwnd: handle.hwnd,
+            _window: window,
+        })
+    }
+}
+#[cfg(target_os = "windows")]
+impl winit::raw_window_handle::HasWindowHandle for Owner {
+    fn window_handle(
+        &self,
+    ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
+    {
+        let raw = winit::raw_window_handle::Win32WindowHandle::new(self.hwnd);
+        // SAFETY: the window this handle names is kept alive by `_window`.
+        Ok(unsafe { winit::raw_window_handle::WindowHandle::borrow_raw(raw.into()) })
+    }
+}
+#[cfg(target_os = "windows")]
+impl winit::raw_window_handle::HasDisplayHandle for Owner {
+    fn display_handle(
+        &self,
+    ) -> Result<winit::raw_window_handle::DisplayHandle<'_>, winit::raw_window_handle::HandleError>
+    {
+        Ok(winit::raw_window_handle::DisplayHandle::windows())
+    }
+}
 #[cfg(target_os = "windows")]
 async fn native_select(
     kind: Kind,
@@ -297,12 +340,12 @@ async fn native_select(
     parent: Arc<Window>,
     _cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> FileDialogResult<Vec<PathBuf>> {
-    // The worker owns the parent even when the UI future is cancelled; rfd
-    // stores only its raw handle, which must remain valid until Show returns.
+    let owner = Owner::new(parent);
     background(move || {
-        let mut dialog = rfd::FileDialog::new()
-            .set_parent(parent.as_ref())
-            .set_title(options.title);
+        let mut dialog = rfd::FileDialog::new().set_title(options.title);
+        if let Some(owner) = &owner {
+            dialog = dialog.set_parent(owner);
+        }
         if let Some(directory) = options.directory {
             dialog = dialog.set_directory(directory);
         }

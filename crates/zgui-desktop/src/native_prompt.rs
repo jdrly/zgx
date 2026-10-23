@@ -94,6 +94,8 @@ pub(crate) async fn show(
 ) -> Result<PromptResponse, FileDialogError> {
     #[cfg(target_os = "linux")]
     drop(parent);
+    #[cfg(target_os = "windows")]
+    let owner = crate::file_dialog::Owner::new(parent);
     crate::file_dialog::background(move || {
         let dialog = rfd::MessageDialog::new()
             .set_title(options.title)
@@ -101,7 +103,10 @@ pub(crate) async fn show(
             .set_level(options.level.into())
             .set_buttons(options.buttons.into());
         #[cfg(target_os = "windows")]
-        let dialog = dialog.set_parent(parent.as_ref());
+        let dialog = match &owner {
+            Some(owner) => dialog.set_parent(owner),
+            None => dialog,
+        };
         dialog.show().into()
     })?
     .await

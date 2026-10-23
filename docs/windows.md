@@ -29,9 +29,9 @@ Measured on an RTX 4090 at 60 Hz:
 | | before | now |
 | --- | --- | --- |
 | Gallery at rest | 10.6 M cycles/s, Vulkan and D3D12 drivers loaded | 2.7 M cycles/s (the driver's own threads) |
-| Keystroke to composed screen, at rest | 12–14 ms median | 12–14 ms median |
+| Keystroke to composed screen, at rest | 12â€“14 ms median | 12â€“14 ms median |
 | Keystroke to composed screen, animating | 47 ms median | 12 ms median |
-| Animation at the display's rate | 57.7–60 fps, timer drifting against refreshes | every refresh, none repeated or dropped |
+| Animation at the display's rate | 57.7â€“60 fps, timer drifting against refreshes | every refresh, none repeated or dropped |
 
 `ZGUI_PRESENT_LOG=1` logs each shown present as DXGI reports it. The probes
 measure the same things on any machine:
@@ -83,10 +83,11 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime
+cargo build -p zgui-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
+python scripts/windows_platform_smoke.py target/debug/examples
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -104,3 +105,12 @@ python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --insta
   language's typing features (an administrator install) before they compose.
   `native_ime --open-ime` opens the IME itself: input methods ignore a
   synthesized on/off key.
+- `windows_platform_smoke.py`: selected display text copied as text and HTML
+  and read by another process, text from another process pasted into an
+  editor, the file picker and the message box (each owned by its window, the
+  window disabled while it shows), and a file dragged in from another process
+  through OLE drag and drop, as from Explorer.
+
+`scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
+tree as Narrator reads it: control types, names, values, toggle and range
+states, and text selections.

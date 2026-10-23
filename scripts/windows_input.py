@@ -29,6 +29,7 @@ for dll, name, res, args in [
     (user32, "GetClientRect", wintypes.BOOL, [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]),
     (user32, "GetWindowRect", wintypes.BOOL, [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]),
     (user32, "ClientToScreen", wintypes.BOOL, [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]),
+    (user32, "ScreenToClient", wintypes.BOOL, [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]),
     (user32, "SetWindowPos", wintypes.BOOL, [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                              ctypes.c_int, ctypes.c_int, wintypes.UINT]),
     (user32, "GetDpiForWindow", wintypes.UINT, [wintypes.HWND]),
@@ -204,7 +205,9 @@ def activate(hwnd):
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     for _ in range(20):
         # A key event from this process lifts the foreground lock for it.
-        _send(_vk(VK["alt"]), _vk(VK["alt"], up=True), guard=False)
+        # F24, which nothing binds: a tap of Alt put dialogs in their
+        # mnemonic mode, which took the next key typed.
+        _send(_vk(VK["f24"]), _vk(VK["f24"], up=True), guard=False)
         user32.SetForegroundWindow(hwnd)
         if is_foreground(hwnd):
             _target = _handle(hwnd)
@@ -229,6 +232,12 @@ def client_size(hwnd):
 def to_screen(hwnd, x, y):
     point = wintypes.POINT(round(x), round(y))
     user32.ClientToScreen(hwnd, ctypes.byref(point))
+    return point.x, point.y
+
+
+def to_client(hwnd, x, y):
+    point = wintypes.POINT(round(x), round(y))
+    user32.ScreenToClient(hwnd, ctypes.byref(point))
     return point.x, point.y
 
 
