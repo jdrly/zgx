@@ -577,6 +577,162 @@ struct EachRow {
     /// Seen in this pass.
     seen: bool,
 }
+/// What tells an item without a `key` from the others at a glance: a
+/// table by its allocation (state keeps what a change does not touch the
+/// same allocation), anything else by its value.
+#[derive(Hash, PartialEq, Eq)]
+enum Quick {
+    Nil,
+    Bool(bool),
+    Num(u64),
+    Str(Rc<str>),
+    At(usize),
+}
+fn quick(item: &Value) -> Quick {
+    match item {
+        Value::Nil => Quick::Nil,
+        Value::Bool(b) => Quick::Bool(*b),
+        Value::Num(n) => Quick::Num(if *n == 0. { 0 } else { n.to_bits() }),
+        Value::Str(s) => Quick::Str(s.clone()),
+        Value::List(l) => Quick::At(Rc::as_ptr(l).cast::<()>() as usize),
+        Value::Map(m) => Quick::At(Rc::as_ptr(m).cast::<()>() as usize),
+        Value::Element(e) => Quick::At(Rc::as_ptr(&e.0).cast::<()>() as usize),
+    }
+}
+/// An item's contents, hashed: equal items hash equal.
+fn content_hash(item: &Value, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    match item {
+        Value::List(items) => {
+            items.len().hash(hasher);
+            items.iter().for_each(|item| content_hash(item, hasher));
+        }
+        Value::Map(entries) => {
+            entries.len().hash(hasher);
+            for (key, value) in entries.iter() {
+                key.hash(hasher);
+                content_hash(value, hasher);
+            }
+        }
+        other => quick(other).hash(hasher),
+    }
+}
+/// The rows of a `ui.each` without a `key` as the last pass left them: their
+/// names in list order, and the next name to give.
+#[derive(Default)]
+struct Unkeyed {
+    order: Vec<String>,
+    next: u64,
+}
+/// The rows of a `ui.each` without a `key` for `list`: each item keeps the
+/// row of the same item last pass, wherever it moved (an insert or removal
+/// builds one row, not every row after it). Items are matched where they
+/// were first (a pointer compare each, in the usual pass), then the rest by
+/// `quick`, then by their contents (a list built afresh from state holds
+/// equal tables, new ones). An item still unmatched takes the free row at
+/// its place, built again if its item differs (or, `live`, given the new
+/// item), as rows keyed by position were. Returns each item's row name;
+/// `rows` keeps the rows still shown.
+fn unkeyed_rows(
+    list: &[Value],
+    rows: &mut HashMap<String, EachRow>,
+    state: &mut Unkeyed,
+    live: bool,
+    runtime: &zgui::reactive::Runtime,
+) -> Vec<String> {
+    let mut names: Vec<Option<String>> = vec![None; list.len()];
+    for (index, item) in list.iter().enumerate() {
+        if let Some(name) = state.order.get(index)
+            && rows[name].last == *item
+        {
+            rows.get_mut(name).unwrap().seen = true;
+            names[index] = Some(name.clone());
+        }
+    }
+    let free: Vec<&String> = state
+        .order
+        .iter()
+        .filter(|name| !rows[*name].seen)
+        .collect();
+    if !free.is_empty() && names.iter().any(Option::is_none) {
+        // Earlier rows first: equal items keep their order.
+        let mut by_item: HashMap<Quick, Vec<String>> = HashMap::new();
+        for name in free.iter().rev() {
+            by_item
+                .entry(quick(&rows[*name].last))
+                .or_default()
+                .push((*name).clone());
+        }
+        for (item, name) in list.iter().zip(names.iter_mut()) {
+            if name.is_none()
+                && let Some(found) = by_item.get_mut(&quick(item)).and_then(Vec::pop)
+            {
+                rows.get_mut(&found).unwrap().seen = true;
+                *name = Some(found);
+            }
+        }
+        let hash = |item: &Value| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content_hash(item, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let mut by_contents: HashMap<u64, Vec<String>> = HashMap::new();
+        for name in free.iter().rev().filter(|name| !rows[**name].seen) {
+            by_contents
+                .entry(hash(&rows[*name].last))
+                .or_default()
+                .push((*name).clone());
+        }
+        for (item, name) in list.iter().zip(names.iter_mut()) {
+            if name.is_some() || by_contents.is_empty() {
+                continue;
+            }
+            if let Some(candidates) = by_contents.get_mut(&hash(item))
+                && let Some(at) = candidates.iter().rposition(|n| rows[n].last == *item)
+            {
+                let found = candidates.remove(at);
+                rows.get_mut(&found).unwrap().seen = true;
+                *name = Some(found);
+            }
+        }
+    }
+    for (index, item) in list.iter().enumerate() {
+        if names[index].is_some() {
+            continue;
+        }
+        let name = match state.order.get(index).filter(|name| !rows[*name].seen) {
+            Some(name) => {
+                let row = rows.get_mut(name).unwrap();
+                if let (true, Some(signal)) = (live, &row.item) {
+                    let (signal, item) = (signal.clone(), item.clone());
+                    runtime.untracked(|| signal.set(item));
+                } else if !live {
+                    row.generation += 1;
+                }
+                row.last = item.clone();
+                row.seen = true;
+                name.clone()
+            }
+            None => {
+                state.next += 1;
+                let name = state.next.to_string();
+                rows.insert(
+                    name.clone(),
+                    EachRow {
+                        last: item.clone(),
+                        generation: 0,
+                        item: None,
+                        seen: true,
+                    },
+                );
+                name
+            }
+        };
+        names[index] = Some(name);
+    }
+    state.order = names.into_iter().flatten().collect();
+    state.order.clone()
+}
 pub(crate) fn build_scoped(
     vm: &Rc<Vm>,
     cx: &mut Context,
@@ -964,7 +1120,8 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
             motion: None,
         } => {
             // Rows are keyed by the script's `key` (they keep their state as
-            // the list reorders), else by position. A row whose item changes
+            // the list reorders), else by their items (`unkeyed_rows`). A
+            // row whose item changes
             // under its key is built again, unless its builder takes a third
             // parameter: then it gets its item as state, kept current, and
             // updates in place (a streaming message's row, its text growing).
@@ -972,6 +1129,7 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
             let live = builder.info().num_params >= 3;
             let rows: Rc<std::cell::RefCell<HashMap<String, EachRow>>> = Rc::default();
             let noted: Rc<std::cell::RefCell<HashMap<String, (usize, String)>>> = Rc::default();
+            let unkeyed = std::cell::RefCell::new(Unkeyed::default());
             let (keys_from, items) = (items.clone(), items.clone());
             let (key_fn, key_vm) = (key.clone(), vm.clone());
             let mut item_keys = ItemKeys::default();
@@ -984,6 +1142,29 @@ fn build(node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>, mut cx: Option<&mut C
                         let mut noted = noted_in_keys.borrow_mut();
                         noted.clear();
                         let mut rows = rows_in_keys.borrow_mut();
+                        if key_fn.is_none() {
+                            let names = unkeyed_rows(
+                                list.list(),
+                                &mut rows,
+                                &mut unkeyed.borrow_mut(),
+                                live,
+                                &runtime,
+                            );
+                            rows.retain(|_, state| std::mem::take(&mut state.seen));
+                            return names
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, row)| {
+                                    let identity = if live {
+                                        row.clone()
+                                    } else {
+                                        format!("{row}@{}", rows[&row].generation)
+                                    };
+                                    noted.insert(identity.clone(), (i, row));
+                                    identity
+                                })
+                                .collect();
+                        }
                         let mut seen: HashMap<String, usize> = HashMap::new();
                         let keys = key_fn
                             .as_ref()

@@ -1326,6 +1326,70 @@ fn keyed_rows_keep_their_state_when_the_list_reorders() {
 }
 
 #[test]
+fn rows_without_a_key_follow_their_items() {
+    // No `key`: rows follow their items wherever they move, so an insert or
+    // removal builds one row, and each row keeps its own state.
+    let mut h = Harness::inline(
+        r##"local items = ui.state("items", { { name = "a" }, { name = "b" }, { name = "c" } })
+        local builds = ui.state("builds", 0)
+        local fresh_builds = ui.state("fresh_builds", 0)
+        local Row = ui.component(function(props)
+            local clicks = ui.use_state(0)
+            builds:set(builds:peek() + 1)
+            return ui.button { id = "row-" .. props.item.name, w = 50, h = 20,
+                on_click = function() clicks:add(1) end,
+                ui.text { function() return props.item.name .. clicks:get() end, id = "label-" .. props.item.name } }
+        end)
+        -- Built afresh from the state each time: equal tables, new ones.
+        local fresh = ui.computed(function()
+            local out = {}
+            for _, item in items:get() do table.insert(out, { name = item.name }) end
+            return out
+        end)
+        return ui.column {
+            ui.each(items, function(item) return Row { item = item } end),
+            ui.each(fresh, function(item)
+                fresh_builds:set(fresh_builds:peek() + 1)
+                return ui.text { item.name, literal = true }
+            end),
+            ui.text { id = "builds", "{builds} {fresh_builds}" },
+            ui.button { id = "front", w = 10, h = 10, on_click = function() items:insert(1, { name = "z" }) end },
+            ui.button { id = "drop", w = 10, h = 10, on_click = function() items:remove(1) end },
+            ui.button { id = "reverse", w = 10, h = 10, on_click = function()
+                local list = items:get()
+                items:set({ list[3], list[2], list[1] })
+            end },
+            ui.button { id = "edit", w = 10, h = 10, on_click = function() items:set_key({ 1, "name" }, "C") end },
+        }"##,
+    );
+    h.click("row-b");
+    h.click("row-b");
+    assert_eq!(h.text("builds"), "3 3");
+    h.click("front");
+    assert_eq!(
+        h.text("label-b"),
+        "b2",
+        "b kept its clicks when a row came before it"
+    );
+    assert_eq!(h.text("builds"), "4 4", "only the new row was built");
+    h.click("drop");
+    assert_eq!(h.text("label-b"), "b2", "and when the row before it left");
+    assert_eq!(h.text("builds"), "4 4", "a removal builds nothing");
+    h.click("reverse");
+    assert_eq!(h.text("label-b"), "b2", "and when the list reversed");
+    assert_eq!(h.text("label-a"), "a0");
+    assert_eq!(h.text("builds"), "4 4", "a reorder builds nothing");
+    h.click("edit");
+    assert_eq!(
+        h.text("label-C"),
+        "C0",
+        "the edited item's row is built again"
+    );
+    assert_eq!(h.text("label-b"), "b2");
+    assert_eq!(h.text("builds"), "5 5", "and only that row");
+}
+
+#[test]
 fn modals_open_from_state() {
     let mut h = Harness::inline(
         r##"local open = ui.state("open", false)
