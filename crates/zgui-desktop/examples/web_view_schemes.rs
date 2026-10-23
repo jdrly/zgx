@@ -1,5 +1,5 @@
 //! A page served from a scheme of the app's own, with a script injected
-//! before the page's and a navigation policy (WKWebView on macOS).
+//! before the page's and a navigation policy (WKWebView on macOS, WebView2 on Windows).
 //!
 //! `cargo run -p zgui-desktop --example web_view_schemes`
 //! `-- --fixture`: checks each against the live page, prints `FIXTURE`
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let web = WebView::new(
                 &cx.ui.runtime,
                 WebViewOptions {
-                    // `https` is WebKit's own: left out, with a warning, not a crash.
+                    // `https` is the web view's own: left out, with a warning, not a crash.
                     schemes: vec![demo, SchemeHandler::new("https", |_, _| {})],
                     scripts: vec![UserScript {
                         source: "window.injectedFirst = true".into(),

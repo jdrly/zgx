@@ -1,4 +1,4 @@
-//! An embedded web page (WKWebView on macOS) under zgui chrome: a toolbar
+//! An embedded web page (WKWebView on macOS, WebView2 on Windows) under zgui chrome: a toolbar
 //! with navigation, a frosted menu popover over the page, and a floating
 //! frosted composer whose glass blurs the page beneath it.
 //!
@@ -31,9 +31,9 @@ const PAGE: &str = r#"<!doctype html>
   button { font: inherit; padding: 10px 18px; border-radius: 12px; border: 0; background: #111; color: #fff; }
 </style></head>
 <body><main>
-  <h1>Hello from WebKit</h1>
-  <p>This page is a native WKWebView laid out by zgui. The menu and the composer are zgui
-  content drawn above it; their frosted glass blurs these very pixels.</p>
+  <h1>Hello from the web</h1>
+  <p>This page is the platform's web view, laid out by zgui. The menu and the composer are zgui
+  content drawn above it; on macOS their glass blurs it.</p>
   <button onclick="window.zgui.postMessage({clicked: Date.now()})">Message the app</button>
   <div class="grid">
     <div class="tile" style="background:#1d3557">Navy</div>
@@ -214,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let text = draft_value.get();
                                         let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
                                         send.run_js(format!(
-                                            "document.querySelector('h1').textContent = '{escaped}' || 'Hello from WebKit'"
+                                            "document.querySelector('h1').textContent = '{escaped}' || 'Hello from the web'"
                                         ));
                                     }),
                             ),
