@@ -195,7 +195,7 @@ local Editor = ui.component(function(props: Props)
 		end)
 	end
 	local function on_key(e: KeyEvent): boolean
-		if not e.meta then
+		if not e.cmd then
 			return false
 		end
 		local key = e.key:lower()

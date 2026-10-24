@@ -40,7 +40,7 @@ context_menu_below: boolean?
 | properties | [Props](properties.md) | | style the panel (not the anchor): `w`, `p`, `gap`, `bg`, `rounded`, `backdrop_blur`, `border`, `shadow`… |
 | `on_click` (`menu_item`) | `Handler \| Action` | none | runs once the menu has closed |
 | `checked`, `radio` (`menu_item`) | `boolean \| Readable<boolean> \| (() -> boolean)`, `boolean` | none | a check in the item's gutter while true (a toggle item), or a dot with `radio = true` (one of a group); assistive technology hears a checkbox or radio item |
-| `shortcut` (`menu_item`) | `string` | none | the keys that do it, shown at its end in the tertiary text colour (`"⌘C"`) |
+| `shortcut` (`menu_item`) | `string` | none | the keys that do it, shown at its end in the tertiary text colour: keys (`"cmd+c"`) as the platform shows them (⌘C on macOS, Ctrl+C elsewhere), or text as it is (`"⌘C"`) |
 | `match_anchor_width` (`popover`, `menu`) | `boolean` | `false` | at least as wide as its trigger, as a select's list is |
 | `dismiss_on_backdrop` (`modal`, `popover`) | `boolean` | `true` | `false`: a click outside doesn't close it (a dialog that must be answered); Escape still does |
 | `disabled` (`menu_item`, `submenu`) | `boolean \| Readable<boolean> \| (() -> boolean)` | `false` | keyboard navigation skips it |

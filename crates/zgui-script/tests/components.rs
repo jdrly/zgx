@@ -670,3 +670,67 @@ fn a_data_grids_cells_are_formatted_and_its_selection_follows_its_records() {
     assert_eq!(h.text("chosen"), "Cake,Tea");
     assert_eq!(h.error(), None);
 }
+
+#[test]
+fn events_say_the_platforms_command_key_and_shortcuts_show_as_it_does() {
+    use zgui::input::InputEvent;
+    let mut h = Harness::inline(
+        r##"local seen = ui.state("seen", "")
+        local open = ui.state("open", false)
+        local anchor = ui.button { id = "anchor", on_click = ui.toggle(open), "Edit" }
+        return ui.column {
+            on_key = function(e)
+                seen:set(seen:peek() .. (if e.cmd then "C" else "c"))
+                return true
+            end,
+            anchor,
+            ui.menu { open = open, anchor = anchor,
+                ui.menu_item { id = "redo", label = "Redo", shortcut = "cmd+shift+z" },
+                ui.menu_item { id = "as_is", label = "As is", shortcut = "⌥Z" } },
+            ui.text { "{seen}", id = "seen" },
+            ui.text { ui.shortcut_text("cmd+alt+arrowleft"), id = "keys" },
+            ui.text { ui.shortcut_text("cmd") .. " + wheel", id = "zoom" } }"##,
+    );
+    h.frames(2);
+    assert_eq!(h.error(), None);
+    let mac = cfg!(target_os = "macos");
+    // Command on macOS, Control elsewhere; then the other one, which is not.
+    let (command, other) = (
+        Modifiers {
+            meta: mac,
+            control: !mac,
+            ..Default::default()
+        },
+        Modifiers {
+            meta: !mac,
+            control: mac,
+            ..Default::default()
+        },
+    );
+    for held in [Modifiers::default(), command, other] {
+        h.ui.dispatch_with_modifiers(
+            InputEvent::KeyDown {
+                key: Key::Character("z".into()),
+                modifiers: held,
+                repeat: false,
+            },
+            held,
+        );
+    }
+    h.frames(1);
+    assert_eq!(h.text("seen"), "cCc");
+    h.click("anchor");
+    h.frames(1);
+    let redo = node(&mut h, "redo");
+    let as_is = node(&mut h, "as_is");
+    if mac {
+        assert_eq!(redo.shortcut.as_deref(), Some("⇧⌘Z"));
+        assert_eq!(h.text("keys"), "⌥⌘←");
+        assert_eq!(h.text("zoom"), "⌘ + wheel");
+    } else {
+        assert_eq!(redo.shortcut.as_deref(), Some("Ctrl+Shift+Z"));
+        assert_eq!(h.text("keys"), "Ctrl+Alt+Left");
+        assert_eq!(h.text("zoom"), "Ctrl + wheel");
+    }
+    assert_eq!(as_is.shortcut.as_deref(), Some("⌥Z"), "text shows as it is");
+}

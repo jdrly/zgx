@@ -37,7 +37,7 @@ return function(): Node
 		ui.div { w = 12 },
 		ui.button {
 			id = "undo",
-			tooltip = "Undo (⌘Z)",
+			tooltip = `Undo ({ui.shortcut_text("cmd+z")})`,
 			opacity = function()
 				return if history.depth:get().undo > 0 then 1 else 0.4
 			end,
@@ -46,7 +46,7 @@ return function(): Node
 		},
 		ui.button {
 			id = "redo",
-			tooltip = "Redo (⇧⌘Z)",
+			tooltip = `Redo ({ui.shortcut_text("cmd+shift+z")})`,
 			opacity = function()
 				return if history.depth:get().redo > 0 then 1 else 0.4
 			end,

@@ -73,6 +73,7 @@ const NOT_ELEMENTS: &[&str] = &[
     "batch",
     "every",
     "after",
+    "shortcut_text",
     "set",
     "toggle",
     "add",

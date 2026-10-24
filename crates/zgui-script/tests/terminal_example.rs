@@ -1228,7 +1228,7 @@ fn the_editor_plugin_opens_edits_and_saves_a_picked_file() {
         texts.iter().any(|t| t == "\u{2007}1"),
         "its lines are numbered: {texts:?}"
     );
-    // Typed into, it is edited; ⌘S saves it.
+    // Typed into, it is edited; ⌘S (Ctrl+S off macOS) saves it.
     app.h
         .ui
         .dispatch(zgui::input::InputEvent::Text("// hi\n".into()));
@@ -1237,7 +1237,8 @@ fn the_editor_plugin_opens_edits_and_saves_a_picked_file() {
     app.h.key_with(
         Key::Character("s".into()),
         Modifiers {
-            meta: true,
+            meta: cfg!(target_os = "macos"),
+            control: !cfg!(target_os = "macos"),
             ..Default::default()
         },
     );

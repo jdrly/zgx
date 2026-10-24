@@ -108,8 +108,13 @@ fn shortcut(key: &str) -> String {
     parts.join("+")
 }
 
-/// Installs `ui.command`.
+/// Installs `ui.command`, and `ui.shortcut_text`: keys (`cmd+z`) as this
+/// platform shows them (⌘Z, or Ctrl+Z), for a tooltip or a list of keys.
 pub(crate) fn install(lua: &Lua, ui: &Table, commands: Rc<Commands>) -> mlua::Result<()> {
+    ui.set(
+        "shortcut_text",
+        lua.create_function(|_, keys: String| Ok(crate::lower::shortcut_label(&keys)))?,
+    )?;
     ui.set(
         "command",
         lua.create_function(move |lua, table: Table| {

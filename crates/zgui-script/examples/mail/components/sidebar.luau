@@ -68,7 +68,7 @@ return function(): Node
 				on_click = function()
 					actions.compose()
 				end,
-				tooltip = "Write a new message (⌘N)",
+				tooltip = `Write a new message ({ui.shortcut_text("cmd+n")})`,
 				"New Message",
 			},
 		},

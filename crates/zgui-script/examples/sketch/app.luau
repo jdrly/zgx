@@ -41,7 +41,7 @@ local function key(e: KeyEvent): boolean?
 	if e.editing then
 		return nil
 	end
-	local command = e.meta or e.ctrl
+	local command = e.cmd
 	local k = string.lower(e.key)
 	if command and k == "z" then
 		if e.shift then

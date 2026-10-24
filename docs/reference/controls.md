@@ -165,7 +165,7 @@ return ui.command_palette { open = open }
 | Option | Type | Default | |
 | --- | --- | --- | --- |
 | `open` | `State<boolean>` | required | |
-| `commands` | `{ { id, title?, detail?, shortcut? } }` | the app's commands | |
+| `commands` | `{ { id, title?, detail?, shortcut? } }` | the app's commands | `shortcut`: keys (`"cmd+shift+p"`) shown as the platform shows them, or text as it is |
 | `on_run` | `(id: string) -> ()` | runs the app's command | |
 
 ## calendar, date_picker, time_field

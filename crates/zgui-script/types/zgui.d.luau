@@ -820,7 +820,8 @@ export type Child = Node | string | (() -> TextValue) | { read [number]: Child }
 -- Event handlers: a function, or an action Rust runs.
 export type Handler = () -> ...unknown
 -- `clicks` (on_press): the press's count, 2 for a double click's second.
--- `shift`, `ctrl`, `alt`, `meta`: the keys held.
+-- `shift`, `ctrl`, `alt`, `meta`: the keys held; `cmd`: the platform's
+-- command key (Command on macOS, Ctrl elsewhere), as `cmd` in keys.
 export type PointerEvent = {
 	x: number,
 	y: number,
@@ -831,9 +832,10 @@ export type PointerEvent = {
 	ctrl: boolean,
 	alt: boolean,
 	meta: boolean,
+	cmd: boolean,
 }
 -- What `on_click` is told: the keys held as it was clicked (a ⌘-click).
-export type ClickEvent = { shift: boolean, ctrl: boolean, alt: boolean, meta: boolean }
+export type ClickEvent = { shift: boolean, ctrl: boolean, alt: boolean, meta: boolean, cmd: boolean }
 -- A node's click: told the keys held, which it may ignore.
 export type ClickHandler = (e: ClickEvent) -> ...unknown
 -- `code`: the physical key, as the DOM's `KeyboardEvent.code` (`"KeyA"`,
@@ -848,6 +850,8 @@ export type KeyEvent = {
 	ctrl: boolean,
 	alt: boolean,
 	meta: boolean,
+	-- Command on macOS, Ctrl elsewhere: the key of shortcuts ("cmd+z").
+	cmd: boolean,
 	["repeat"]: boolean,
 }
 -- Points scrolled (`dy` positive: content moves up), where the pointer is,
@@ -862,6 +866,7 @@ export type WheelEvent = {
 	ctrl: boolean,
 	alt: boolean,
 	meta: boolean,
+	cmd: boolean,
 	dx: number,
 	dy: number,
 }
@@ -877,6 +882,7 @@ export type PinchEvent = {
 	ctrl: boolean,
 	alt: boolean,
 	meta: boolean,
+	cmd: boolean,
 	scale: number,
 }
 -- What a drag carries to other apps (`drag_export`): text, a link, files
@@ -11207,7 +11213,8 @@ export type MenuItemProps = {
 	-- dot, one of a group (a radio item). Told to assistive technology.
 	checked: (boolean | Readable<boolean> | (() -> boolean))?,
 	radio: boolean?,
-	-- The keys that do it, shown at its end: "⌘C".
+	-- The keys that do it, shown at its end: keys ("cmd+c": ⌘C on macOS,
+	-- Ctrl+C elsewhere), or text shown as it is ("⌘C").
 	shortcut: string?,
 }
 export type SubmenuProps = {
@@ -13048,6 +13055,10 @@ declare ui: {
 	-- options only looks it up.
 	term: (id: string, opts: TermOptions?) -> Term,
 	command: (opts: CommandOptions) -> (),
+	-- Keys ("cmd+shift+z") as this platform shows them: "⇧⌘Z" on macOS,
+	-- "Ctrl+Shift+Z" elsewhere (`cmd` is Command on macOS, Control
+	-- elsewhere); a lone modifier ("cmd") as itself, "⌘" or "Ctrl".
+	shortcut_text: (keys: string) -> string,
 	window: WindowApi,
 	checkbox: (props: CheckboxProps) -> Node,
 	input: (props: InputProps) -> Node,

@@ -10,6 +10,15 @@ use zgui::input::{InputEvent, Key, Modifiers, PointerButton};
 use zgui_script::ScriptHost;
 
 const APP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/sketch/app.luau");
+/// The platform's command key: Command on macOS, Control elsewhere.
+fn command() -> Modifiers {
+    Modifiers {
+        meta: cfg!(target_os = "macos"),
+        control: !cfg!(target_os = "macos"),
+        ..Default::default()
+    }
+}
+
 /// Where the world's origin starts on the board.
 const ORIGIN: (f32, f32) = (80., 60.);
 
@@ -135,13 +144,7 @@ fn a_handle_resizes_and_undo_puts_it_back() {
     // The bottom right handle, dragged out and snapped to the grid.
     drag(&mut h, (216., 176.), (256., 200.));
     assert_eq!(rect(&mut h), ["96", "96", "160", "104"]);
-    h.key_with(
-        Key::Character("z".into()),
-        Modifiers {
-            meta: true,
-            ..Default::default()
-        },
-    );
+    h.key_with(Key::Character("z".into()), command());
     assert_eq!(rect(&mut h), ["96", "96", "120", "80"]);
     h.click("redo");
     assert_eq!(rect(&mut h), ["96", "96", "160", "104"]);
@@ -213,13 +216,7 @@ fn keys_pick_tools_nudge_select_and_delete() {
     assert_eq!(count(&mut h), "0 shapes");
     // In a field, keys are the field's.
     h.click("undo");
-    h.key_with(
-        Key::Character("a".into()),
-        Modifiers {
-            meta: true,
-            ..Default::default()
-        },
-    );
+    h.key_with(Key::Character("a".into()), command());
     assert!(h.texts().contains(&"2 shapes".to_owned()), "⌘A selects all");
     assert_eq!(h.error(), None);
 }
@@ -384,13 +381,7 @@ fn how_long_a_busy_drawing_takes() {
     h.key(Key::Escape);
     let empty = at(&mut h, -60., -50.);
     time(&mut h, "select by rectangle", empty, 40);
-    h.key_with(
-        Key::Character("a".into()),
-        Modifiers {
-            meta: true,
-            ..Default::default()
-        },
-    );
+    h.key_with(Key::Character("a".into()), command());
     let p = at(&mut h, 56., 56.);
     time(&mut h, "move all 500", p, 40);
     let calls = h.calls();

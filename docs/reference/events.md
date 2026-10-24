@@ -33,16 +33,16 @@ on_drop: ((payload: any, e: DragPoint) -> ())?
 
 | Event | Called with | When |
 | --- | --- | --- |
-| `on_click` | `{ shift, ctrl, alt, meta }`: the keys held | the node is activated: a primary click on it (press and release), Space or Enter while it has focus, or an accessibility action. The innermost node with `on_click` takes it |
-| `on_press` | `{ x, y, local_x, local_y, clicks, shift, ctrl, alt, meta }` | the primary button goes down on the node or anything in it; `clicks` counts presses in a row (2 for a double click's second) |
+| `on_click` | `{ shift, ctrl, alt, meta, cmd }`: the keys held | the node is activated: a primary click on it (press and release), Space or Enter while it has focus, or an accessibility action. The innermost node with `on_click` takes it |
+| `on_press` | `{ x, y, local_x, local_y, clicks, shift, ctrl, alt, meta, cmd }` | the primary button goes down on the node or anything in it; `clicks` counts presses in a row (2 for a double click's second) |
 | `on_release` | the same | the primary button comes up |
 | `on_hover` | `true`, then `false` | once when the pointer comes inside the node or anything in it, once when it is outside all of them (the DOM's `mouseenter` and `mouseleave`); leaving the window, the window going to the back, and the pointer moving onto a page or a terminal count as leaving |
 | `on_pointer_move` | `{ x, y, local_x, local_y }` | the pointer moves over it (or anywhere, while it holds the pointer) |
-| `on_key` | `{ key, code, shift, ctrl, alt, meta, repeat, editing }` (`code`: the physical key, as the DOM's `KeyboardEvent.code`, `"KeyA"`, `"Digit1"`; `editing`: a text field holds focus, so a bare-key shortcut gives way) | a key goes down while it, or a node inside it, has focus. Return `true` to consume the key: the default action and the ancestors' handlers do not see it |
+| `on_key` | `{ key, code, shift, ctrl, alt, meta, cmd, repeat, editing }` (`code`: the physical key, as the DOM's `KeyboardEvent.code`, `"KeyA"`, `"Digit1"`; `editing`: a text field holds focus, so a bare-key shortcut gives way) | a key goes down while it, or a node inside it, has focus. Return `true` to consume the key: the default action and the ancestors' handlers do not see it |
 | `on_key_up` | the key's name | the key comes up |
 | `on_focus`, `on_blur` | nothing | it takes or loses keyboard focus |
-| `on_wheel` | `{ dx, dy, x, y, local_x, local_y, shift, ctrl, alt, meta }` | a wheel or trackpad scroll over it. Return `true` to take it from the scroll views around it: a canvas pans with it, or zooms about the pointer with ⌘ or Ctrl held |
-| `on_pinch` | `{ scale, x, y, local_x, local_y, shift, ctrl, alt, meta }` (`scale`: the change in the fingers' spread, 0.05 for 5% apart: zoom in; negative, out) | a trackpad pinch over it (macOS); `true` takes it |
+| `on_wheel` | `{ dx, dy, x, y, local_x, local_y, shift, ctrl, alt, meta, cmd }` | a wheel or trackpad scroll over it. Return `true` to take it from the scroll views around it: a canvas pans with it, or zooms about the pointer with ⌘ or Ctrl held |
+| `on_pinch` | `{ scale, x, y, local_x, local_y, shift, ctrl, alt, meta, cmd }` (`scale`: the change in the fingers' spread, 0.05 for 5% apart: zoom in; negative, out) | a trackpad pinch over it (macOS); `true` takes it |
 | `on_mount` | its [element](#elements) | once, when it is mounted: start animations here |
 | `on_resize` | `{ w, h }`, its element | layout gives it a new size, and at its first layout (as a ResizeObserver reports) |
 | `on_visible` | whether any of it shows, its element | it comes into view or all of it leaves (inside every clip and scroll viewport above it), and at its first layout (as an IntersectionObserver reports): build what only matters on screen |
@@ -57,7 +57,7 @@ on_drop: ((payload: any, e: DragPoint) -> ())?
 | `on_drag_leave` | the payload | the drag leaves it |
 | `on_drop` | the payload, `{ x, y, local_x, local_y, w, h }` | an accepted drag is released over it |
 
-`x` and `y` are in points from the window's top left, `local_x` and `local_y` from the node's, `w` and `h` its size. Key names are the character typed (`"a"`, `"A"`, `"/"`), `" "` for Space, `"F1"` to `"F35"`, or one of `"Tab"`, `"Enter"`, `"Escape"`, `"Backspace"`, `"Delete"`, `"ArrowLeft"`, `"ArrowRight"`, `"ArrowUp"`, `"ArrowDown"`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"Insert"`.
+`cmd` is the platform's command key, as `cmd` in a command's keys: Command (`meta`) on macOS, Ctrl (`ctrl`) elsewhere; test it for a shortcut (`e.cmd and e.key == "z"`) rather than `meta or ctrl`, which takes Super+Z on Linux and Ctrl+Z on macOS. `x` and `y` are in points from the window's top left, `local_x` and `local_y` from the node's, `w` and `h` its size. Key names are the character typed (`"a"`, `"A"`, `"/"`), `" "` for Space, `"F1"` to `"F35"`, or one of `"Tab"`, `"Enter"`, `"Escape"`, `"Backspace"`, `"Delete"`, `"ArrowLeft"`, `"ArrowRight"`, `"ArrowUp"`, `"ArrowDown"`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"Insert"`.
 
 ## Example
 

@@ -1871,7 +1871,9 @@ fn palette_command(c: &Table) -> mlua::Result<zgui::compose::PaletteCommand> {
     let title: Option<String> = c.get("title")?;
     let mut command = zgui::compose::PaletteCommand::new(id.clone(), title.unwrap_or(id));
     command.detail = c.get("detail")?;
-    command.shortcut = c.get("shortcut")?;
+    command.shortcut = c
+        .get::<Option<String>>("shortcut")?
+        .map(crate::lower::shown_shortcut);
     Ok(command)
 }
 
@@ -3771,7 +3773,9 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             table.raw_remove("checked")?;
             let radio = table.get::<Option<bool>>("radio")?.unwrap_or(false);
             table.raw_remove("radio")?;
-            let shortcut: Option<String> = table.get("shortcut")?;
+            let shortcut = table
+                .get::<Option<String>>("shortcut")?
+                .map(crate::lower::shown_shortcut);
             table.raw_remove("shortcut")?;
             let options = MenuItemOptions {
                 keep_open,

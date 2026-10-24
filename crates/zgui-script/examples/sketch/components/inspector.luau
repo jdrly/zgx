@@ -177,9 +177,9 @@ local function none(): Node
 		{ "R", "Rectangle" },
 		{ "O", "Ellipse" },
 		{ "Space", "Hold and drag to pan" },
-		{ "⌘ + wheel", "Zoom" },
+		{ ui.shortcut_text("cmd") .. " + wheel", "Zoom" },
 		{ "Shift", "Square shapes, add to selection" },
-		{ "⌘Z", "Undo" },
+		{ ui.shortcut_text("cmd+z"), "Undo" },
 	}
 	local rows: { Child } = {}
 	for _, tip in tips do
@@ -187,8 +187,15 @@ local function none(): Node
 			rows,
 			ui.row {
 				gap = 8,
-				ui.text { tip[1], w = 72, font = "mono", text_size = "$font.size.sm" },
-				ui.text { tip[2], color = "$text.secondary", text_size = "$font.size.sm" },
+				ui.text { tip[1], w = 96, shrink = 0, font = "mono", text_size = "$font.size.sm" },
+				ui.text {
+					tip[2],
+					wrap = true,
+					grow = 1,
+					min_w = 0,
+					color = "$text.secondary",
+					text_size = "$font.size.sm",
+				},
 			}
 		)
 	end

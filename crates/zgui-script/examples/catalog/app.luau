@@ -8,6 +8,12 @@ ui.effect(function()
 	ui.theme.set(if dark:get() then "zgui-dark" else "zgui-light")
 end)
 
+-- Keys as this platform shows them (⌘ on macOS, Ctrl elsewhere), for the
+-- sections' descriptions.
+local CMD, CMD_SHIFT = ui.shortcut_text("cmd"), ui.shortcut_text("cmd+shift")
+local PALETTE_KEYS, SELECT_ALL_KEYS, COPY_KEYS =
+	ui.shortcut_text("cmd+shift+p"), ui.shortcut_text("cmd+a"), ui.shortcut_text("cmd+c")
+
 local function section(title: string, hint: string, ...: Child): Node
 	return ui.column {
 		gap = 10,
@@ -77,7 +83,7 @@ local controls = ui.column {
 		"Checkbox and buttons",
 		"Space toggles; disabled controls dim.",
 		ui.checkbox { label = "Notify me", value = notify },
-		ui.button { "Save", tooltip = "Save the document (⌘S)" },
+		ui.button { "Save", tooltip = `Save the document ({ui.shortcut_text("cmd+s")})` },
 		ui.button { "Disabled", disabled = true }
 	),
 }
@@ -99,7 +105,7 @@ local fruit = ui.state("fruit", "banana")
 
 local choosing = section(
 	"Tabs and select",
-	"Tabs: the arrows choose; Delete or a middle click closes; drag, or ⌘⇧ and an arrow, to reorder; too many scroll, with a menu of them all. Select: typing chooses while closed.",
+	`Tabs: the arrows choose; Delete or a middle click closes; drag, or {CMD_SHIFT} and an arrow, to reorder; too many scroll, with a menu of them all. Select: typing chooses while closed.`,
 	ui.column {
 		w = 520,
 		h = 160,
@@ -202,7 +208,7 @@ ui.command {
 
 local searching_section = section(
 	"Combobox and command palette",
-	"The combobox searches as typed (Down and Up move, Enter chooses, focus stays in the field); ⇧⌘P opens the palette of the app's commands.",
+	`The combobox searches as typed (Down and Up move, Enter chooses, focus stays in the field); {PALETTE_KEYS} opens the palette of the app's commands.`,
 	ui.combobox { id = "city", label = "City", text = query, items = found, value = city, loading = searching, w = 260 },
 	ui.text {
 		function()
@@ -248,7 +254,7 @@ local overlays = section(
 		ui.menu_item {
 			label = "Word Wrap",
 			checked = wrap,
-			shortcut = "⌥Z",
+			shortcut = "alt+z",
 			keep_open = true,
 			on_click = ui.toggle(wrap),
 		},
@@ -305,7 +311,7 @@ local overlays = section(
 		border_color = "$border",
 		tooltip = "Right-click, Shift+F10 or the Menu key",
 		context_menu = function()
-			return { ui.menu_item { "Rename", shortcut = "↩" }, ui.menu_item { "Duplicate", shortcut = "⌘D" } }
+			return { ui.menu_item { "Rename", shortcut = "↩" }, ui.menu_item { "Duplicate", shortcut = "cmd+d" } }
 		end,
 		ui.text { "Report.pdf" },
 	}
@@ -390,7 +396,7 @@ local selected_orders = ui.state("selected_orders", {} :: { number })
 
 local grid_section = section(
 	"Data grid",
-	"Arrows move; Enter, F2 or typing edits, Escape drops; Shift extends the selection, ⌘ adds a row, ⌘A selects all, ⌘C copies. Up from the first row reaches the header, where Enter sorts, ⌘⇧ arrows move a column and Alt arrows resize it. Drag a header to move its column, its edge to resize it.",
+	`Arrows move; Enter, F2 or typing edits, Escape drops; Shift extends the selection, {CMD} adds a row, {SELECT_ALL_KEYS} selects all, {COPY_KEYS} copies. Up from the first row reaches the header, where Enter sorts, {CMD_SHIFT} arrows move a column and Alt arrows resize it. Drag a header to move its column, its edge to resize it.`,
 	ui.column {
 		w = 520,
 		h = 260,

@@ -53,7 +53,15 @@ fn its_overlays_open_and_close_as_described() {
     let mut h = catalog();
     h.click("view-menu");
     h.frames(2);
-    assert!(h.texts().contains(&"⌥Z".to_owned()), "the shortcut shows");
+    let shortcut = if cfg!(target_os = "macos") {
+        "⌥Z"
+    } else {
+        "Alt+Z"
+    };
+    assert!(
+        h.texts().contains(&shortcut.to_owned()),
+        "the shortcut shows"
+    );
     h.click("size-large");
     h.click("view-menu");
     h.frames(2);

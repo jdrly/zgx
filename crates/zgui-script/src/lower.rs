@@ -388,34 +388,102 @@ fn controlled_input(
     (text, listener)
 }
 
-/// A command's keys (`cmd+shift+s`) as a menu shows them: ⇧⌘S on macOS,
-/// Ctrl+Shift+S elsewhere.
-fn shortcut_label(keys: &str) -> String {
-    let parts: Vec<&str> = keys.split('+').collect();
-    let (mods, key) = parts.split_at(parts.len().saturating_sub(1));
-    let key = key.first().map(|k| k.to_uppercase()).unwrap_or_default();
-    if cfg!(target_os = "macos") {
-        let mut out = String::new();
-        for (name, glyph) in [("ctrl", "⌃"), ("alt", "⌥"), ("shift", "⇧"), ("cmd", "⌘")] {
-            if mods.contains(&name) {
-                out.push_str(glyph);
-            }
+/// A modifier's names in key text (`cmd+shift+s`), and how it shows: its
+/// glyph on macOS, its word elsewhere. In macOS's order (⌃⌥⇧⌘).
+const MODIFIERS: [(&[&str], &str, &str); 5] = [
+    (&["ctrl", "control"], "⌃", "Ctrl"),
+    (&["alt", "opt", "option"], "⌥", "Alt"),
+    (&["shift"], "⇧", "Shift"),
+    (&["cmd", "command"], "⌘", "Ctrl"),
+    (&["super", "meta"], "⌘", "Super"),
+];
+
+fn modifier(name: &str) -> Option<usize> {
+    let name = name.to_ascii_lowercase();
+    MODIFIERS
+        .iter()
+        .position(|(names, _, _)| names.contains(&name.as_str()))
+}
+
+/// Whether `text` is keys (`cmd+shift+s`, `alt+arrowleft`): modifiers and
+/// a key joined by `+`, rather than text already shown as is (`⌘S`).
+pub(crate) fn is_shortcut_keys(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('+').collect();
+    parts.len() > 1
+        && parts.last().is_some_and(|key| !key.is_empty())
+        && parts[..parts.len() - 1]
+            .iter()
+            .all(|part| modifier(part).is_some())
+}
+
+/// Keys (`cmd+shift+s`) as a menu shows them: ⇧⌘S on macOS, Ctrl+Shift+S
+/// elsewhere, `cmd` being Command on macOS and Control elsewhere. A lone
+/// modifier (`cmd`) shows as itself: ⌘, or Ctrl.
+pub(crate) fn shortcut_label(keys: &str) -> String {
+    let mac = cfg!(target_os = "macos");
+    let mut parts: Vec<&str> = keys.split('+').collect();
+    let key = match parts.pop() {
+        Some(last) if modifier(last).is_none() => last,
+        Some(last) => {
+            parts.push(last);
+            ""
         }
-        out + &key
+        None => "",
+    };
+    // Ctrl, Alt, Shift, Super elsewhere, `cmd` being Ctrl.
+    let order: [usize; 5] = if mac {
+        [0, 1, 2, 3, 4]
     } else {
-        let mut out: Vec<String> = Vec::new();
-        for (name, word) in [
-            ("cmd", "Ctrl"),
-            ("ctrl", "Ctrl"),
-            ("alt", "Alt"),
-            ("shift", "Shift"),
-        ] {
-            if mods.contains(&name) && !out.iter().any(|w| w == word) {
-                out.push(word.into());
-            }
+        [0, 3, 1, 2, 4]
+    };
+    let mut shown: Vec<&str> = Vec::new();
+    for index in order {
+        let (_, glyph, word) = MODIFIERS[index];
+        let label = if mac { glyph } else { word };
+        if parts.iter().any(|part| modifier(part) == Some(index)) && !shown.contains(&label) {
+            shown.push(label);
         }
-        out.push(key);
-        out.join("+")
+    }
+    let lower = key.to_ascii_lowercase();
+    let named = match lower.as_str() {
+        "arrowleft" | "left" => Some(("←", "Left")),
+        "arrowright" | "right" => Some(("→", "Right")),
+        "arrowup" | "up" => Some(("↑", "Up")),
+        "arrowdown" | "down" => Some(("↓", "Down")),
+        "enter" | "return" => Some(("↩", "Enter")),
+        "tab" => Some(("⇥", "Tab")),
+        "escape" | "esc" => Some(("⎋", "Esc")),
+        "backspace" => Some(("⌫", "Backspace")),
+        "delete" => Some(("⌦", "Delete")),
+        "home" => Some(("↖", "Home")),
+        "end" => Some(("↘", "End")),
+        "pageup" => Some(("⇞", "Page Up")),
+        "pagedown" => Some(("⇟", "Page Down")),
+        "space" => Some(("Space", "Space")),
+        _ => None,
+    };
+    let key = match named {
+        Some((glyph, word)) => (if mac { glyph } else { word }).to_owned(),
+        None => key.to_uppercase(),
+    };
+    if mac {
+        shown.concat() + &key
+    } else {
+        let mut words: Vec<String> = shown.into_iter().map(str::to_owned).collect();
+        if !key.is_empty() {
+            words.push(key);
+        }
+        words.join("+")
+    }
+}
+
+/// A menu item's or command's `shortcut`: keys (`cmd+c`) shown as the
+/// platform shows them, other text as it is (`⌘C`).
+pub(crate) fn shown_shortcut(text: String) -> String {
+    if is_shortcut_keys(&text) {
+        shortcut_label(&text)
+    } else {
+        text
     }
 }
 
@@ -3377,6 +3445,7 @@ fn modifiers_table(lua: &mlua::Lua, held: zgui::input::Modifiers) -> mlua::Resul
     t.set("ctrl", held.control)?;
     t.set("alt", held.alt)?;
     t.set("meta", held.meta)?;
+    t.set("cmd", held.primary_shortcut())?;
     Ok(t)
 }
 
@@ -3437,6 +3506,7 @@ fn with_events(
             t.set("ctrl", held.control)?;
             t.set("alt", held.alt)?;
             t.set("meta", held.meta)?;
+            t.set("cmd", held.primary_shortcut())?;
             Ok(t)
         };
         if captures
@@ -3504,6 +3574,7 @@ fn with_events(
                         t.set("ctrl", modifiers.control)?;
                         t.set("alt", modifiers.alt)?;
                         t.set("meta", modifiers.meta)?;
+                        t.set("cmd", modifiers.primary_shortcut())?;
                         t.set("repeat", *repeat)?;
                         t.set("code", event.key_code())?;
                         t.set("editing", handle.get().is_some_and(|h| h.editing()))?;
