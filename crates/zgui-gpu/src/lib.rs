@@ -7388,10 +7388,13 @@ pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
 };
 /// Regions a frame draws at most: each draws every batch it touches again.
 const MAX_REGIONS: usize = 16;
-/// Damage in at most `MAX_REGIONS` groups, each the bounds of its members:
+/// Damage of more than `MAX_REGIONS` rectangles is grouped on a grid into at
+/// most this many first, among which `fewest_pixels` then picks the regions.
+const CLUSTER_GROUPS: usize = 32;
+/// Damage in at most `max` groups, each the bounds of its members:
 /// rectangles sharing a cell of a grid, the finest of cells doubling from 16
 /// that leaves few enough.
-fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
+fn cluster_damage(damage: &[Rect], viewport: Rect, max: usize) -> Vec<Rect> {
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
             parent[i] = parent[parent[i]];
@@ -7429,7 +7432,7 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
         bounds.into_iter().flatten().collect()
     };
     let fits = |groups: &Vec<Rect>, cell: f32| {
-        groups.len() <= MAX_REGIONS || cell >= viewport.width.max(viewport.height)
+        groups.len() <= max || cell >= viewport.width.max(viewport.height)
     };
     // Coarser cells only merge groups, so the answer is the finest cell that
     // fits. A frame's damage is much like the last one's: search from the
@@ -7461,6 +7464,54 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
     LAST.set(cell);
     found
 }
+/// `regions` merged until at most `count` remain, none overlapping: each
+/// step joins the two whose bounds add the least `area`. The costs of every
+/// pair are kept, and only the joined region's recomputed.
+fn fewest_pixels(mut regions: Vec<Rect>, count: usize, area: impl Fn(Rect) -> f32) -> Vec<Rect> {
+    let cost = |regions: &[Rect], i: usize, j: usize| {
+        if regions[i].intersects(regions[j]) {
+            f32::MIN
+        } else {
+            area(regions[i].union(regions[j])) - area(regions[i]) - area(regions[j])
+        }
+    };
+    let n = regions.len();
+    let mut costs = vec![f32::MAX; n * n];
+    for i in 0..n {
+        for j in i + 1..n {
+            costs[i * n + j] = cost(&regions, i, j);
+        }
+    }
+    let mut live: Vec<usize> = (0..n).collect();
+    loop {
+        let mut best = (f32::MAX, 0, 0);
+        for (a, &i) in live.iter().enumerate() {
+            for &j in &live[a + 1..] {
+                let (i, j) = (i.min(j), i.max(j));
+                if costs[i * n + j] < best.0 {
+                    best = (costs[i * n + j], i, j);
+                }
+            }
+        }
+        // Overlapping regions always join (`f32::MIN`); others until few enough.
+        if live.len() <= count && best.0 > f32::MIN {
+            break;
+        }
+        if best.0 == f32::MAX {
+            break;
+        }
+        let (_, i, j) = best;
+        regions[i] = regions[i].union(regions[j]);
+        live.retain(|&k| k != j);
+        for &k in &live {
+            if k != i {
+                let (a, b) = (i.min(k), i.max(k));
+                costs[a * n + b] = cost(&regions, a, b);
+            }
+        }
+    }
+    live.into_iter().map(|i| regions[i]).collect()
+}
 fn merge_damage(damage: &[Rect], viewport: Rect, scale: f32) -> Vec<Rect> {
     // Each region redraws every batch it touches: nearby small ones (the
     // dots of a spinner) are fewer draws as one, for a few more pixels. The
@@ -7472,14 +7523,18 @@ fn merge_damage(damage: &[Rect], viewport: Rect, scale: f32) -> Vec<Rect> {
         a + b + a.min(b) * 0.5 + NEAR_PIXELS
     };
     let close = |a: Rect, b: Rect| a.intersects(b) || area(a.union(b)) <= close(a, b);
+    if damage.len() > MAX_REGIONS {
+        // Damage all over (a dashboard's changing values): the rule above
+        // would join it all, region by region, into one around everything
+        // (88% of the heavy dashboard, for 32% damaged). Fewer pixels: the
+        // regions whose bounds cost least.
+        let groups = cluster_damage(damage, viewport, CLUSTER_GROUPS)
+            .into_iter()
+            .filter_map(|r| rounded_damage(r, viewport, scale))
+            .collect();
+        return fewest_pixels(groups, MAX_REGIONS, area);
+    }
     let mut regions: Vec<Rect> = Vec::new();
-    let rounded: Vec<Rect>;
-    let damage = if damage.len() > MAX_REGIONS {
-        rounded = cluster_damage(damage, viewport);
-        &rounded[..]
-    } else {
-        damage
-    };
     for r in damage {
         let Some(mut r) = rounded_damage(*r, viewport, scale) else {
             continue;
