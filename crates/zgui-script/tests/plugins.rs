@@ -447,19 +447,32 @@ fn a_plugins_state_counts_against_its_memory_limit() {
     let entry = plugin(
         "hoarder",
         r#"
-local made, err = 0, ""
+-- Everything made before memory runs short (the keys, the result's
+-- state), and the errors kept, not formatted, until there is room again.
+local keys = table.create(1000)
 for i = 1, 1000 do
-    local ok, e = pcall(function() ui.state("k" .. i, string.rep("x", 100000) .. i) end)
-    if not ok then err = tostring(e) break end
+    keys[i] = "k" .. i
+end
+local result = ui.state("result", "")
+ui.contribute("bar", ui.text { id = "got", "{result}" })
+local made, made_error = 0, nil
+for i = 1, 1000 do
+    local ok, e = pcall(function() ui.state(keys[i], string.rep("x", 100000) .. i) end)
+    if not ok then made_error = e break end
     made = i
 end
-local pushed, perr = 0, ""
+local pushed, push_error = 0, nil
 local list = ui.state("list", {})
 for i = 1, 1000 do
     local ok, e = pcall(function() list:push(string.rep("y", 100000) .. i) end)
-    if not ok then perr = tostring(e) break end
+    if not ok then push_error = e break end
     pushed = i
 end
+-- The room given back: what the states held let go (written over).
+for i = 1, made do
+    ui.state(keys[i], 0):set(0)
+end
+list:set({})
 -- One state written over and over holds one value.
 local again = ui.state("again", 0)
 local rewrites = 0
@@ -468,7 +481,10 @@ for i = 1, 200 do
         rewrites = i
     end
 end
-ui.contribute("bar", ui.text { `{made} {err:find("memory") ~= nil} {pushed} {perr:find("memory") ~= nil} {rewrites}`, id = "got" })
+local function memory(e: any): boolean
+    return e ~= nil and string.find(tostring(e), "memory", 1, true) ~= nil
+end
+result:set(`{made} {memory(made_error)} {pushed} {memory(push_error)} {rewrites}`)
 "#,
     );
     let mut h = Harness::new(|runtime| {
@@ -483,6 +499,7 @@ ui.contribute("bar", ui.text { `{made} {err:find("memory") ~= nil} {pushed} {per
         }]);
         host
     });
+    assert_eq!(h.error(), None);
     let got = h.text("got");
     let parts: Vec<&str> = got.split(' ').collect();
     let made: usize = parts[0].parse().unwrap();
