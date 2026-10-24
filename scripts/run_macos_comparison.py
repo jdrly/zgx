@@ -48,6 +48,10 @@ of apart (capturing costs the window server work: its numbers then read
 high for every framework). About 10 minutes for heavy. The full run measures
 QuickGUI only with `--quickgui`. `--modes idle --into docs/results/<run>`
 re-measures a published run's idle cells and replaces them.
+`--pgo` runs every framework's profile-guided build, each trained on its own
+scene (scripts/perf/pgo_compare.py), into `latest-macos-<scene>-pgo-…`;
+with `--no-pacing --modes stream,scroll,both` it is the CPU, GPU and memory
+supplement beside a main run.
 
 Before measuring, a preflight waits until nothing heavy runs (compilers of
 any agent, VMs, Instruments, indexing, backups, updates) and the rest of the
@@ -288,6 +292,10 @@ def main():
                         help='percent of a core the rest of the machine may use')
     parser.add_argument('--hide', default='Zeron', help='an app to hide during the run (empty: none)')
     parser.add_argument('--modes', help="comma-separated, from the scene's (default: all)")
+    parser.add_argument('--no-pacing', action='store_true',
+                        help='skip the frame pacing captures (a CPU, GPU and memory supplement)')
+    parser.add_argument('--pgo', action='store_true',
+                        help='every framework profile-guided, from target/pgo-compare (scripts/perf/pgo_compare.py)')
     parser.add_argument('--into', type=Path,
                         help="a published run of the scene: replace its idle cells with this run's (with --modes idle)")
     args = parser.parse_args()
@@ -302,6 +310,15 @@ def main():
         modes = [m for m in modes if m in args.modes.split(',')]
     assert not args.into or modes == ['idle'], '--into takes an idle-only run (--modes idle)'
     repeats = args.repeats or (2 if args.quick else 3)
+    if args.pgo:
+        # The supplement: each framework's apps built with a profile of their own runs.
+        for framework, path in SCENES[args.scene]['binaries'].items():
+            SCENES[args.scene]['binaries'][framework] = ROOT / 'target/pgo-compare' / framework / path.name
+        missing = [f for f in frameworks if not SCENES[args.scene]['binaries'][f].exists()]
+        assert not missing, f'no PGO build of {missing}: run scripts/perf/pgo_compare.py'
+        args.skip_build = True
+        run(['swiftc', '-O', str(ROOT / 'scripts/macsample.swift'), '-o', str(SAMPLER), '-lIOReport'])
+        run(['swiftc', '-O', str(ROOT / 'scripts/framepace.swift'), '-o', str(PACER)])
     if not args.skip_build:
         build(args.scene, frameworks)
     commit = run(['git', 'rev-parse', 'HEAD'], cwd=ROOT)
@@ -329,7 +346,8 @@ def show(app):
 def measure(args, frameworks, modes, repeats, commit, found):
     started = datetime.datetime.now(datetime.timezone.utc)
     scene = '' if args.scene == 'lab' else f'-{args.scene}'
-    out = args.into or ROOT / 'docs/results' / f'latest-macos{scene}{"-quick" if args.quick else ""}-{started:%Y-%m-%d}-{commit[:7]}'
+    tag = ('-quick' if args.quick else '') + ('-pgo' if args.pgo else '')
+    out = args.into or ROOT / 'docs/results' / f'latest-macos{scene}{tag}-{started:%Y-%m-%d}-{commit[:7]}'
     out.mkdir(parents=True, exist_ok=True)
     rows, paced = [], []
     idle_repeats = min(IDLE_REPEATS, repeats) if args.quick else IDLE_REPEATS
@@ -349,7 +367,7 @@ def measure(args, frameworks, modes, repeats, commit, found):
                   f"footprint {row['mean_footprint_bytes'] / 2**20:6.1f} MiB ticks {row['workload_ticks']}", flush=True)
             rows.append(row)
             time.sleep(2)
-    for repeat in range(0 if args.quick else PACING_REPEATS):
+    for repeat in range(0 if args.quick or args.no_pacing else PACING_REPEATS):
         order = frameworks[repeat % len(frameworks):] + frameworks[:repeat % len(frameworks)]
         for mode in [m for m in modes if m != 'idle']:
             for framework in order:
@@ -404,9 +422,9 @@ def measure(args, frameworks, modes, repeats, commit, found):
                           'interval_seconds': INTERVAL, 'repeats': repeats, 'idle_repeats': idle_repeats,
                           'idle_window_seconds': [IDLE_SETTLE, IDLE_SETTLE + SAMPLED],
                           'idle_requested_seconds': IDLE_SETTLE + SAMPLED + 1,
-                          'quick': args.quick, 'frameworks': frameworks, 'modes': modes,
+                          'quick': args.quick, 'pgo': args.pgo, 'frameworks': frameworks, 'modes': modes,
                           'pacing_seconds': PACING_SECONDS,
-                          'pacing_repeats': repeats if args.quick else PACING_REPEATS,
+                          'pacing_repeats': 0 if args.no_pacing else repeats if args.quick else PACING_REPEATS,
                           'pacing_during_trials': args.quick,
                           'acceptance_updates_per_second': [58, 61]}}
     if args.into:

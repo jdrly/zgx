@@ -7,15 +7,17 @@
 
 Three builds with the `dist` profile, in a target directory of their own:
 the binary and zgui's headless scenes instrumented; the scenes run (heavy
-dashboard, lab stream, animate, script mount, anime: the engine's hot
-paths), and so does each training command given (`{bin}` is the
-instrumented binary: run what the app does, so its own code is profiled
-too); then the binary built again with what they recorded. The binary
-lands in target/dist-pgo/. Trained on these five scenes, zgui's headless
-scenes run 2-19% fewer instructions (heavy -12%, anime -19%, and untrained
-scenes alike: style -18%, script layout -13%). Profiles fit the source they
-were recorded on: build again after changing it. Needs `rustup component
-add llvm-tools`.
+dashboard, lab stream, animate, script mount, anime, text shaping, list
+state: the engine's hot paths), and so does each training command given
+(`{bin}` is the instrumented binary: run what the app does, so its own code
+is profiled too); then the binary built again with what they recorded. The
+binary lands in target/dist-pgo/. Trained on these seven scenes, every one
+of zgui's headless scenes runs 2-19% fewer instructions (2026-10-24: heavy
+-10%, anime -19%, style -18%, script layout -14%, text -10%, list state
+-6%). Without the text and list-state scenes, those two ran 5% and 2% more
+instructions than without PGO: what a profile never ran is laid out as
+cold. Profiles fit the source they were recorded on: build again after
+changing it. Needs `rustup component add llvm-tools`.
 """
 import argparse
 import glob
@@ -33,6 +35,8 @@ TRAINING = [
     ('zgui-desktop', 'animation_headless', {'FRAMES': '1200'}),
     ('zgui-script', 'mount_bench', {}),
     ('zgui-script', 'anime_bench', {}),
+    ('zgui-gpu', 'text_bench', {}),
+    ('zgui-script', 'list_state_bench', {}),
 ]
 
 

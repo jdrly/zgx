@@ -54,6 +54,15 @@ publishing. `--modes idle --into docs/results/<run>` measures the idle cells
 alone and replaces a published run's with them (its first idle trials move to
 `idle-5-20s/`, and `audit.json` records the re-run under `idle_rerun`).
 
+The PGO supplement measures every framework built with profile-guided
+optimization, each app trained on its own scene:
+`python3 scripts/perf/pgo_compare.py generate`, then `train` (each app's
+scene in a window for 15 s: run it on a quiet desktop), then `use` (into
+`target/pgo-compare/`), and `run_macos_comparison.py --scene <scene> --pgo
+--modes stream,scroll,both --no-pacing` (or `--modes animate` for animate)
+for a CPU, GPU and memory column beside the main run, written to
+`latest-macos-<scene>-pgo-<date>-<commit>`.
+
 ### Why idle is sampled 20–35 s after launch
 
 Any process that has used the GPU lately holds about 180 MB of Metal driver
