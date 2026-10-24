@@ -1,6 +1,6 @@
 {
  "accepted": true,
- "trials": 33,
+ "trials": 45,
  "samples": 7910,
  "pacing_trials": 72,
  "active_ticks_per_requested_second": {
@@ -76,7 +76,7 @@
   "sampled_seconds": 15,
   "interval_seconds": 0.05,
   "repeats": 3,
-  "idle_repeats": 1,
+  "idle_repeats": 5,
   "quick": false,
   "frameworks": [
    "zgui",
@@ -95,6 +95,61 @@
   "acceptance_updates_per_second": [
    58,
    61
-  ]
+  ],
+  "idle_window_seconds": [
+   20,
+   35
+  ],
+  "idle_requested_seconds": 36
+ },
+ "idle_rerun": {
+  "commit": "6a7f393da83576c79336d979309a73ba9fdaabb5",
+  "source_dirty": false,
+  "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "started_utc": "2026-10-24T18:46:19.460350+00:00",
+  "finished_utc": "2026-10-24T18:57:57.644574+00:00",
+  "environment": {
+   "displays": [
+    {
+     "name": "Studio Display XDR",
+     "resolution": "3200 x 1800 @ 120.00Hz",
+     "pixels": "6400 x 3600",
+     "main": true
+    },
+    {
+     "name": "Studio Display XDR",
+     "resolution": "3200 x 1800 @ 120.00Hz",
+     "pixels": "6400 x 3600",
+     "main": false
+    }
+   ],
+   "display_count": 2,
+   "wallpaper_apps": [],
+   "power_mode": "powermode 2",
+   "on_battery": false,
+   "macos": "26.4 (25E246)",
+   "uptime_hours": 935.6,
+   "machine": "Mac17,6",
+   "chip": "Apple M5 Max",
+   "cores": 18,
+   "memory_bytes": 137438953472,
+   "power": "AC Power",
+   "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)"
+  },
+  "preflight": null,
+  "binaries": {
+   "zgui": {
+    "sha256": "73c2985a90a8338cef64994ef7cf98e9c6571449879ac013137dca07f5844820",
+    "bytes": 11764880
+   },
+   "gpui": {
+    "sha256": "f39313f39e0ecd605a15a720a4527e99c6f75aa13aaf9981a7a091661fb1449d",
+    "bytes": 4144208
+   },
+   "gpui-fast": {
+    "sha256": "20d834e1c1e9eff9fbc7aae8be5d710133fc8bae9b4fe87d388ac79c2dee8f40",
+    "bytes": 6767232
+   }
+  }
  }
 }

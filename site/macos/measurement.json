@@ -3,7 +3,7 @@
   "commit": "7d559add0724ec67a7a7875148f9123f10fcf9ae",
   "scene": "lab",
   "source_dirty": false,
-  "trials": 43,
+  "trials": 59,
   "samples": 10301,
   "updates": {
     "min": 59.85,
@@ -18,7 +18,7 @@
     "sampled_seconds": 15,
     "interval_seconds": 0.05,
     "repeats": 3,
-    "idle_repeats": 1,
+    "idle_repeats": 5,
     "quick": false,
     "frameworks": [
       "zgui",
@@ -38,15 +38,20 @@
     "acceptance_updates_per_second": [
       58,
       61
-    ]
+    ],
+    "idle_window_seconds": [
+      20,
+      35
+    ],
+    "idle_requested_seconds": 36
   },
   "frameworks": {
     "zgui": "7d559add0724ec67a7a7875148f9123f10fcf9ae",
     "gpui": "0.2.2",
     "quickgui": "811d6e2816d5229711f59683c4c9dfbb6fc74133"
   },
-  "csv_sha256": "27fd8396e313f4d6f395268621083f422ee2cbe03076caff49e2fc797d1b8d4f",
-  "source_csv_sha256": "4ce48df233e6e8b9089e9a9c9fa8899dfea6b51eba17c69539b12354a4a534b0",
+  "csv_sha256": "6954496ca94afb281e3ef3df2a1722b7171b01a9d0fcf81814726235b8b6bcb8",
+  "source_csv_sha256": "7d01e5465cc0793ccf43f04c9116bcdb42349b2994a454ff53412ea7713c8edc",
   "binaries": {
     "zgui": {
       "sha256": "a28fecd888fcb8726f711b64cc3d56e7cc46564509aa01ee4c6d89da63a8ad94",

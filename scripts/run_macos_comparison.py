@@ -361,7 +361,10 @@ def measure(args, frameworks, modes, repeats, commit, found):
         order = frameworks[repeat % len(frameworks):] + frameworks[:repeat % len(frameworks)]
         chosen = [m for m in modes if repeat < (idle_repeats if m == 'idle' else repeats)]
         for framework, mode in [('desktop', 'baseline')] + [(f, m) for m in chosen for f in order]:
-            row = trial(args.scene, framework, mode, repeat, out, args.powermetrics, paced if args.quick else None)
+            # Into a published run: its own desktop baselines stay, this run's apart.
+            place = out / 'idle-rerun-baselines' if args.into and framework == 'desktop' else out
+            place.mkdir(exist_ok=True)
+            row = trial(args.scene, framework, mode, repeat, place, args.powermetrics, paced if args.quick else None)
             print(f"{framework:8} {mode:8} {repeat}: cpu {row['cpu_percent_one_core']:6.2f}% {row['cpu_watts'] * 1000:6.0f} mW "
                   f"gpu {row['gpu_percent']:5.2f}% {row['gpu_mcycles_per_second']:5.1f} Mcyc/s server cpu {row['windowserver_cpu_percent']:5.1f}% gpu {row['windowserver_gpu_percent']:5.1f}% "
                   f"footprint {row['mean_footprint_bytes'] / 2**20:6.1f} MiB ticks {row['workload_ticks']}", flush=True)
@@ -387,7 +390,8 @@ def measure(args, frameworks, modes, repeats, commit, found):
         paced = list(csv.DictReader((out / 'pacing.csv').open()))
         modes = SCENES[args.scene]['modes']
     write_csv(out / 'current.csv', FIELDS, rows)
-    write_csv(out / 'pacing.csv', ['framework', 'mode', 'repeat', 'display_hz', 'frames', *PACING, 'long_intervals'], paced)
+    if not args.into:
+        write_csv(out / 'pacing.csv', ['framework', 'mode', 'repeat', 'display_hz', 'frames', *PACING, 'long_intervals'], paced)
     groups = [group(rows, METRICS + POWER, 'desktop', 'baseline')]
     groups += [group(rows, METRICS + POWER + ['reported_fps'], f, m) for f in frameworks for m in modes]
     pacing_groups = [group(paced, PACING, f, m) for f in frameworks for m in modes if m != 'idle']

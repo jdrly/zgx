@@ -48,6 +48,8 @@ What changed, medians, old → new (CPU % of one core; GPU megacycles a second; 
 | gpui-fast | animate | 5.45 → 5.84 | 17.8 → 27.8 | 249 → 250 | 20.2 → 37.3 |
 
 
+The idle cells of the lab and heavy re-runs were then measured again with the protocol that followed (2026-10-24, zgui at `81c73a7`): 20–35 s after launch, five launches, median and range. In MB, zgui / GPUI / GPUI Fast (/ QuickGUI): lab 42 (41–66) / 89 (64–89) / 60 (53–78) / 116; heavy 78 (63–78) / 113 (98–114) / 70 (70–95). An idle window settles at one of two levels about 25 MB apart; in heavy, zgui's levels (63, 78) are below GPUI Fast's (70, 95), but three of zgui's launches settled on its upper one and four of GPUI Fast's on its lower. The first idle trials (5–20 s, once) stay in each run's `idle-5-20s/`, and each new trial keeps its 5–20 s figures as `early_*`.
+
 zgui leads on CPU and GPU in every active cell of both runs. In memory, the new heavy run shows GPUI Fast lower than zgui at idle (111 vs 116 MB, where the driver's return of its startup memory decides the 5–20 s mean) and level with it in `stream` (259 vs 259). The window server's added CPU reads 15–18% for every framework on 2026-10-24, against at most 15% on 2026-10-23: the desktop differed between the days (every framework moved), so compare within a run.
 
 # Historical direct-scene GPU comparison on Xvfb / llvmpipe

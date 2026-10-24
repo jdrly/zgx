@@ -58,7 +58,9 @@ builders refuse it. The full run (no `--quick`: three repeats of each active
 mode, five of idle, pacing apart, QuickGUI with `--quickgui`) is for
 publishing. `--modes idle --into docs/results/<run>` measures the idle cells
 alone and replaces a published run's with them (its first idle trials move to
-`idle-5-20s/`, and `audit.json` records the re-run under `idle_rerun`).
+`idle-5-20s/`; its desktop baselines and pacing stay as they were, the
+re-run's baselines going to `idle-rerun-baselines/`; and `audit.json` records
+the re-run under `idle_rerun`).
 
 The PGO supplement measures every framework built with profile-guided
 optimization, each app trained on its own scene:
