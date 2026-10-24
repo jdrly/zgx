@@ -82,3 +82,19 @@ have each run its workload in seconds of one parity, and repeat with their
 places swapped. With 60 seconds a run, the paired difference has a standard
 error of about 0.3 to 0.6 points. Pair an app with itself as a control
 before trusting a difference smaller than the control's.
+
+Two scripts do this; check any window server claim with them, not with
+single runs:
+
+```sh
+# Two apps, side by side, taking turns (the heavy workload honours
+# ZGUI_PARITY=even|odd; unset, it always runs). Self-pairing first:
+python3 scripts/windowserver_pair.py 60 both target/dist/examples/heavy_workload target/dist/examples/heavy_workload
+python3 scripts/windowserver_pair.py 60 both target/dist/examples/heavy_workload comparisons/gpui-fast/target/dist/heavy
+# One app switching its own configuration by the second (a scratch toggle
+# reading the Unix second's parity):
+python3 scripts/windowserver_alternate.py 60 path/to/app
+```
+
+Run them on a quiet desktop, with nothing else drawing. The terminal needs
+Accessibility access, so the pair script can place the windows.

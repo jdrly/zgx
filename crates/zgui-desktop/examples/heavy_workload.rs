@@ -62,6 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                     runtime.batch(|| {
+                        if !Heavy::turn() {
+                            return;
+                        }
                         let mut work = work.borrow_mut();
                         work.tick();
                         if matches!(mode, Mode::Stream | Mode::Both) {

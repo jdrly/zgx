@@ -323,6 +323,24 @@ pub mod heavy {
         pub fn period() -> std::time::Duration {
             PERIOD
         }
+        /// Whether the workload runs now. With `ZGUI_PARITY` set to `even`
+        /// or `odd`, only in Unix seconds of that parity, so two apps take
+        /// turns and WindowServer's CPU in each second is one app's
+        /// (`scripts/windowserver_pair.py`); otherwise always.
+        pub fn turn() -> bool {
+            static PARITY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+            let parity = PARITY.get_or_init(|| match std::env::var("ZGUI_PARITY").as_deref() {
+                Ok("even") => Some(0),
+                Ok("odd") => Some(1),
+                _ => None,
+            });
+            parity.is_none_or(|parity| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                now.as_secs() % 2 == parity
+            })
+        }
         pub fn tick(&mut self) {
             self.frames += 1;
             if matches!(self.mode, Mode::Stream | Mode::Both) {

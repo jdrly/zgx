@@ -218,7 +218,7 @@ fn main() {
                                 let _ = cx.update(|cx| cx.quit());
                                 break;
                             }
-                            if mode != Mode::Idle {
+                            if mode != Mode::Idle && Heavy::turn() {
                                 work.tick();
                                 let (live, scroll) = (work.live, work.scroll);
                                 let result = cx.update(|cx| {
