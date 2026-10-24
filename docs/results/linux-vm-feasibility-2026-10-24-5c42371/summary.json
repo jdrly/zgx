@@ -1,0 +1,264 @@
+{
+ "groups": [
+  {
+   "scene": "heavy",
+   "mode": "idle",
+   "framework": "zgx",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0663861240006685
+   },
+   "mean_rss_bytes": {
+    "median": 156729344.0,
+    "min": 156320381.15555555,
+    "max": 156745728.0
+   },
+   "peak_rss_bytes": {
+    "median": 156729344,
+    "min": 156389376,
+    "max": 156745728
+   },
+   "ticks_per_requested_second": {
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "idle",
+   "framework": "gpui",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 0.26650888342248025,
+    "min": 0.1333035271445546,
+    "max": 0.26676880623575056
+   },
+   "mean_rss_bytes": {
+    "median": 165203968.0,
+    "min": 164753408.0,
+    "max": 165216256.0
+   },
+   "peak_rss_bytes": {
+    "median": 165203968,
+    "min": 164753408,
+    "max": 165216256
+   },
+   "ticks_per_requested_second": {
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "stream",
+   "framework": "zgx",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 91.77880406455397,
+    "min": 80.14561648286583,
+    "max": 117.35305375839204
+   },
+   "mean_rss_bytes": {
+    "median": 169188615.91752577,
+    "min": 168845925.0068027,
+    "max": 170414806.93515357
+   },
+   "peak_rss_bytes": {
+    "median": 169377792,
+    "min": 169037824,
+    "max": 170729472
+   },
+   "ticks_per_requested_second": {
+    "median": 59.95,
+    "min": 59.75,
+    "max": 59.95
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "stream",
+   "framework": "gpui",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 174.14629602992446,
+    "min": 0.33348519973648205,
+    "max": 180.8801492398584
+   },
+   "mean_rss_bytes": {
+    "median": 166105059.84879726,
+    "min": 133165056.0,
+    "max": 167159571.15646258
+   },
+   "peak_rss_bytes": {
+    "median": 166277120,
+    "min": 133165056,
+    "max": 169766912
+   },
+   "ticks_per_requested_second": {
+    "median": 53.25,
+    "min": 52.55,
+    "max": 59.95
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "scroll",
+   "framework": "zgx",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 7.335856241887476,
+    "min": 7.243806173463187,
+    "max": 10.182696157477189
+   },
+   "mean_rss_bytes": {
+    "median": 163198034.6385965,
+    "min": 162924666.1614035,
+    "max": 163387778.6853147
+   },
+   "peak_rss_bytes": {
+    "median": 163340288,
+    "min": 163106816,
+    "max": 163553280
+   },
+   "ticks_per_requested_second": {
+    "median": 59.95,
+    "min": 59.5,
+    "max": 59.95
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "scroll",
+   "framework": "gpui",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 192.81543308260058,
+    "min": 190.7489599041904,
+    "max": 199.0456208142185
+   },
+   "mean_rss_bytes": {
+    "median": 166375424.0,
+    "min": 165289984.0,
+    "max": 166788615.01369864
+   },
+   "peak_rss_bytes": {
+    "median": 166375424,
+    "min": 165289984,
+    "max": 166883328
+   },
+   "ticks_per_requested_second": {
+    "median": 46.15,
+    "min": 45.45,
+    "max": 54.4
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "both",
+   "framework": "zgx",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 120.95273041697173,
+    "min": 114.3006082982253,
+    "max": 145.6092503535563
+   },
+   "mean_rss_bytes": {
+    "median": 176641457.8983051,
+    "min": 176382732.19047618,
+    "max": 177130509.83783785
+   },
+   "peak_rss_bytes": {
+    "median": 177131520,
+    "min": 176857088,
+    "max": 177426432
+   },
+   "ticks_per_requested_second": {
+    "median": 59.8,
+    "min": 59.1,
+    "max": 59.9
+   }
+  },
+  {
+   "scene": "heavy",
+   "mode": "both",
+   "framework": "gpui",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 174.47536743918553,
+    "min": 174.40288786886546,
+    "max": 175.49393153709892
+   },
+   "mean_rss_bytes": {
+    "median": 167098508.2739726,
+    "min": 165986988.99658704,
+    "max": 167528496.92832765
+   },
+   "peak_rss_bytes": {
+    "median": 168169472,
+    "min": 167665664,
+    "max": 169320448
+   },
+   "ticks_per_requested_second": {
+    "median": 53.65,
+    "min": 52.85,
+    "max": 53.8
+   }
+  },
+  {
+   "scene": "animate",
+   "mode": "animate",
+   "framework": "zgx",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 5.725544435515879,
+    "min": 4.793448755238623,
+    "max": 9.519166136697809
+   },
+   "mean_rss_bytes": {
+    "median": 147738624.0,
+    "min": 147562496.0,
+    "max": 148779008.0
+   },
+   "peak_rss_bytes": {
+    "median": 147738624,
+    "min": 147562496,
+    "max": 148779008
+   },
+   "ticks_per_requested_second": {
+    "median": 59.95,
+    "min": 59.9,
+    "max": 60.0
+   }
+  },
+  {
+   "scene": "animate",
+   "mode": "animate",
+   "framework": "gpui",
+   "repeats": 3,
+   "cpu_percent_one_core": {
+    "median": 69.62265916302253,
+    "min": 57.21798554353367,
+    "max": 74.56582048313338
+   },
+   "mean_rss_bytes": {
+    "median": 148653312.8797251,
+    "min": 148041728.0,
+    "max": 148881408.0
+   },
+   "peak_rss_bytes": {
+    "median": 148779008,
+    "min": 148041728,
+    "max": 148881408
+   },
+   "ticks_per_requested_second": {
+    "median": 62.3,
+    "min": 58.5,
+    "max": 62.6
+   }
+  }
+ ]
+}

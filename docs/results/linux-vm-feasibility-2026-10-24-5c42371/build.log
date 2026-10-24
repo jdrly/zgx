@@ -1,0 +1,25 @@
+== 16:20:45 zgx
+   Compiling tungstenite v0.30.0
+   Compiling zgx-workload v0.1.0 (/home/wing/zgx/comparisons/workload)
+   Compiling mlua v0.12.2 (/home/wing/zgx/vendor/mlua)
+   Compiling zgx-run v0.1.0 (/home/wing/zgx/crates/zgx-run)
+    Finished `dist` profile [optimized] target(s) in 2m 13s
+   exit 0
+== 16:22:58 gpui
+   Compiling x11-clipboard v0.9.3
+   Compiling wayland-cursor v0.31.14
+   Compiling gpui_sum_tree v0.2.2
+   Compiling gpui_semantic_version v0.2.2
+   Compiling filedescriptor v0.8.3
+   Compiling gpui-macros v0.2.2
+   Compiling blade-macros v0.3.0
+   Compiling num_cpus v1.17.0
+   Compiling inventory v0.3.24
+   Compiling seahash v4.1.0
+   Compiling zgx-workload v0.1.0 (/home/wing/zgx/comparisons/workload)
+   Compiling zgx-compare-gpui v0.1.0 (/home/wing/zgx/comparisons/gpui)
+    Finished `dist` profile [optimized] target(s) in 2m 04s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+   exit 0
+== 16:25:03 build done

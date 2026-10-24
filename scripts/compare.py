@@ -58,7 +58,8 @@ def run_trial(path, name, mode, repeat, seconds, warmup, output):
         if code or len(samples) < 2:
             raise RuntimeError(f"{name}/{mode} failed (exit={code}, samples={len(samples)}); inspect log")
         log_text = pathlib.Path(f"{output}.{name}.{mode}.{repeat}.log").read_text()
-        ticks_match = re.search(r'workload_ticks=(\d+)|"ticks":(\d+)', log_text)
+        # The heavy and lab apps report ticks, the animation apps frames.
+        ticks_match = re.search(r'workload_ticks=(\d+)|"ticks":(\d+)|animation_frames=(\d+)', log_text)
         if not ticks_match:
             raise RuntimeError(f"{name}/{mode} did not report completed workload ticks")
         ticks = int(next(g for g in ticks_match.groups() if g is not None))

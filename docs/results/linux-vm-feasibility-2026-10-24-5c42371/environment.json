@@ -1,0 +1,11 @@
+{
+ "commit": "5c42371e (zgx main)",
+ "host": "Mac17,6 (Apple M5 Max), macOS, shared with other agent sessions during the run",
+ "vm": "OrbStack machine, Ubuntu 24.04 (noble) arm64, kernel 7.0.14-orbstack, 4 vCPUs (OrbStack cpu=4), 16 GiB",
+ "renderer": "Mesa 25.2.8 (mesa-vulkan-drivers 25.2.8-0ubuntu0.24.04.4) lavapipe on llvmpipe (LLVM 20.1.2), software Vulkan; LP_NUM_THREADS=4",
+ "display": "Xvfb :99 2560x1600x24 with openbox",
+ "rust": "1.99.0",
+ "gpui": "0.2.2 (comparisons/gpui)",
+ "profile": "dist (fat LTO)",
+ "protocol": "scripts/compare.py run_trial: 20 s requested, 5 s warmup, /proc utime+stime and RSS every 50 ms; 3 repeats, framework order rotated per repeat"
+}

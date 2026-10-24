@@ -49,6 +49,14 @@ class TrialEvidence(unittest.TestCase):
         proc.kill.assert_called_once()
         proc.wait.assert_called_once()
 
+    def test_each_app_report_counts_as_ticks(self):
+        for text in ["workload_ticks=42\n", '{"framework":"zgx","scene":"heavy","ticks":42}\n',
+                     "animation_frames=42 fps=59.8\n"]:
+            with self.subTest(text=text):
+                row, error, _, _ = self.trial(text=text)
+                self.assertIsNone(error)
+                self.assertEqual(row["workload_ticks"], 42)
+
     def test_missing_or_incompatible_ticks_preserves_samples(self):
         for text in ["", "workload_ticks=0\n"]:
             with self.subTest(text=text):
