@@ -237,6 +237,101 @@ impl Region {
         })
     }
 }
+impl Region {
+    /// The area this region passes exactly as it is, on whole device
+    /// pixels: inside both rounded boxes past their corners and past every
+    /// fade band (a margin of a device pixel more), where the shader's
+    /// coverage is 1. `None` if it filters colour (which changes every
+    /// pixel) or leaves no such area.
+    fn untouched(&self, scale: f32) -> Option<Rect> {
+        if self.tint[0] >= 0.5 {
+            return None;
+        }
+        let margin = 1. / scale;
+        let (mut x0, mut y0) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let (mut x1, mut y1) = (f32::INFINITY, f32::INFINITY);
+        for (round, radii) in [(self.round0, self.radii0), (self.round1, self.radii1)] {
+            if round[2] < 0. {
+                continue;
+            }
+            let band = radii.into_iter().fold(0., f32::max) + margin;
+            x0 = x0.max(round[0] + band);
+            y0 = y0.max(round[1] + band);
+            x1 = x1.min(round[0] + round[2] - band);
+            y1 = y1.min(round[1] + round[3] - band);
+        }
+        let [fade_top, fade_right, fade_bottom, fade_left] = self.fade;
+        let [left, top, right, bottom] = self.fade_box;
+        if fade_top > 0. {
+            y0 = y0.max(top + fade_top + margin);
+        }
+        if fade_right > 0. {
+            x1 = x1.min(right - fade_right - margin);
+        }
+        if fade_bottom > 0. {
+            y1 = y1.min(bottom - fade_bottom - margin);
+        }
+        if fade_left > 0. {
+            x0 = x0.max(left + fade_left + margin);
+        }
+        let (x0, y0) = ((x0 * scale).ceil() / scale, (y0 * scale).ceil() / scale);
+        let (x1, y1) = ((x1 * scale).floor() / scale, (y1 * scale).floor() / scale);
+        (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+    }
+}
+/// Whether `quad` is a flat opaque colour: no texture, fade, transform,
+/// corners, border, shadow or shader fill (`mask.y`).
+fn flat_opaque(quad: &Quad) -> bool {
+    quad.color[3] >= 1. && quad.options == [0.; 4] && quad.shape == [0.; 4] && quad.mask == NO_MASK
+}
+/// Push `quad`, flat and opaque, in clip region `region` (its index plus
+/// one), which passes `untouched` as it is. The part inside `untouched`
+/// goes without the region, a flat opaque quad drawn unblended that hides
+/// what lies beneath it, and the bands around it with the region, as
+/// `push_panel` splits a panel: each band keeps the quad's outer edges (the
+/// right and bottom ones measured back from the far edge) and the seams lie
+/// on whole device pixels, so the same pixels are drawn the same.
+fn push_in_region(quads: &mut Vec<Quad>, quad: Quad, region: f32, untouched: Rect, scale: f32) {
+    let quad = Quad {
+        mask: [region, 0., 0., 0.],
+        ..quad
+    };
+    let [x, y, width, height] = quad.rect;
+    let (right, bottom) = (x + width, y + height);
+    let (left, top) = (
+        (x.max(untouched.x) * scale).ceil() / scale,
+        (y.max(untouched.y) * scale).ceil() / scale,
+    );
+    let (inner_right, inner_bottom) = (
+        (right.min(untouched.x + untouched.width) * scale).floor() / scale,
+        (bottom.min(untouched.y + untouched.height) * scale).floor() / scale,
+    );
+    let (inner_width, inner_height) = (inner_right - left, inner_bottom - top);
+    if inner_width <= 0.
+        || inner_height <= 0.
+        || inner_width * inner_height * scale * scale < REGION_INTERIOR
+    {
+        quads.push(quad);
+        return;
+    }
+    for rect in [
+        [x, y, width, top - y],
+        [x, bottom, width, inner_bottom - bottom],
+        [x, top, left - x, inner_height],
+        [right, top, inner_right - right, inner_height],
+    ] {
+        if rect[2] != 0. && rect[3] != 0. {
+            quads.push(Quad { rect, ..quad });
+        }
+    }
+    let interior = [left, top, inner_width, inner_height];
+    quads.push(Quad {
+        rect: interior,
+        fade: interior,
+        mask: NO_MASK,
+        ..quad
+    });
+}
 /// The index (plus one) `region` has in `regions`, added if new; 0 for none.
 /// Neighbouring items mostly share one (a list in a rounded card).
 fn region_index(regions: &mut Vec<Region>, region: Option<Region>) -> f32 {
@@ -542,6 +637,7 @@ type ScrollCopy = (Scissor, (i32, i32));
 fn occluded_from(
     quads: &[Quad],
     draws: &[Draw],
+    touched: &RegionDraws,
     regions: &[(Rect, Scissor)],
     scale: f32,
 ) -> Vec<u32> {
@@ -559,36 +655,297 @@ fn occluded_from(
             && q.shape[2] <= 0.
             && q.mask == NO_MASK
     };
-    regions
+    // The pixels each scissor lets through, in logical units.
+    let pixels: Vec<Rect> = regions
         .iter()
         .map(|(_, (x, y, w, h))| {
-            // The pixels the scissor lets through, in logical units.
-            let pixels = Rect::new(
+            Rect::new(
                 *x as f32 / scale,
                 *y as f32 / scale,
                 *w as f32 / scale,
                 *h as f32 / scale,
-            );
-            for draw in draws.iter().rev() {
-                if draw.image.is_some()
-                    || draw.layer.is_some()
-                    || draw.blur.is_some()
-                    || !covers(draw.bounds, pixels)
-                    || !covers(draw.clip, pixels)
-                {
-                    continue;
+            )
+        })
+        .collect();
+    // The topmost covering quad of `draw` for the regions of `candidates`
+    // (bits) it covers, recorded in `found`; the regions found.
+    let mut found = vec![0; regions.len()];
+    let mut cover = |draw: &Draw, candidates: &mut dyn Iterator<Item = usize>| -> u64 {
+        if draw.image.is_some() || draw.layer.is_some() || draw.blur.is_some() {
+            return 0;
+        }
+        let mut covered: smallvec::SmallVec<[usize; 4]> = candidates
+            .filter(|&i| covers(draw.bounds, pixels[i]) && covers(draw.clip, pixels[i]))
+            .collect();
+        if covered.is_empty() {
+            return 0;
+        }
+        let mut done = 0;
+        for index in (draw.start..draw.end).rev() {
+            if covered.is_empty() {
+                break;
+            }
+            let q = &quads[index as usize];
+            if !plain(q) {
+                continue;
+            }
+            let rect = Rect::new(q.rect[0], q.rect[1], q.rect[2], q.rect[3]);
+            covered.retain(|i| {
+                let hit = covers(rect, pixels[*i]);
+                if hit {
+                    found[*i] = index;
+                    done |= 1 << (*i).min(63);
                 }
-                for index in (draw.start..draw.end).rev() {
-                    let q = &quads[index as usize];
-                    let rect = Rect::new(q.rect[0], q.rect[1], q.rect[2], q.rect[3]);
-                    if plain(q) && covers(rect, pixels) {
-                        return index;
+                !hit
+            });
+        }
+        done
+    };
+    match &touched.reaches {
+        // One pass down the draws for every region, each draw tested for
+        // the regions it reaches: a region takes the first quad from the
+        // top that covers it, as a pass of its own would find.
+        Some(reaches) => {
+            let mut open = RegionDraws::bits(regions.len());
+            for (index, draw) in draws.iter().enumerate().rev() {
+                if open == 0 {
+                    break;
+                }
+                // A draw covering a region's pixels reaches the region.
+                // A draw covering a region's pixels reaches the region; few
+                // cover one (backgrounds), so those are found before more.
+                let near = bits(reaches[index] & open)
+                    .filter(|&i| covers(draw.bounds, pixels[i]))
+                    .fold(0, |near, i| near | 1 << i);
+                if near != 0 {
+                    open &= !cover(draw, &mut bits(near));
+                }
+            }
+        }
+        // One region (or past 64): a pass for each.
+        None => {
+            for region in 0..regions.len() {
+                for draw in draws.iter().rev() {
+                    if cover(draw, &mut std::iter::once(region)) != 0 {
+                        break;
                     }
                 }
             }
-            0
+        }
+    }
+    found
+}
+/// Which damage regions may reach each cell of a coarse grid over them (bit
+/// `i` for region `i`): a rectangle is tested against the regions of the
+/// cells it covers, not every region. Damage all over a window comes in up
+/// to 16 regions, and a frame tests thousands of items and draws.
+struct RegionGrid {
+    origin: (f32, f32),
+    /// Cells per logical point, across and down.
+    per: (f32, f32),
+    masks: [u64; REGION_GRID * REGION_GRID],
+    /// Every region's bit.
+    all: u64,
+}
+const REGION_GRID: usize = 8;
+/// Regions a frame has at least for the grid: testing each of fewer costs
+/// less than looking one up.
+const GRID_REGIONS: usize = 6;
+impl RegionGrid {
+    /// `None` for more than 64 regions, or few (callers then test each:
+    /// for a few, cheaper than the grid).
+    fn new(regions: &[Rect]) -> Option<Self> {
+        if regions.len() < GRID_REGIONS || regions.len() > 64 {
+            return None;
+        }
+        let bounds = regions[1..]
+            .iter()
+            .fold(regions[0], |all, region| all.union(*region));
+        let per = |extent: f32| {
+            if extent > 0. {
+                REGION_GRID as f32 / extent
+            } else {
+                0.
+            }
+        };
+        let mut grid = Self {
+            origin: (bounds.x, bounds.y),
+            per: (per(bounds.width), per(bounds.height)),
+            masks: [0; REGION_GRID * REGION_GRID],
+            all: u64::MAX >> (64 - regions.len()),
+        };
+        for (i, region) in regions.iter().enumerate() {
+            let ((x0, x1), (y0, y1)) = grid.cells(*region);
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    grid.masks[y * REGION_GRID + x] |= 1 << i;
+                }
+            }
+        }
+        Some(grid)
+    }
+    /// The columns and rows `rect` covers, clamped to the grid: a rectangle
+    /// and a region that overlap share a point, and so a cell.
+    #[inline]
+    fn cells(&self, rect: Rect) -> ((usize, usize), (usize, usize)) {
+        // Truncated rather than floored: they differ only below 0, which
+        // clamps to the first cell either way.
+        let cell = |at: f32, origin: f32, per: f32| {
+            (((at - origin) * per) as i32).clamp(0, REGION_GRID as i32 - 1) as usize
+        };
+        let (x, y) = self.origin;
+        let (across, down) = self.per;
+        (
+            (
+                cell(rect.x, x, across),
+                cell(rect.x + rect.width, x, across),
+            ),
+            (cell(rect.y, y, down), cell(rect.y + rect.height, y, down)),
+        )
+    }
+    /// The regions `rect` may reach: every one it does, and perhaps others.
+    /// All of them for a rectangle over more than a few cells (a clip as
+    /// wide as the window): ORing its cells would cost more than testing.
+    #[inline]
+    fn near(&self, rect: Rect) -> u64 {
+        let ((x0, x1), (y0, y1)) = self.cells(rect);
+        if (x1 - x0 + 1) * (y1 - y0 + 1) > 4 {
+            return self.all;
+        }
+        let mut near = 0;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                near |= self.masks[y * REGION_GRID + x];
+            }
+        }
+        near
+    }
+}
+/// The indices of `mask`'s set bits, lowest first.
+fn bits(mut mask: u64) -> impl Iterator<Item = usize> {
+    std::iter::from_fn(move || {
+        (mask != 0).then(|| {
+            let i = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            i
         })
-        .collect()
+    })
+}
+/// For each damage region, the draws whose bounds reach it, in paint
+/// order: a region's batches visit its own draws, not all of the frame's
+/// (damage in 16 regions walked a dashboard's every draw 16 times).
+struct RegionDraws {
+    /// Where each region's draws end in `draws`.
+    ends: Vec<usize>,
+    draws: Vec<u32>,
+    /// Each draw's regions (bit `i` for region `i`), for up to 64.
+    reaches: Option<Vec<u64>>,
+    /// Few regions: each takes every draw, and tests them itself.
+    all: bool,
+}
+/// A region's draws (see `RegionDraws::within`).
+enum Within<'d> {
+    All(std::slice::Iter<'d, Draw>),
+    Listed(std::slice::Iter<'d, u32>, &'d [Draw]),
+}
+impl<'d> Iterator for Within<'d> {
+    type Item = &'d Draw;
+    #[inline]
+    fn next(&mut self) -> Option<&'d Draw> {
+        match self {
+            Within::All(draws) => draws.next(),
+            Within::Listed(listed, draws) => listed.next().map(|&i| &draws[i as usize]),
+        }
+    }
+}
+impl RegionDraws {
+    fn of(draws: &[Draw], regions: &[(Rect, Scissor)]) -> Self {
+        if regions.len() < GRID_REGIONS {
+            return Self {
+                ends: Vec::new(),
+                draws: Vec::new(),
+                reaches: None,
+                all: true,
+            };
+        }
+        let rects: Vec<Rect> = regions.iter().map(|(region, _)| *region).collect();
+        let Some(grid) = RegionGrid::new(&rects) else {
+            let mut listed = Vec::new();
+            let mut ends = Vec::with_capacity(regions.len());
+            for region in &rects {
+                listed.extend(
+                    (0..draws.len() as u32)
+                        .filter(|&i| region.intersects(draws[i as usize].bounds)),
+                );
+                ends.push(listed.len());
+            }
+            return Self {
+                ends,
+                draws: listed,
+                reaches: None,
+                all: false,
+            };
+        };
+        // Each draw's regions, counted per region, then listed in order.
+        let mut counts = vec![0; rects.len()];
+        let reaches: Vec<u64> = draws
+            .iter()
+            .map(|draw| {
+                let mut reach = 0;
+                for i in bits(grid.near(draw.bounds)) {
+                    if rects[i].intersects(draw.bounds) {
+                        reach |= 1 << i;
+                        counts[i] += 1;
+                    }
+                }
+                reach
+            })
+            .collect();
+        let mut ends = Vec::with_capacity(rects.len());
+        let mut total = 0;
+        for count in &counts {
+            total += count;
+            ends.push(total);
+        }
+        let mut next: Vec<usize> = ends.iter().zip(&counts).map(|(end, n)| end - n).collect();
+        let mut listed = vec![0; total];
+        for (index, reach) in reaches.iter().enumerate() {
+            for i in bits(*reach) {
+                listed[next[i]] = index as u32;
+                next[i] += 1;
+            }
+        }
+        Self {
+            ends,
+            draws: listed,
+            reaches: Some(reaches),
+            all: false,
+        }
+    }
+    /// The bits of `count` regions (all, past 64).
+    fn bits(count: usize) -> u64 {
+        match count {
+            0 => 0,
+            1..64 => u64::MAX >> (64 - count),
+            _ => u64::MAX,
+        }
+    }
+    /// Region `index`'s draws among `draws[within]`.
+    fn within<'d>(
+        &'d self,
+        index: usize,
+        draws: &'d [Draw],
+        within: std::ops::Range<usize>,
+    ) -> Within<'d> {
+        if self.all {
+            return Within::All(draws[within].iter());
+        }
+        let start = index.checked_sub(1).map_or(0, |before| self.ends[before]);
+        let mine = &self.draws[start..self.ends[index]];
+        let from = mine.partition_point(|&i| (i as usize) < within.start);
+        let to = mine.partition_point(|&i| (i as usize) < within.end);
+        Within::Listed(mine[from..to].iter(), draws)
+    }
 }
 #[derive(Clone)]
 struct Glyph {
@@ -2806,6 +3163,8 @@ impl GpuRenderer {
             }
             self.atlas_recycled_at = self.frame;
         }
+        // Which regions each item may reach (see `RegionGrid`).
+        let grid = RegionGrid::new(&damage);
         let mut quads = std::mem::take(&mut self.frame_quads);
         quads.clear();
         quads.push(Quad {
@@ -2821,6 +3180,10 @@ impl GpuRenderer {
         let mut draws = std::mem::take(&mut self.frame_draws);
         // The clip regions quads lie in (`Quad::mask`).
         let mut clips: Vec<Region> = Vec::new();
+        // Each clip region's untouched area (`Region::untouched`), worked
+        // out once, and the quads of an item being split in one.
+        let mut untouched_areas: Vec<Option<Option<Rect>>> = Vec::new();
+        let mut splitting: Vec<Quad> = Vec::new();
         draws.clear();
         for item in items {
             // Retained hidden subtrees must not allocate textures, shape text,
@@ -2854,30 +3217,48 @@ impl GpuRenderer {
                 && (item.effects.filter_blur > 0. || scene.mask(item.id).is_some()))
             .then(|| self.effect_slot(item.id))
             .flatten();
-            if !damage.iter().any(|d| {
-                d.intersects(clip)
-                    && d.intersects(if item.isolated {
-                        let b = self.layers[&item.id].bounds;
-                        let b = Rect::new(
-                            b.x - self.layer_origin.0,
-                            b.y - self.layer_origin.1,
-                            b.width,
-                            b.height,
-                        );
-                        let b = effect.map_or(b, |slot| b.expand(slot.spread));
-                        matrix.map_or(b, |matrix| matrix.bounds(b))
-                    } else if let NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } =
-                        item.kind
-                    {
-                        style.paint_bounds(item.bounds)
-                    } else if let NodeKind::Svg(svg) = item.kind {
-                        svg.paint_bounds(item.bounds)
-                    } else if let NodeKind::Image(image) = item.kind {
-                        image.paint_bounds(item.bounds)
-                    } else {
-                        item.bounds
-                    })
-            }) {
+            // What it paints, worked out once for every damage region.
+            let painted = || {
+                if item.isolated {
+                    let b = self.layers[&item.id].bounds;
+                    let b = Rect::new(
+                        b.x - self.layer_origin.0,
+                        b.y - self.layer_origin.1,
+                        b.width,
+                        b.height,
+                    );
+                    let b = effect.map_or(b, |slot| b.expand(slot.spread));
+                    matrix.map_or(b, |matrix| matrix.bounds(b))
+                } else if let NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } =
+                    item.kind
+                {
+                    style.paint_bounds(item.bounds)
+                } else if let NodeKind::Svg(svg) = item.kind {
+                    svg.paint_bounds(item.bounds)
+                } else if let NodeKind::Image(image) = item.kind {
+                    image.paint_bounds(item.bounds)
+                } else {
+                    item.bounds
+                }
+            };
+            let reached = match &grid {
+                // What it paints is small, its clip often the window: the
+                // regions near the first, then the second. (A layer's
+                // bounds are looked up only if it may show, as below.)
+                Some(grid) if !item.isolated => {
+                    let painted = painted();
+                    bits(grid.near(painted))
+                        .any(|i| damage[i].intersects(painted) && damage[i].intersects(clip))
+                }
+                _ => {
+                    let mut reached = damage.iter().filter(|d| d.intersects(clip)).peekable();
+                    reached.peek().is_some() && {
+                        let painted = painted();
+                        reached.any(|d| d.intersects(painted))
+                    }
+                }
+            };
+            if !reached {
                 continue;
             }
             let start = quads.len() as u32;
@@ -3750,7 +4131,30 @@ impl GpuRenderer {
             // Inside rounded clips or a `fade_edges` container: cut and faded
             // in the shader.
             let region = region_index(&mut clips, Region::of(&item));
-            if region > 0. {
+            // Flat opaque quads well inside it go without it where they can
+            // (`push_in_region`): most of a card's rows are untouched by
+            // its rounded corners.
+            let untouched = (region > 0.
+                && self.split_shading
+                && quads[start as usize..].iter().any(flat_opaque))
+            .then(|| {
+                let index = region as usize - 1;
+                untouched_areas.resize(clips.len(), None);
+                *untouched_areas[index].get_or_insert_with(|| clips[index].untouched(self.scale))
+            })
+            .flatten();
+            if let Some(untouched) = untouched {
+                splitting.extend(quads.drain(start as usize..));
+                for quad in splitting.drain(..) {
+                    if flat_opaque(&quad) {
+                        push_in_region(&mut quads, quad, region, untouched, self.scale);
+                    } else {
+                        let mut quad = quad;
+                        quad.mask[0] = region;
+                        quads.push(quad);
+                    }
+                }
+            } else if region > 0. {
                 for quad in &mut quads[start as usize..] {
                     quad.mask[0] = region;
                 }
@@ -4123,8 +4527,9 @@ impl GpuRenderer {
         // Under the topmost opaque quad covering a whole region, nothing shows:
         // skip the clear and every quad below it. Filters sample what lies
         // beneath them, so frames that replay one draw everything.
+        let touched = RegionDraws::of(&draws, &regions);
         let first = if splits.is_empty() {
-            occluded_from(&quads, &draws, &regions, self.scale)
+            occluded_from(&quads, &draws, &touched, &regions, self.scale)
         } else {
             vec![0; regions.len()]
         };
@@ -4220,7 +4625,7 @@ impl GpuRenderer {
                                 .unwrap_or_else(|| quads.get(shading))
                         },
                         *region,
-                        &draws[from..end],
+                        touched.within(index, &draws, from..end),
                         first,
                         &mut stats,
                     );
@@ -4278,8 +4683,9 @@ impl GpuRenderer {
         };
         self.whole_frames = 0;
         // As `render`'s wgpu passes: a split at each batch of filters.
+        let touched = RegionDraws::of(&draws, regions);
         let first = if batches.is_empty() {
-            occluded_from(&quads, &draws, regions, self.scale)
+            occluded_from(&quads, &draws, &touched, regions, self.scale)
         } else {
             vec![0; regions.len()]
         };
@@ -4372,7 +4778,8 @@ impl GpuRenderer {
                         pass.quads(frame, clear, true, 0..1);
                         stats.draw_calls += 1;
                     }
-                    self.batches(*region, &draws[from..end], first[index], |batch| {
+                    let mine = touched.within(index, &draws, from..end);
+                    self.batches(*region, mine, first[index], |batch| {
                         let Some(rect) = scissor(batch.rect, self.scale, self.width, self.height)
                         else {
                             return;
@@ -4600,11 +5007,13 @@ impl GpuRenderer {
         let (clear, quads) = (picks.clear, picks.full);
         let pick = |shading| picks.get(shading);
         let first = |index: usize| frame.first.get(index).copied().unwrap_or(0);
+        let touched = RegionDraws::of(&frame.draws, &frame.regions);
         if !frame.clear {
             pass.set_pipeline(quads);
             for (index, (region, (x, y, w, h))) in frame.regions.iter().enumerate() {
                 pass.set_scissor_rect(*x, *y, *w, *h);
-                self.encode_draws(pass, &pick, *region, &frame.draws, first(index), stats);
+                let mine = touched.within(index, &frame.draws, 0..frame.draws.len());
+                self.encode_draws(pass, &pick, *region, mine, first(index), stats);
             }
             return;
         }
@@ -4621,7 +5030,8 @@ impl GpuRenderer {
             }
             pass.set_pipeline(quads);
             for (index, (region, _)) in frame.regions.iter().enumerate() {
-                self.encode_draws(pass, &pick, *region, &frame.draws, first(index), stats);
+                let mine = touched.within(index, &frame.draws, 0..frame.draws.len());
+                self.encode_draws(pass, &pick, *region, mine, first(index), stats);
             }
             return;
         }
@@ -4634,7 +5044,8 @@ impl GpuRenderer {
                 stats.draw_calls += 1;
             }
             pass.set_pipeline(quads);
-            self.encode_draws(pass, &pick, *region, &frame.draws, first(index), stats);
+            let mine = touched.within(index, &frame.draws, 0..frame.draws.len());
+            self.encode_draws(pass, &pick, *region, mine, first(index), stats);
         }
     }
     /// One render pass per frame: copy the retained image into the spare
@@ -4840,12 +5251,12 @@ impl GpuRenderer {
     /// texture and clip become one instanced call; their quads are contiguous,
     /// so paint order holds. A draw entirely outside the region may be folded
     /// into a batch: the scissor discards its quads.
-    fn encode_draws<'p>(
+    fn encode_draws<'p, 'd>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         pipelines: &dyn Fn(Shading) -> &'p wgpu::RenderPipeline,
         region: Rect,
-        draws: &[Draw],
+        draws: impl Iterator<Item = &'d Draw>,
         first: u32,
         stats: &mut GpuStats,
     ) {
@@ -4857,7 +5268,14 @@ impl GpuRenderer {
     }
     /// The draws within `region` from instance `first` on, as batches:
     /// consecutive draws sharing a clip, texture source and shading join.
-    fn batches(&self, region: Rect, draws: &[Draw], first: u32, mut emit: impl FnMut(Batch)) {
+    /// `draws` may leave out those outside it (`RegionDraws`).
+    fn batches<'d>(
+        &self,
+        region: Rect,
+        draws: impl Iterator<Item = &'d Draw>,
+        first: u32,
+        mut emit: impl FnMut(Batch),
+    ) {
         let mut batch: Option<Batch> = None;
         // Skipping blending pays for its extra draws only over many pixels:
         // a small region (a scrolled-in strip) blends plain quads in one draw.
@@ -7376,6 +7794,11 @@ fn push_panel(quads: &mut Vec<Quad>, quad: Quad, scale: f32, split: bool) {
 /// Panels split only with an interior of at least this many logical pixels:
 /// below, five quads cost more than shading one.
 const PANEL_INTERIOR: f32 = 1024.;
+/// Quads in a clip region split (`push_in_region`) only with an interior of
+/// at least this many device pixels: its pieces may need a draw of their
+/// own (a few microseconds of CPU), which shading this many pixels without
+/// the region's mask, unblended, repays.
+const REGION_INTERIOR: f32 = 16_384.;
 /// Quads draw as four-vertex triangle strips, one per instance.
 pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
     topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -7388,6 +7811,12 @@ pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
 };
 /// Regions a frame draws at most: each draws every batch it touches again.
 const MAX_REGIONS: usize = 16;
+/// Device pixels a region of its own must save, over joining its cheapest
+/// neighbour, when damage is all over: each region draws every batch it
+/// touches again, a few microseconds of CPU, which shading this many fewer
+/// pixels repays. Below it (a few small animations close together) regions
+/// join, drawing as few times as they did as one.
+const REGION_PIXELS: f32 = 50_000.;
 /// Damage of more than `MAX_REGIONS` rectangles is grouped on a grid into at
 /// most this many first, among which `fewest_pixels` then picks the regions.
 const CLUSTER_GROUPS: usize = 32;
@@ -7464,10 +7893,16 @@ fn cluster_damage(damage: &[Rect], viewport: Rect, max: usize) -> Vec<Rect> {
     LAST.set(cell);
     found
 }
-/// `regions` merged until at most `count` remain, none overlapping: each
-/// step joins the two whose bounds add the least `area`. The costs of every
-/// pair are kept, and only the joined region's recomputed.
-fn fewest_pixels(mut regions: Vec<Rect>, count: usize, area: impl Fn(Rect) -> f32) -> Vec<Rect> {
+/// `regions` merged until at most `count` remain, none overlapping, and no
+/// two whose joining would add less than `saving` of `area`: each step
+/// joins the two whose bounds add the least. The costs of every pair are
+/// kept, and only the joined region's recomputed.
+fn fewest_pixels(
+    mut regions: Vec<Rect>,
+    count: usize,
+    saving: f32,
+    area: impl Fn(Rect) -> f32,
+) -> Vec<Rect> {
     let cost = |regions: &[Rect], i: usize, j: usize| {
         if regions[i].intersects(regions[j]) {
             f32::MIN
@@ -7476,41 +7911,60 @@ fn fewest_pixels(mut regions: Vec<Rect>, count: usize, area: impl Fn(Rect) -> f3
         }
     };
     let n = regions.len();
+    // Every pair's cost both ways round, and each region's cheapest partner:
+    // a step finds the cheapest pair among those, and recomputes only the
+    // joined region's costs and the partners that pointed at either.
     let mut costs = vec![f32::MAX; n * n];
     for i in 0..n {
         for j in i + 1..n {
-            costs[i * n + j] = cost(&regions, i, j);
+            let c = cost(&regions, i, j);
+            costs[i * n + j] = c;
+            costs[j * n + i] = c;
         }
     }
-    let mut live: Vec<usize> = (0..n).collect();
+    let mut alive = vec![true; n];
+    let cheapest = |costs: &[f32], alive: &[bool], i: usize| {
+        (0..n)
+            .filter(|&k| k != i && alive[k])
+            .map(|k| (costs[i * n + k], k))
+            .fold(
+                (f32::MAX, i),
+                |best, pair| if pair.0 < best.0 { pair } else { best },
+            )
+    };
+    let mut partner: Vec<(f32, usize)> = (0..n).map(|i| cheapest(&costs, &alive, i)).collect();
+    let mut live = n;
     loop {
-        let mut best = (f32::MAX, 0, 0);
-        for (a, &i) in live.iter().enumerate() {
-            for &j in &live[a + 1..] {
-                let (i, j) = (i.min(j), i.max(j));
-                if costs[i * n + j] < best.0 {
-                    best = (costs[i * n + j], i, j);
-                }
-            }
-        }
-        // Overlapping regions always join (`f32::MIN`); others until few enough.
-        if live.len() <= count && best.0 > f32::MIN {
+        let Some((i, (best, j))) = (0..n)
+            .filter(|&i| alive[i])
+            .map(|i| (i, partner[i]))
+            .reduce(|a, b| if b.1.0 < a.1.0 { b } else { a })
+        else {
+            break;
+        };
+        // Overlapping regions always join (`f32::MIN`); others until few
+        // enough, and until what is left saves enough apart.
+        if live <= count && best >= saving || best == f32::MAX {
             break;
         }
-        if best.0 == f32::MAX {
-            break;
-        }
-        let (_, i, j) = best;
         regions[i] = regions[i].union(regions[j]);
-        live.retain(|&k| k != j);
-        for &k in &live {
-            if k != i {
-                let (a, b) = (i.min(k), i.max(k));
-                costs[a * n + b] = cost(&regions, a, b);
+        alive[j] = false;
+        live -= 1;
+        for k in (0..n).filter(|&k| alive[k] && k != i) {
+            let c = cost(&regions, i, k);
+            costs[i * n + k] = c;
+            costs[k * n + i] = c;
+        }
+        partner[i] = cheapest(&costs, &alive, i);
+        for k in (0..n).filter(|&k| alive[k] && k != i) {
+            if partner[k].1 == i || partner[k].1 == j {
+                partner[k] = cheapest(&costs, &alive, k);
+            } else if costs[k * n + i] < partner[k].0 {
+                partner[k] = (costs[k * n + i], i);
             }
         }
     }
-    live.into_iter().map(|i| regions[i]).collect()
+    (0..n).filter(|&i| alive[i]).map(|i| regions[i]).collect()
 }
 fn merge_damage(damage: &[Rect], viewport: Rect, scale: f32) -> Vec<Rect> {
     // Each region redraws every batch it touches: nearby small ones (the
@@ -7532,7 +7986,7 @@ fn merge_damage(damage: &[Rect], viewport: Rect, scale: f32) -> Vec<Rect> {
             .into_iter()
             .filter_map(|r| rounded_damage(r, viewport, scale))
             .collect();
-        return fewest_pixels(groups, MAX_REGIONS, area);
+        return fewest_pixels(groups, MAX_REGIONS, REGION_PIXELS, area);
     }
     let mut regions: Vec<Rect> = Vec::new();
     for r in damage {

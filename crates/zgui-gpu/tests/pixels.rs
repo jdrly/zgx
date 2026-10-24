@@ -5273,6 +5273,107 @@ fn split_panels_match_whole_panels() {
     }
 }
 
+/// Flat opaque boxes inside rounded clips and edge fades draw the part of
+/// them the clip leaves untouched without it, unblended (`push_in_region`):
+/// the same bytes as drawing them whole through the clip, at fractional
+/// sizes, offsets and scales, under one or two rounded clips, fades on any
+/// edge, and a colour filter (which keeps them whole).
+#[test]
+fn flat_quads_in_rounded_clips_match_drawing_them_whole() {
+    let _gpu_fixture = gpu_fixture();
+    use zgui::{compose::prelude::*, widgets::Ui};
+    let rows = |seed: u32| {
+        column().gap(1.3).children((0..7).map(move |i| {
+            let row = div()
+                .h(9.7 + (i as f32 * 1.9) % 5.)
+                .ml(0.4 * i as f32)
+                .bg(rgb(0x30405a + (seed * 7 + i) * 0x0a0b0c));
+            if i == 3 { row.opacity(0.6) } else { row }
+        }))
+    };
+    let view = || {
+        overlay()
+            .w(320.)
+            .h(240.)
+            .bg(rgb(0x14161c))
+            .child(
+                div()
+                    .absolute()
+                    .ml(6.3)
+                    .mt(7.7)
+                    .w(140.4)
+                    .h(104.)
+                    .rounded(12.5)
+                    .overflow_hidden()
+                    .child(rows(1)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .ml(160.6)
+                    .mt(5.2)
+                    .w(150.)
+                    .h(110.3)
+                    .fade_edges(14., 18.5)
+                    .fade_edges_x(6., 9.)
+                    .overflow_hidden()
+                    .child(rows(2)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .ml(8.1)
+                    .mt(122.4)
+                    .w(146.)
+                    .h(108.)
+                    .rounded(20.)
+                    .overflow_hidden()
+                    .p(3.3)
+                    .child(
+                        div()
+                            .rounded(7.5)
+                            .overflow_hidden()
+                            .fade_edges(9., 0.)
+                            .child(rows(3)),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .ml(163.)
+                    .mt(124.)
+                    .w(140.)
+                    .h(100.)
+                    .rounded(9.)
+                    .overflow_hidden()
+                    .brightness(1.3)
+                    .child(rows(4)),
+            )
+    };
+    for scale in [1., 1.5, 2.] {
+        let render = |split: bool| {
+            let mut gpu = GpuRenderer::new((320. * scale) as u32, (240. * scale) as u32).unwrap();
+            gpu.set_scale_factor(scale);
+            gpu.debug_split_shading(split);
+            let mut ui = Ui::new(320., 240.);
+            gpu.install_text(&mut ui.scene.borrow_mut());
+            ui.mount(view());
+            ui.prepare_frame();
+            let damage = ui.scene.borrow_mut().flush().damage;
+            let stats = gpu.render(&ui.scene.borrow(), &damage).unwrap();
+            (gpu.readback().unwrap(), stats.instances)
+        };
+        let ((whole, unsplit), (split, pieces)) = (render(false), render(true));
+        assert!(pieces > unsplit, "no box split at scale {scale}");
+        let differing = whole
+            .chunks(4)
+            .zip(split.chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(differing, 0, "{differing} pixels differ at scale {scale}");
+    }
+}
+
 /// Changing text repaints where its glyphs land, not its whole box, and
 /// repairs every old glyph: growing, shrinking, wrapping, aligned and italic.
 #[test]
