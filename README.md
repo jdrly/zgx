@@ -63,14 +63,16 @@ cargo run -p zgui-script --bin zgui -- check crates/zgui-script/examples/mail
 
 ## Performance
 
-The [macOS dashboard comparison](docs/results/latest-macos-heavy-2026-10-11-5493829/) runs the same heavy scene in zgui and GPUI (with and without its fast path) on an Apple Silicon Mac, three runs each, medians:
+The [macOS dashboard comparison](docs/results/latest-macos-heavy-2026-10-23-51a669c/) runs the same heavy scene in zgui and GPUI (with and without its fast path) on an Apple Silicon Mac, three runs each of builds made with each framework's `dist` profile, medians:
 
 | Mode | CPU (% of a core) zgui / GPUI / GPUI fast | GPU (Mcycles/s) zgui / GPUI / GPUI fast | Memory (MB) zgui / GPUI / GPUI fast |
 | --- | --- | --- | --- |
-| idle | 0.04 / 0.33 / 0.35 | 0 / 0 / 0 | 112 / 148 / 127 |
-| scroll | 2.7 / 11.3 / 6.1 | 7.9 / 13.4 / 19.0 | 254 / 273 / 257 |
-| stream | 8.0 / 19.8 / 11.4 | 12.1 / 12.9 / 14.7 | 256 / 274 / 258 |
-| both | 8.5 / 20.2 / 11.7 | 12.9 / 14.6 / 17.3 | 259 / 275 / 269 |
+| idle | 0.07 / 0.42 / 0.43 | 0 / 0 / 0 | 107 / 157 / 129 |
+| scroll | 3.4 / 14.9 / 8.0 | 10.7 / 21.2 / 21.3 | 255 / 273 / 273 |
+| stream | 9.8 / 21.5 / 14.3 | 11.8 / 17.6 / 21.3 | 261 / 274 / 276 |
+| both | 10.8 / 22.0 / 14.9 | 17.7 / 18.9 / 21.0 | 262 / 276 / 276 |
+
+zgui also paces every mode's frames more evenly (99th-percentile interval 22–23 ms against 29–30 ms, with no frame late). The window server's own CPU for zgui's window is the measure where it does not lead yet: it sits between GPUI's and GPUI fast's when most of the window changes, and above both while text streams ([what is known](docs/performance-feature-audit.md)). Every framework measured higher on this run's day than on the last (the desktop alone too), so compare within a run.
 
 These are one scene on one machine; Windows and Linux are not measured against GPUI yet. How the runs are made, and the other series, are in [benchmarking](docs/benchmarking.md).
 

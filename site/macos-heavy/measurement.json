@@ -1,12 +1,12 @@
 {
-  "date": "2026-09-27",
-  "commit": "92fd6a41161e51f00b369906ef07409403f06e94",
+  "date": "2026-10-23",
+  "commit": "51a669c0847f7316dd56c254da7428fd9aad07e9",
   "scene": "heavy",
-  "source_dirty": true,
-  "trials": 24,
-  "samples": 6509,
+  "source_dirty": false,
+  "trials": 39,
+  "samples": 9558,
   "updates": {
-    "min": 59.7,
+    "min": 59.5,
     "max": 59.95
   },
   "environment": "Apple M5 Max (Mac17,6), macOS 26.4 (25E246), Metal; on AC Power",
@@ -20,27 +20,40 @@
     "repeats": 3,
     "frameworks": [
       "zgui",
-      "gpui"
+      "gpui",
+      "gpui-fast"
     ],
+    "modes": [
+      "idle",
+      "stream",
+      "scroll",
+      "both"
+    ],
+    "pacing_seconds": 8,
+    "pacing_repeats": 8,
     "acceptance_updates_per_second": [
       58,
       61
     ]
   },
   "frameworks": {
-    "zgui": "92fd6a41161e51f00b369906ef07409403f06e94",
+    "zgui": "51a669c0847f7316dd56c254da7428fd9aad07e9",
     "gpui": "0.2.2"
   },
-  "csv_sha256": "1fd0a45faa6a3018daf1fef246ee7ec7aa44c3d6b996012a9629e5718ddc2f73",
-  "source_csv_sha256": "1fd0a45faa6a3018daf1fef246ee7ec7aa44c3d6b996012a9629e5718ddc2f73",
+  "csv_sha256": "cb6b6a5053414f9825b7e83a9c48eea252a20d85dbb62a4bb50e7a47ba77cb9a",
+  "source_csv_sha256": "9a006fb7e7c3f3f76aa5621a46e9c27b1c2797118abe60447a19f7812d440182",
   "binaries": {
     "zgui": {
-      "sha256": "bb10c80115f89f0d27b3a737fd9ed3af84e3a0d71175efdcca4e0cc1c358ebe8",
-      "bytes": 10845408
+      "sha256": "c5e73735ce4977b0f1d4b8892c2ce35f56756f391ba8f6fe1dbc57ea3b8128ac",
+      "bytes": 11486752
     },
     "gpui": {
-      "sha256": "48129b82aa2415c116af118d6bb4b017da2be0f7fe85fc6ed6e111e83f5acc02",
-      "bytes": 4621920
+      "sha256": "c99a5a7dbdf7f4881450437d113bda3ff74afbce590c4e25863650ca1bf7cd50",
+      "bytes": 4143808
+    },
+    "gpui-fast": {
+      "sha256": "da7e17f592366e25d50df75f87c918e50c376a65a5b81889479595bcb429af8a",
+      "bytes": 6766752
     }
   },
   "excluded_frameworks": {

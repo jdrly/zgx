@@ -1,0 +1,64 @@
+{
+ "accepted": true,
+ "trials": 39,
+ "samples": 9558,
+ "pacing_trials": 72,
+ "active_ticks_per_requested_second": {
+  "min": 59.5,
+  "max": 59.95
+ },
+ "powermetrics": false,
+ "scene": "heavy",
+ "commit": "51a669c0847f7316dd56c254da7428fd9aad07e9",
+ "source_dirty": false,
+ "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "started_utc": "2026-10-23T22:42:30.219412+00:00",
+ "finished_utc": "2026-10-23T23:16:39.775725+00:00",
+ "environment": {
+  "machine": "Mac17,6",
+  "chip": "Apple M5 Max",
+  "cores": 18,
+  "memory_bytes": 137438953472,
+  "macos": "26.4 (25E246)",
+  "power": "AC Power",
+  "rust": "rustc 1.96.0 (ac68faa20 2026-05-25)"
+ },
+ "binaries": {
+  "zgui": {
+   "sha256": "c5e73735ce4977b0f1d4b8892c2ce35f56756f391ba8f6fe1dbc57ea3b8128ac",
+   "bytes": 11486752
+  },
+  "gpui": {
+   "sha256": "c99a5a7dbdf7f4881450437d113bda3ff74afbce590c4e25863650ca1bf7cd50",
+   "bytes": 4143808
+  },
+  "gpui-fast": {
+   "sha256": "da7e17f592366e25d50df75f87c918e50c376a65a5b81889479595bcb429af8a",
+   "bytes": 6766752
+  }
+ },
+ "protocol": {
+  "requested_seconds": 20,
+  "warmup_seconds": 5,
+  "sampled_seconds": 15,
+  "interval_seconds": 0.05,
+  "repeats": 3,
+  "frameworks": [
+   "zgui",
+   "gpui",
+   "gpui-fast"
+  ],
+  "modes": [
+   "idle",
+   "stream",
+   "scroll",
+   "both"
+  ],
+  "pacing_seconds": 8,
+  "pacing_repeats": 8,
+  "acceptance_updates_per_second": [
+   58,
+   61
+  ]
+ }
+}

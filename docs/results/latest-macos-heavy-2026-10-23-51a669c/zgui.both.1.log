@@ -1,0 +1,6 @@
+{"framework":"zgui","scene":"heavy","ticks":1199}
+
+thread 'main' (409054674) panicked at ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-foundation-0.3.2/src/iter.rs:79:5:
+mutation detected during enumeration
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+zgui: contained a panic (mutation detected during enumeration); the app keeps running

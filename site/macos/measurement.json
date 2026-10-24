@@ -1,10 +1,12 @@
 {
-  "date": "2026-09-26",
-  "commit": "3196ec584d0067058689f3ead649e5717b6e0f28",
-  "trials": 36,
-  "samples": 9466,
+  "date": "2026-10-23",
+  "commit": "51a669c0847f7316dd56c254da7428fd9aad07e9",
+  "scene": "lab",
+  "source_dirty": false,
+  "trials": 51,
+  "samples": 12201,
   "updates": {
-    "min": 59.65,
+    "min": 59.8,
     "max": 59.95
   },
   "environment": "Apple M5 Max (Mac17,6), macOS 26.4 (25E246), Metal; on AC Power",
@@ -16,30 +18,48 @@
     "sampled_seconds": 15,
     "interval_seconds": 0.05,
     "repeats": 3,
+    "frameworks": [
+      "zgui",
+      "gpui",
+      "gpui-fast",
+      "quickgui"
+    ],
+    "modes": [
+      "idle",
+      "stream",
+      "scroll",
+      "both"
+    ],
+    "pacing_seconds": 8,
+    "pacing_repeats": 8,
     "acceptance_updates_per_second": [
       58,
       61
     ]
   },
   "frameworks": {
+    "zgui": "51a669c0847f7316dd56c254da7428fd9aad07e9",
     "gpui": "0.2.2",
-    "quickgui": "811d6e2816d5229711f59683c4c9dfbb6fc74133",
-    "zgui": "3196ec584d0067058689f3ead649e5717b6e0f28"
+    "quickgui": "811d6e2816d5229711f59683c4c9dfbb6fc74133"
   },
-  "csv_sha256": "8b7f0d379d24681f8b1705c384c743fbaa5215c1e710eb2a122eca7f30fcd003",
-  "source_csv_sha256": "8b7f0d379d24681f8b1705c384c743fbaa5215c1e710eb2a122eca7f30fcd003",
+  "csv_sha256": "5057ed59f1a8dedf6ec8f2c6d3d5c69b0cf6633b8601771f7227665ae039a9f7",
+  "source_csv_sha256": "cac4b39d2aa2b811c15d266e0ed66fbb58f649ce22adc59cb425692a37b09986",
   "binaries": {
     "zgui": {
-      "sha256": "ce3d2a1ab70cf709363bc656fcd4852555c4c4fee04e78b27b0a6357e0974f76",
-      "bytes": 10847824
+      "sha256": "f230f8f6cf0519ffc8af7f0ece758936d28a48476d2b4fb3d6f55a4c6693dd0c",
+      "bytes": 11490784
     },
     "gpui": {
-      "sha256": "6ac63e78ed966cef86bcb5d2a52c11ab5e5ddae8e2ff09e442ab29838a2ea6c4",
-      "bytes": 4588656
+      "sha256": "b77ece194ba18c244007f463e4607ac012328c88cd7e195377bdc1f389bc3486",
+      "bytes": 4110176
+    },
+    "gpui-fast": {
+      "sha256": "93fc6cc1f5ea1414bc88e9b690c06c2228801e97cf648a1033b48d54d549982b",
+      "bytes": 6732848
     },
     "quickgui": {
-      "sha256": "23e5e04c69ffa04b86410ff1c911aa035aa1e1a678b9b4478d12c3b690e9a9a3",
-      "bytes": 12974960
+      "sha256": "7b453975de338bdeee358f667e37fd753f987daed2ffec163ab058323b806cbf",
+      "bytes": 11110544
     }
   }
 }

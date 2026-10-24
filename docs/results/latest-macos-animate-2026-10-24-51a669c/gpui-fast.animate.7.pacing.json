@@ -1,0 +1,14 @@
+{
+ "framework": "gpui-fast",
+ "mode": "animate",
+ "repeat": 7,
+ "display_hz": 120,
+ "frames": 841,
+ "frames_per_second": 105.125,
+ "interval_p50_ms": 9.246,
+ "interval_p95_ms": 11.941,
+ "interval_p99_ms": 18.383,
+ "interval_max_ms": 23.755,
+ "long_intervals": 0,
+ "long_interval_fraction": 0.0
+}
