@@ -39,6 +39,7 @@ pub mod compose;
 mod compose_checkbox;
 mod compose_combobox;
 mod compose_controls;
+mod compose_date;
 mod compose_grid;
 mod compose_menu;
 mod compose_menu_scroll;

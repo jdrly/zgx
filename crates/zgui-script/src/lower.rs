@@ -1441,6 +1441,91 @@ fn kind_view(
             }
             data_grid(label.clone(), columns, sort, current, source)
         }
+        Kind::Calendar {
+            label,
+            value,
+            picker,
+            min,
+            max,
+            first_weekday,
+            unavailable,
+            format,
+        } => {
+            use zgui::compose::{CalendarDate, CalendarOptions};
+            let cx = need(&mut cx);
+            // A date as `"2026-10-23"`; anything else is none.
+            let date = bridge(
+                cx,
+                value,
+                |v| match v {
+                    Value::Str(s) => CalendarDate::parse(s),
+                    _ => None,
+                },
+                |d: Option<CalendarDate>| {
+                    d.map_or(Value::Nil, |d| Value::Str(d.to_string().as_str().into()))
+                },
+            );
+            let mut options = CalendarOptions {
+                min: min.as_deref().and_then(CalendarDate::parse),
+                max: max.as_deref().and_then(CalendarDate::parse),
+                first_weekday: *first_weekday,
+                ..Default::default()
+            };
+            if let Some(f) = unavailable.clone() {
+                let vm = vm.clone();
+                options.disabled = Some(Rc::new(move |d: CalendarDate| {
+                    vm.call::<bool>(&f, (d.to_string(), d.weekday()))
+                        .unwrap_or_else(|error| {
+                            vm.report(error);
+                            false
+                        })
+                }));
+            }
+            if let Some(f) = format.clone() {
+                let vm = vm.clone();
+                options.format = Some(Rc::new(move |d: CalendarDate| {
+                    vm.call::<String>(&f, d.to_string())
+                        .unwrap_or_else(|error| {
+                            vm.report(error);
+                            d.to_string()
+                        })
+                }));
+            }
+            if *picker {
+                date_picker(label.clone(), date, options)
+            } else {
+                calendar(label.clone(), date, options)
+            }
+        }
+        Kind::TimeField {
+            label,
+            value,
+            hour12,
+            minute_step,
+        } => {
+            use zgui::compose::{TimeOfDay, TimeOptions};
+            let cx = need(&mut cx);
+            // A time as `"09:30"`; anything else is none.
+            let time = bridge(
+                cx,
+                value,
+                |v| match v {
+                    Value::Str(s) => TimeOfDay::parse(s),
+                    _ => None,
+                },
+                |t: Option<TimeOfDay>| {
+                    t.map_or(Value::Nil, |t| Value::Str(t.to_string().as_str().into()))
+                },
+            );
+            time_field(
+                label.clone(),
+                time,
+                TimeOptions {
+                    minute_step: *minute_step,
+                    hour12: *hour12,
+                },
+            )
+        }
         Kind::Combobox {
             label,
             text: text_state,

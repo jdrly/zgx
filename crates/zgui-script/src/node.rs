@@ -480,6 +480,8 @@ impl Node {
                 | Kind::Tabs { .. }
                 | Kind::Tree { .. }
                 | Kind::DataGrid { .. }
+                | Kind::Calendar { .. }
+                | Kind::TimeField { .. }
                 | Kind::Select { .. }
                 | Kind::Combobox { .. }
                 | Kind::CommandPalette { .. }
@@ -527,6 +529,9 @@ impl Node {
             Kind::Tabs { .. } => "tabs",
             Kind::Tree { .. } => "tree",
             Kind::DataGrid { .. } => "data_grid",
+            Kind::Calendar { picker: false, .. } => "calendar",
+            Kind::Calendar { picker: true, .. } => "date_picker",
+            Kind::TimeField { .. } => "time_field",
             Kind::Combobox { .. } => "combobox",
             Kind::CommandPalette { .. } => "command_palette",
             Kind::Select { .. } => "select",
@@ -797,6 +802,26 @@ pub(crate) enum Kind {
         value: Option<Signal<Value>>,
         on_edit: Option<Function>,
         on_activate: Option<Function>,
+    },
+    /// `ui.calendar { value = state, … }`, and `ui.date_picker` (a button
+    /// opening one): a date as `"2026-10-23"`.
+    Calendar {
+        label: String,
+        value: Signal<Value>,
+        picker: bool,
+        min: Option<String>,
+        max: Option<String>,
+        first_weekday: u8,
+        unavailable: Option<Function>,
+        format: Option<Function>,
+    },
+    /// `ui.time_field { value = state, hour12?, minute_step? }`: a time as
+    /// `"09:30"`.
+    TimeField {
+        label: String,
+        value: Signal<Value>,
+        hour12: bool,
+        minute_step: u8,
     },
     /// `ui.separator { vertical? }`: a line between groups.
     Separator {
@@ -1945,6 +1970,11 @@ const WIDGET_FIELDS: &[&str] = &[
     "columns",
     "sort",
     "on_edit",
+    "first_weekday",
+    "unavailable",
+    "format",
+    "hour12",
+    "minute_step",
 ];
 
 /// Sets the handler `key` names, or gives `value` back if it names none.
@@ -3216,6 +3246,39 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
             };
             // Not the `rows` grid style: the grid's.
             table.raw_remove("rows")?;
+            node_ud(lua, fill(lua, Node::new(owner(lua)?, kind), Some(&table))?)
+        })?,
+    )?;
+    for (name, picker) in [("calendar", false), ("date_picker", true)] {
+        ui.set(
+            name,
+            lua.create_function(move |lua, table: Table| {
+                let kind = Kind::Calendar {
+                    label: label(&table)?,
+                    value: expect_state(&table.get("value")?, &format!("ui.{name}'s `value`"))?,
+                    picker,
+                    min: table.get("min")?,
+                    max: table.get("max")?,
+                    first_weekday: table.get::<Option<u8>>("first_weekday")?.unwrap_or(0) % 7,
+                    unavailable: table.get("unavailable")?,
+                    format: table.get("format")?,
+                };
+                node_ud(lua, fill(lua, Node::new(owner(lua)?, kind), Some(&table))?)
+            })?,
+        )?;
+    }
+    ui.set(
+        "time_field",
+        lua.create_function(|lua, table: Table| {
+            let kind = Kind::TimeField {
+                label: label(&table)?,
+                value: expect_state(&table.get("value")?, "ui.time_field's `value`")?,
+                hour12: table.get::<Option<bool>>("hour12")?.unwrap_or(false),
+                minute_step: table
+                    .get::<Option<u8>>("minute_step")?
+                    .unwrap_or(1)
+                    .clamp(1, 30),
+            };
             node_ud(lua, fill(lua, Node::new(owner(lua)?, kind), Some(&table))?)
         })?,
     )?;

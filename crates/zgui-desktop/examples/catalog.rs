@@ -359,6 +359,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ))
                 })],
             );
+            let due = cx.ui.signal(None::<CalendarDate>);
+            let day = cx.ui.signal(None::<CalendarDate>);
+            let start = cx.ui.signal(TimeOfDay::new(9, 30));
+            let dates_section = section(
+                "Dates and times",
+                "A picker's button opens its calendar (Down too): the arrows move a day or a week, Page Up and Down a month (with Shift a year), Enter chooses. A time's segments step with Up and Down and take digits.",
+                vec![
+                    date_picker(
+                        "Due date",
+                        due,
+                        CalendarOptions {
+                            disabled: Some(Rc::new(|d: CalendarDate| matches!(d.weekday(), 0 | 6))),
+                            ..Default::default()
+                        },
+                    ),
+                    time_field(
+                        "Start",
+                        start,
+                        TimeOptions {
+                            minute_step: 15,
+                            hour12: true,
+                        },
+                    ),
+                    calendar(
+                        "Day",
+                        day,
+                        CalendarOptions {
+                            first_weekday: 1,
+                            ..Default::default()
+                        },
+                    ),
+                ],
+            );
             let sections: Vec<(String, Rc<dyn Fn() -> View>)> = vec![
                 ("Shipping".into(), Rc::new(|| text("Ships in two days."))),
                 ("Payment".into(), Rc::new(|| text("Cards and transfers."))),
@@ -400,6 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .child(searching)
                                 .child(tree_section)
                                 .child(grid_section)
+                                .child(dates_section)
                                 .child(overlays)
                                 .child(containers),
                         ),

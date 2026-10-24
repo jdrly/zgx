@@ -1578,6 +1578,47 @@ export type DataGridProps = Merge<Props, {
 	on_activate: ((row: number) -> ...unknown)?,
 	label: string?,
 }>
+-- A month of days to choose a date from (WAI-ARIA's date picker grid): one
+-- Tab stop keeping focus; Left and Right move a day, Up and Down a week,
+-- Home and End to the week's ends, Page Up and Down a month (Shift: a
+-- year); Enter or Space chooses.
+export type CalendarProps = Merge<Props, {
+	-- The date, `"2026-10-23"`, both ways; nil: none chosen.
+	value: State<string?> | State<any>,
+	-- The first and last days that can be chosen.
+	min: string?,
+	max: string?,
+	-- The week's first day: 0 for Sunday, 1 for Monday.
+	first_weekday: number?,
+	-- Days that can't be chosen (a weekend, a booked one); `weekday` is 0
+	-- for Sunday to 6 for Saturday.
+	unavailable: ((date: string, weekday: number) -> boolean)?,
+	label: string?,
+}>
+-- A button showing a date that opens a calendar to choose it; chosen, the
+-- calendar closes. Down opens it too.
+export type DatePickerProps = Merge<Props, {
+	value: State<string?> | State<any>,
+	min: string?,
+	max: string?,
+	first_weekday: number?,
+	unavailable: ((date: string, weekday: number) -> boolean)?,
+	-- How the button writes the date (`"2026-10-23"` unless set).
+	format: ((date: string) -> string)?,
+	label: string?,
+}>
+-- A time of day in hour and minute segments, each a spin button: Up and
+-- Down step, digits type, Left and Right move between them, Backspace
+-- clears one (and the value is nil until each has one).
+export type TimeFieldProps = Merge<Props, {
+	-- The time, `"09:30"` (24-hour), both ways.
+	value: State<string?> | State<any>,
+	-- Hours 1 to 12 and an AM/PM segment.
+	hour12: boolean?,
+	-- What Up and Down step the minutes by.
+	minute_step: number?,
+	label: string?,
+}>
 export type ComboItem = string | { label: string, value: any?, detail: string? }
 -- A field with suggestions listed under it as it is typed in (WAI-ARIA's
 -- combobox): Down and Up move, Enter chooses, Escape closes or clears; a
@@ -1888,6 +1929,9 @@ declare ui: {
 	tabs: (props: TabsProps) -> Node,
 	tree: (props: TreeProps) -> Node,
 	data_grid: (props: DataGridProps) -> Node,
+	calendar: (props: CalendarProps) -> Node,
+	date_picker: (props: DatePickerProps) -> Node,
+	time_field: (props: TimeFieldProps) -> Node,
 	combobox: (props: ComboboxProps) -> Node,
 	command_palette: (props: CommandPaletteProps) -> Node,
 	select: (props: SelectProps) -> Node,

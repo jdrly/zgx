@@ -547,3 +547,53 @@ fn a_data_grid_sorts_edits_into_its_rows_and_writes_its_columns() {
     assert_eq!(h.text("width"), "96");
     assert_eq!(h.error(), None);
 }
+
+#[test]
+fn a_date_picker_and_a_time_field_write_iso_dates_and_times() {
+    let mut h = Harness::inline(
+        r#"local due = ui.state("due", "2026-03-10" :: string?)
+        local start = ui.state("start", nil :: string?)
+        return ui.column {
+            h = 420,
+            ui.date_picker {
+                id = "due",
+                label = "Due",
+                value = due,
+                min = "2026-01-01",
+                unavailable = function(date: string) return date == "2026-03-11" end,
+                format = function(date: string) return "on " .. date end,
+            },
+            ui.time_field { id = "start", label = "Start", value = start, minute_step = 5 },
+            ui.text { id = "due-text", function() return due:get() or "none" end },
+            ui.text { id = "start-text", function() return start:get() or "none" end },
+        }"#,
+    );
+    h.frames(2);
+    assert_eq!(h.error(), None);
+    let trigger = with_role(&mut h, Role::Button)[0];
+    assert_eq!(
+        h.ui.semantics.borrow().get(trigger).unwrap().label,
+        "Due: on 2026-03-10"
+    );
+    h.ui.input.focus(&h.ui.scene, Some(trigger));
+    h.key(Key::ArrowDown);
+    h.frames(1);
+    // The 11th can't be chosen; the 12th can.
+    h.key(Key::ArrowRight);
+    h.key(Key::Enter);
+    assert_eq!(h.text("due-text"), "2026-03-10", "unavailable");
+    h.key(Key::ArrowRight);
+    h.key(Key::Enter);
+    h.frames(1);
+    assert_eq!(h.text("due-text"), "2026-03-12");
+    // The time: typed hours, stepped minutes.
+    let segments = with_role(&mut h, Role::SpinButton);
+    h.ui.input.focus(&h.ui.scene, Some(segments[0]));
+    h.key(Key::Character("9".into()));
+    assert_eq!(h.text("start-text"), "none", "no minutes yet");
+    h.key(Key::ArrowUp);
+    assert_eq!(h.text("start-text"), "09:00");
+    h.key(Key::ArrowUp);
+    assert_eq!(h.text("start-text"), "09:05");
+    assert_eq!(h.error(), None);
+}

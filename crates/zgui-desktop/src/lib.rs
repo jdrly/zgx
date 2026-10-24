@@ -31,6 +31,7 @@ mod linux_icon;
 mod linux_spelling;
 #[cfg(target_os = "linux")]
 mod linux_zenity;
+mod local_time;
 mod native_drag;
 mod native_events;
 mod native_prompt;

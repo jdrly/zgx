@@ -653,6 +653,8 @@ impl Application {
     /// An application with the default window, no menus and no application
     /// ID, which quits when its last window closes.
     pub fn new() -> Self {
+        // Dates' "today" is the local one.
+        zgui::compose::set_local_offset(crate::local_time::offset);
         Self {
             fonts: Vec::new(),
             options: WindowOptions::default(),

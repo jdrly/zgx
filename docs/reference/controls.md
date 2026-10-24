@@ -1,4 +1,4 @@
-# Controls: button, input, textarea, checkbox, slider, progress, segmented, stepper, select, combobox, command_palette
+# Controls: button, input, textarea, checkbox, slider, progress, segmented, stepper, select, combobox, command_palette, calendar, date_picker, time_field
 
 Controls take keyboard focus, show it with an accent ring, and (except `button`) bind a state both ways: the control shows the state, and the user's changes write it. They take any [property](properties.md) and [event](events.md); their defaults below are only defaults.
 
@@ -14,6 +14,9 @@ ui.stepper(props: StepperProps) -> Node
 ui.select(props: SelectProps) -> Node
 ui.combobox(props: ComboboxProps) -> Node
 ui.command_palette(props: CommandPaletteProps) -> Node
+ui.calendar(props: CalendarProps) -> Node
+ui.date_picker(props: DatePickerProps) -> Node
+ui.time_field(props: TimeFieldProps) -> Node
 ```
 
 Every control dims while `disabled` (to 45% opacity, as native controls do) unless it says how it looks then.
@@ -164,6 +167,44 @@ return ui.command_palette { open = open }
 | `open` | `State<boolean>` | required | |
 | `commands` | `{ { id, title?, detail?, shortcut? } }` | the app's commands | |
 | `on_run` | `(id: string) -> ()` | runs the app's command | |
+
+## calendar, date_picker, time_field
+
+Dates are strings in ISO 8601's form, `"2026-10-23"`, and times are 24-hour `"09:30"`. Both are nil while none is chosen.
+
+`calendar` is a month of days, as WAI-ARIA's date picker grid. It is one Tab stop and keeps focus; its current day is its active descendant, which assistive technology reads as "Friday, 23 October 2026". Left and Right move a day (mirrored right to left), Up and Down a week, and Home and End go to the week's ends. Page Up and Down go a month, with Shift a year; Enter or Space chooses. Its arrows change the month too. Today has a ring; days outside `min` and `max`, or `unavailable`, are dimmed and can't be chosen. `date_picker` is a button showing the date that opens a calendar (so does Down); choosing a day closes it and puts focus back on the button, and Escape closes it without choosing.
+
+`time_field` holds an hour and a minute segment (with `hour12`, also AM/PM). Each segment is a spin button: Up and Down step it (the minutes by `minute_step`), Page Up and Down step further, digits type into it and focus moves on once no more digits can follow, Left and Right move between segments, and Backspace clears one. "Today" and "now" are local where the host says what the local time is (zgui-desktop does), otherwise UTC.
+
+```lua
+local due = ui.state("due", nil :: string?)
+local start = ui.state("start", "09:30" :: string?)
+return ui.row {
+	gap = 12,
+	ui.date_picker {
+		label = "Due date",
+		value = due,
+		min = "2026-01-01",
+		unavailable = function(_date: string, weekday: number)
+			return weekday == 0 or weekday == 6
+		end,
+	},
+	ui.time_field { label = "Start", value = start, minute_step = 15, hour12 = true },
+}
+```
+
+| Option | Type | Default | |
+| --- | --- | --- | --- |
+| `value` | `State<string?>` | required | the date (`"2026-10-23"`) or time (`"09:30"`), both ways |
+| `min`, `max` | `string` | none | `calendar`, `date_picker`: the first and last days that can be chosen |
+| `first_weekday` | `number` | `0` | the week's first day: `0` for Sunday, `1` for Monday |
+| `unavailable` | `(date: string, weekday: number) -> boolean` | none | days that can't be chosen; `weekday` runs from 0 for Sunday |
+| `format` | `(date: string) -> string` | ISO's | how a `date_picker`'s button writes its date |
+| `hour12` | `boolean` | `false` | `time_field`: hours 1 to 12 and an AM/PM segment |
+| `minute_step` | `number` | `1` | `time_field`: what Up and Down step the minutes by |
+| `label` | `string` | `""` | its accessible name |
+
+In Rust: `calendar(label, value, CalendarOptions { … })`, `date_picker(…)` and `time_field(label, value, TimeOptions { … })`, with `CalendarDate` and `TimeOfDay` values (`CalendarDate::today()`, `add_days`, `add_months`, `weekday`, `parse`). `CalendarOptions` also takes month and weekday names for other languages.
 
 ## progress
 

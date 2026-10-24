@@ -382,6 +382,9 @@ const ELEMENT_PROPS: &[&str] = &[
     "ComboboxProps",
     "TreeProps",
     "DataGridProps",
+    "CalendarProps",
+    "DatePickerProps",
+    "TimeFieldProps",
     "CommandPaletteProps",
     "ListProps",
     "ModalProps",
@@ -521,6 +524,10 @@ fn element_options_are_typed_on_their_constructors() {
             if name == "svg" {
                 // Likewise, only an image has a `fallback`.
                 keys.retain(|k| k != "fallback");
+            }
+            if name == "calendar" {
+                // Read with date_picker's: only its button writes a date.
+                keys.retain(|k| k != "format");
             }
             let (line, tables) = options_of(name)
                 .unwrap_or_else(|| panic!("ui.{name} reads {keys:?} but takes no table type"));

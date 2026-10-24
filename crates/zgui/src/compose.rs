@@ -5161,6 +5161,10 @@ pub use crate::compose_combobox::{ComboItem, ComboboxOptions, combobox};
 pub use crate::compose_controls::{
     StepperOptions, accordion, disclosure, segmented, separator, stepper,
 };
+pub use crate::compose_date::{
+    CalendarDate, CalendarOptions, TimeOfDay, TimeOptions, calendar, date_picker, days_in_month,
+    is_leap_year, set_local_offset, time_field,
+};
 pub use crate::compose_grid::{GridCell, GridColumn, GridSort, GridSource, data_grid};
 pub use crate::compose_palette::{PaletteCommand, command_palette, fuzzy_score};
 pub use crate::compose_select::{SelectOption, select};
@@ -5171,6 +5175,9 @@ pub use crate::compose_tree::{TreeChildren, TreeItem, tree};
 
 /// Common imports for component application code.
 pub mod prelude {
+    pub use super::{
+        CalendarDate, CalendarOptions, TimeOfDay, TimeOptions, calendar, date_picker, time_field,
+    };
     pub use super::{
         ComboItem, ComboboxOptions, SelectOption, Tab, TabsOptions, combobox, select, tabs,
     };

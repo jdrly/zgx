@@ -406,6 +406,26 @@ local grid_section = section(
 	}
 )
 
+local due = ui.state("due", nil :: string?)
+local start = ui.state("start", "09:30" :: string?)
+local day = ui.state("day", nil :: string?)
+
+local dates_section = section(
+	"Dates and times",
+	"A picker's button opens its calendar (Down too): the arrows move a day or a week, Page Up and Down a month (with Shift a year), Enter chooses. A time's segments step with Up and Down and take digits.",
+	ui.date_picker {
+		id = "due",
+		label = "Due date",
+		value = due,
+		-- Weekends can't be chosen.
+		unavailable = function(_date: string, weekday: number)
+			return weekday == 0 or weekday == 6
+		end,
+	},
+	ui.time_field { id = "start", label = "Start", value = start, minute_step = 15, hour12 = true },
+	ui.calendar { id = "day", label = "Day", value = day, first_weekday = 1 }
+)
+
 local containers = section(
 	"Disclosure and accordion",
 	"Enter or Space toggles a section; an accordion keeps one open.",
@@ -451,6 +471,7 @@ return ui.column {
 			searching_section,
 			tree_section,
 			grid_section,
+			dates_section,
 			overlays,
 			containers,
 		},
