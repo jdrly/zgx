@@ -526,7 +526,8 @@ fn glyphs_of<'a>(
                 },
                 run: run_index,
                 x: p.x as f32,
-                y: p.y as f32 + run.line_y * scale,
+                // Each line's baseline on a whole device pixel too.
+                y: p.y as f32 + (run.line_y * scale).round(),
             });
         }
     }
@@ -3567,13 +3568,19 @@ impl GpuRenderer {
                     }
                     // Its selected glyphs, in the selected-text colour.
                     let selected = highlight.filter(|h| h.text_color.is_some());
+                    // On whole device pixels, as a browser draws text: an
+                    // atlas bitmap drawn a fraction off is sampled between
+                    // its texels, and a hinted one-pixel stroke (a minus
+                    // sign) turns into two rows at half strength.
+                    let snap = |value: f32| (value * self.scale).round() / self.scale;
+                    let (x, y) = (snap(bounds.x), snap(bounds.y));
                     for cached in &shaped.quads {
                         let mut quad = *cached;
-                        quad.rect[0] += bounds.x;
-                        quad.rect[1] += bounds.y;
+                        quad.rect[0] += x;
+                        quad.rect[1] += y;
                         if quad.shape[3] > 0.5 {
-                            quad.fade[0] += bounds.x;
-                            quad.fade[1] += bounds.y;
+                            quad.fade[0] += x;
+                            quad.fade[1] += y;
                         }
                         let recolor = selected.filter(|_| cached.options[1] > 0.5).and_then(|h| {
                             h.glyph_color(

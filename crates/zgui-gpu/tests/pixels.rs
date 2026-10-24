@@ -5364,3 +5364,35 @@ fn wide_backdrop_blur_matches_a_full_size_gaussian() {
 fn near(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 1)
 }
+
+#[test]
+fn text_lands_on_whole_device_pixels() {
+    // A hinted glyph's one-pixel stroke drawn half a pixel off its atlas
+    // texels is sampled between them: two rows at half strength, as a
+    // minus sign at 1x read. Text snaps to the device pixel grid, as a
+    // browser's does: placed 0.3 off a pixel it draws as on it, 0.7 off as
+    // on the next.
+    let _gpu_fixture = gpu_fixture();
+    let draw = |x: f32, y: f32| {
+        let mut gpu = GpuRenderer::new(80, 40).unwrap();
+        let mut scene = Scene::new(80., 40.);
+        scene.set_kind(scene.root(), NodeKind::Container(Layout::Overlay));
+        let text = scene.append(
+            scene.root(),
+            NodeKind::Text {
+                text: "-+H".into(),
+                font_size: 13.,
+                color: Color(255, 255, 255, 255),
+            },
+            fixed(60., 20.),
+        );
+        scene.set_transform(text, Transform { x, y });
+        let damage = scene.flush().damage;
+        gpu.render(&scene, &damage).unwrap();
+        gpu.readback().unwrap()
+    };
+    let on = draw(10., 10.);
+    assert!(on.chunks(4).any(|p| p[3] == 255), "drawn");
+    assert!(on == draw(10.3, 10.3), "0.3 off draws as on the pixel");
+    assert!(draw(11., 11.) == draw(10.7, 10.7), "0.7 off as on the next");
+}
