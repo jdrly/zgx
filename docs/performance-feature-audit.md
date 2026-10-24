@@ -28,35 +28,57 @@ SVG entries retain a stable numeric source identity and tint, not XML bytes. Sou
 
 The integrated regression suite and final benchmark packet record the tested revision. These bounds describe framework-owned storage; application models, active SVG/path sources, driver allocations and external font databases are not included in a cache's pixel counter.
 
-## Open: the window server's cost of heavy content (macOS)
+## The window server's cost of heavy content (macOS)
 
-In the heavy dashboard's `both` and `stream` modes, the window server spends
-more CPU on zgui's window than on GPUI Fast's. Eight interleaved 20-second
-trials (October 2026) put it at 7.4 points over the desktop alone for zgui and
-3.6 for GPUI Fast. In `scroll` the two cost the same. What was checked, with
-no difference found between `both` and `scroll`:
+Separate trials first put the window server's CPU for zgui's heavy dashboard
+above GPUI Fast's in `both` and `stream`: 7.4 points over the desktop alone
+against 3.6 in `both` (October 2026). Paired measurements on a quiet desktop
+(below) settle it. With two apps' windows side by side taking turns,
+`stream` and `scroll` cost the same as GPUI Fast's (−1.4 ± 0.8, −1.0 ± 0.7),
+and `both` costs at most about 2 points more (+1.8 ± 0.9, +3.8 ± 0.5,
++1.6 ± 0.3). The same pairing of zgui against itself reads ±1.5, so that is
+the method's own spread.
 
-- What Core Animation sees: two IOSurfaces taking turns as one plain layer's
-  contents, one swap and one commit a frame, handed over at the same point in
-  the refresh (`ZGUI_PRESENT_LOG`), and no other layer property changing.
-- What the app asks of the window server: no cursor, IME-area or redraw
-  requests while the workload runs, and accessibility inactive.
-- The app's GPU work: repainting the whole window every frame, with pixels
-  unchanged, costs the window server nothing more.
+What the window server's cost depends on, from a synthetic app swapping
+IOSurfaces as a layer's contents at 60 Hz:
 
-What changes it is how much of each frame differs from the last. Measured in
-paired seconds (below), the video layer (`AVSampleBufferDisplayLayer`) costs
-the window server about 2 points less than the plain layer in `both` and
-nothing less in `scroll`, for about 0.6 points more app CPU (and 60 Hz frames
-pace worse on it; see `layer_present.rs`). Blitting each frame into a
-`CAMetalLayer` drawable, as GPUI presents, made no consistent difference
-(+0.5, +2.7, −2.0) for 1.6 points more app CPU.
+- Swapping at all: about 6.5 points against no swap. Most of the cost comes
+  with each swapped frame.
+- The swapped layer's size: a full-window swap costs about 1.4 points more
+  than a 64 or 256-point sublayer's. Splitting the window into tiles or
+  damage-sized layers could recover no more than that.
+- What changed in it: nothing. A whole window changed costs the same as a
+  256-point square changed (−0.4 ± 0.35).
+
+What zgui does, and what was checked in `both` against `stream` (no
+difference):
+
+- One layer change a frame. Counting every CALayer, NSView and NSWindow
+  change, and cursor and input-context calls, between 3 and 8 seconds of
+  either mode finds exactly 60 `setContents:` a second and nothing else.
+- No frame without damage. zgui presents only when a flush reports damage;
+  with nothing drawn, the shown surface stands (`present_layer`).
+- Handing a frame over as soon as it is done instead of at its point in the
+  refresh: −0.7 ± 0.6.
+- Repainting the whole window instead of the damage: −0.2 ± 0.5.
+- No cursor, IME-area or redraw requests while the workload runs, and
+  accessibility inactive.
+
+The present mechanism: blitting each frame into a `CAMetalLayer` drawable, as
+GPUI presents, costs the window server 5.7 ± 0.6 points more in `both` than
+the plain layer's contents swap, and 1.6 points more app CPU. The video layer
+(`AVSampleBufferDisplayLayer`) costs about 2 points less in `both` than the
+plain layer and nothing less in `scroll`, for about 0.6 points more app CPU
+(and 60 Hz frames pace worse on it; see `layer_present.rs`).
 
 **How to measure it.** Separate trials can't resolve this on a busy desktop:
 the desktop alone swung from 41% to 55% of a core between runs. Alternate
-two configurations inside one process instead, on even and odd Unix
-seconds, and credit the window server's CPU time (`ps -o time=`) in each
-whole second to the configuration that ran: the desktop's drift cancels
-between neighbouring seconds. With 60 seconds a run the paired difference
-has a standard error of about 0.6 points. Repeat with other apps' windows
-still, before choosing a presentation path.
+two configurations on even and odd Unix seconds, and credit the window
+server's CPU time (`ps -o time=`) in each whole second to the configuration
+that ran: the desktop's drift cancels between neighbouring seconds. Within
+one app, switch its configuration by the second. Between two apps, run their
+windows side by side without overlapping (an overlap costs the covered one),
+have each run its workload in seconds of one parity, and repeat with their
+places swapped. With 60 seconds a run, the paired difference has a standard
+error of about 0.3 to 0.6 points. Pair an app with itself as a control
+before trusting a difference smaller than the control's.

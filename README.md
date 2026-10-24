@@ -72,7 +72,7 @@ The [macOS dashboard comparison](docs/results/latest-macos-heavy-2026-10-23-51a6
 | stream | 9.8 / 21.5 / 14.3 | 11.8 / 17.6 / 21.3 | 261 / 274 / 276 |
 | both | 10.8 / 22.0 / 14.9 | 17.7 / 18.9 / 21.0 | 262 / 276 / 276 |
 
-zgui also paces every mode's frames more evenly (99th-percentile interval 22–23 ms against 29–30 ms, with no frame late). The window server's own CPU for zgui's window is the measure where it does not lead yet: it sits between GPUI's and GPUI fast's when most of the window changes, and above both while text streams ([what is known](docs/performance-feature-audit.md)). Every framework measured higher on this run's day than on the last (the desktop alone too), so compare within a run.
+zgui also paces every mode's frames more evenly (99th-percentile interval 22–23 ms against 29–30 ms, with no frame late). The window server's own CPU is too noisy between separate trials to rank here. Measured in paired seconds, with the two windows taking turns, zgui's costs the same as GPUI fast's in `stream` and `scroll`, and at most about 2 points more in `both` ([how, and what it depends on](docs/performance-feature-audit.md#the-window-servers-cost-of-heavy-content-macos)). Every framework measured higher on this run's day than on the last (the desktop alone too), so compare within a run.
 
 These are one scene on one machine; Windows and Linux are not measured against GPUI yet. How the runs are made, and the other series, are in [benchmarking](docs/benchmarking.md).
 
