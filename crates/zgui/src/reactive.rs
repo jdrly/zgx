@@ -267,6 +267,9 @@ impl Runtime {
             }
         }
         let _guard = Guard(&self.inner);
+        // Only a flush with work: most find nothing queued.
+        let _span = (crate::profile::enabled() && !self.inner.pending.borrow().is_empty())
+            .then(|| crate::profile::span(crate::profile::Phase::Update));
         loop {
             let Some(Reverse(id)) = self.inner.pending.borrow_mut().pop() else {
                 break;

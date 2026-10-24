@@ -24,6 +24,7 @@ pub mod local_time;
 pub mod timer;
 
 pub mod frame;
+pub mod profile;
 
 pub(crate) mod editor_menu;
 pub(crate) mod editor_spell;

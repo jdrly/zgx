@@ -5361,6 +5361,7 @@ impl Scene {
         if self.node(self.root).dirty & LAYOUT == 0 && self.layout_roots.is_empty() {
             return;
         }
+        let _span = crate::profile::span(crate::profile::Phase::Layout);
         self.layout_pass = self.layout_pass.wrapping_add(1);
         let mut report = FrameReport::default();
         if self.node(self.root).dirty & LAYOUT != 0 {
@@ -5429,6 +5430,7 @@ impl Scene {
             return report;
         }
         self.prepare_layout();
+        let _span = crate::profile::span(crate::profile::Phase::Damage);
         report.layout_nodes = std::mem::take(&mut self.pending_layout_nodes);
         let dirty = std::mem::take(&mut self.dirty);
         for id in &dirty {

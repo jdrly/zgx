@@ -29,6 +29,18 @@ No cross-framework speed or memory advantage is asserted before these GUI runs h
 
 For deterministic screenshots, set `ZGUI_INITIAL_TICKS=120 ZGUI_MODE=idle ZGUI_SECONDS=10` for every executable. The shared workload first applies 120 combined streaming/scroll ticks, then stays idle. This produces identical text and a scroll offset of 1680px for visual inspection. Clear `ZGUI_INITIAL_TICKS` for measurements. The adapters are functionally matched; text shaping and glyph baselines can differ across the three renderers, so pixel identity is not claimed.
 
+## Iterating on performance
+
+For a change's cost, compare instruction counts of the headless scenes:
+`python3 scripts/perf/suite.py ab main .` builds both, interleaves the runs
+and marks differences beyond their spread, in about two minutes. Run any
+app or bench with `ZGUI_PROFILE=1` for a per-phase line every 120 frames
+(update, layout, damage, paint, encode, submit, present: instructions and
+time per frame). Off, its phase boundaries cost nothing measurable: an A/B
+of all scenes, five runs each, showed every scene within its spread. Time
+Profiler helpers and their use are in `scripts/perf/README.md`. The
+windowed comparison below stays the evidence for time, GPU and memory.
+
 ## Validation environment
 
 On this development machine native windows were smoke-tested using Xvfb `:98` with Openbox and Mesa llvmpipe (LLVM 21.1.8, Mesa 26.0.8). GPUI required a window manager to present rather than a black mapped window. QuickGUI startup encountered an unresponsive desktop portal on the inherited D-Bus session; the isolated smoke runs used `DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`, `DISPLAY=:98`, and removed `WAYLAND_DISPLAY`. These are environment-specific test workarounds, not recommended desktop settings. This software Vulkan environment is unsuitable for claims about native GPU performance.

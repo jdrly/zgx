@@ -645,6 +645,7 @@ pub(crate) fn mount_style_with_intrinsic(
     // style (`read_body`).
     let mut body_subscribed = false;
     ui.bind(node, move || {
+        let _span = crate::profile::nested(crate::profile::Phase::Style);
         let Some(mut ui) = weak.upgrade() else { return };
         if !ui.scene.borrow().contains(node) {
             return;

@@ -2000,6 +2000,7 @@ impl GpuRenderer {
     pub fn install_text(&self, scene: &mut Scene) {
         let fonts = self.text_system();
         scene.set_text_measurer(move |text: &str, size: f32, max: Option<f32>| {
+            let _span = zgui::profile::nested(zgui::profile::Phase::Text);
             crate::measure_text(&mut fonts.borrow_mut(), text, size, max)
         });
         let fonts = self.text_system();
@@ -2009,6 +2010,7 @@ impl GpuRenderer {
                   width: Option<f32>,
                   font: &zgui::text_layout::FontStyle|
                   -> Box<dyn zgui::text_layout::TextLayout> {
+                let _span = zgui::profile::nested(zgui::profile::Phase::Text);
                 Box::new(crate::text::ShapedText::with_font(
                     &mut fonts.borrow_mut(),
                     text,
@@ -2020,6 +2022,7 @@ impl GpuRenderer {
         );
         let fonts = self.text_system();
         scene.set_rich_text_shaper(move |rich, width| {
+            let _span = zgui::profile::nested(zgui::profile::Phase::Text);
             Box::new(crate::text::ShapedText::with_runs(
                 &mut fonts.borrow_mut(),
                 rich,
@@ -2030,6 +2033,7 @@ impl GpuRenderer {
         // breaking alone; the renderer draws from the same lines.
         let (fonts, cache) = (self.text_system(), self.text_cache());
         scene.set_rich_text_measurer(move |rich, width| {
+            let _span = zgui::profile::nested(zgui::profile::Phase::Text);
             cache
                 .borrow_mut()
                 .measure(&mut fonts.borrow_mut(), rich, width)
@@ -2037,6 +2041,7 @@ impl GpuRenderer {
         // Plain text nodes, from the same prepared text.
         let (fonts, cache) = (self.text_system(), self.text_cache());
         scene.set_font_text_measurer(move |text, size, width, font| {
+            let _span = zgui::profile::nested(zgui::profile::Phase::Text);
             cache
                 .borrow_mut()
                 .measure_plain(&mut fonts.borrow_mut(), text, size, font, width)
@@ -2044,6 +2049,7 @@ impl GpuRenderer {
         // Apps measuring what they have not mounted keep no glyphs for it.
         let (fonts, cache) = (self.text_system(), self.text_cache());
         scene.set_detached_rich_text_measurer(move |rich, width| {
+            let _span = zgui::profile::nested(zgui::profile::Phase::Text);
             cache
                 .borrow_mut()
                 .measure_detached(&mut fonts.borrow_mut(), rich, width)
@@ -2154,7 +2160,10 @@ impl GpuRenderer {
     /// what it did.
     pub fn render(&mut self, scene: &Scene, damage: &[Rect]) -> Result<GpuStats, GpuError> {
         let presented = std::mem::take(&mut self.present_stats);
-        let mut stats = self.render_inner(scene, damage)?;
+        let mut stats = {
+            let _span = zgui::profile::span(zgui::profile::Phase::Paint);
+            self.render_inner(scene, damage)?
+        };
         if stats.shaped_nodes > 0 {
             // Words shaped by measurement or this frame are reused by the next
             // shaping frame (streaming text repeats nearly all of them); older
@@ -2181,6 +2190,7 @@ impl GpuRenderer {
         }
         stats.draw_calls += presented.draw_calls;
         stats.instances += presented.instances;
+        zgui::profile::frame();
         Ok(stats)
     }
     fn render_inner(&mut self, scene: &Scene, damage: &[Rect]) -> Result<GpuStats, GpuError> {
@@ -4120,6 +4130,7 @@ impl GpuRenderer {
         clips: &[Region],
         mut stats: GpuStats,
     ) -> GpuStats {
+        let _span = zgui::profile::span(zgui::profile::Phase::Encode);
         let vertices = {
             use objc2::Message;
             let mapped = self
@@ -4273,6 +4284,7 @@ impl GpuRenderer {
                 blurred = Some((plan, slots, rects));
                 from = end;
             }
+            let _span = zgui::profile::span(zgui::profile::Phase::Submit);
             pass.commit()
         };
         *self.metal_inflight.get_mut() = Some(committed);
@@ -5824,6 +5836,7 @@ impl GpuRenderer {
         &mut self,
         before_present: impl FnOnce(),
     ) -> Result<PresentationStatus, GpuError> {
+        let _span = zgui::profile::span(zgui::profile::Phase::Present);
         if let Some(reason) = self.context.lost() {
             return Err(GpuError::device_lost(&reason));
         }
