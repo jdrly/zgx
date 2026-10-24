@@ -2,9 +2,12 @@
 """Run the comparison workloads on this Mac.
 
 The Linux protocol (docs/results/*/protocol.md), on macOS with the Metal GPU:
-three repeats of each mode for each framework, in rotated order. Each trial
-requests 20 seconds; the first 5 are excluded, the next 15 sampled every
-50 ms by scripts/macsample.swift: the app's CPU time, CPU energy and
+three repeats of each active mode for each framework, five of idle, in
+rotated order. Each active trial requests 20 seconds; the first 5 are
+excluded, the next 15 sampled every 50 ms by scripts/macsample.swift (idle:
+20-35 s after launch, once the Metal driver has given back the memory it
+holds for a process that drew lately; the 5-20 s figures are kept too, as
+`early_*`; see docs/benchmarking.md): the app's CPU time, CPU energy and
 instructions, memory (resident size, and physical footprint: what Activity
 Monitor reports, including GPU memory the process owns on unified memory),
 its GPU time, and the window server's CPU and GPU time over the same window.
@@ -40,10 +43,11 @@ captures, for every framework.
 columns stay empty).
 
 `--quick` is for iterating, not publishing: zgui and GPUI Fast only, two
-repeats, idle once, and pacing captured during the sampling trials instead
+repeats, and pacing captured during the sampling trials instead
 of apart (capturing costs the window server work: its numbers then read
 high for every framework). About 10 minutes for heavy. The full run measures
-idle once too, and QuickGUI only with `--quickgui`.
+QuickGUI only with `--quickgui`. `--modes idle --into docs/results/<run>`
+re-measures a published run's idle cells and replaces them.
 
 Before measuring, a preflight waits until nothing heavy runs (compilers of
 any agent, VMs, Instruments, indexing, backups, updates) and the rest of the
@@ -63,6 +67,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/perf'))
 import preflight  # noqa: E402
 REQUESTED, WARMUP, SAMPLED, INTERVAL = 20, 5, 15, 0.05
+# Idle is sampled 20-35 s after launch, five times: until the Metal driver
+# gives back the memory it holds for any process that used the GPU lately
+# (a ~180 MB floor, returned ~6 or ~8 s after launch for every framework, on
+# a grid that follows the desktop's state rather than the app), a 5-20 s
+# idle mean measures that timing more than the app. The 5-20 s figures stay
+# in each idle trial's raw data, prefixed `early_`. See docs/benchmarking.md.
+IDLE_SETTLE, IDLE_REPEATS = 20, 5
 PACING_SECONDS, PACING_REPEATS = 8, 8
 MODES = ['idle', 'stream', 'scroll', 'both']
 SCENES = {
@@ -106,7 +117,7 @@ FIELDS = ['framework', 'mode', 'repeat', 'wall_seconds', 'cpu_seconds', 'cpu_per
           'gpu_active_mhz', 'gpu_system_watts', 'windowserver_cpu_percent',
           'windowserver_gpu_percent', 'gpu_utilization_percent', 'mean_footprint_bytes', 'peak_footprint_bytes',
           'mean_rss_bytes', 'peak_rss_bytes', 'samples', 'workload_ticks', 'reported_fps', *POWER, 'exit_code',
-          'terminated_after_report']
+          'terminated_after_report', 'early_mean_footprint_bytes', 'early_cpu_percent_one_core']
 PACING = ['frames_per_second', 'interval_p50_ms', 'interval_p95_ms', 'interval_p99_ms', 'interval_max_ms',
           'long_interval_fraction']
 
@@ -176,10 +187,15 @@ def power_of(process):
 def trial(scene, framework, mode, repeat, out, power, paced=None):
     """One timed trial; with `paced` (a list), its frames' pacing too, appended there."""
     log = out / f'{framework}.{mode}.{repeat}.log'
+    idle = mode == 'idle'
+    requested = IDLE_SETTLE + SAMPLED + 1 if idle else REQUESTED
     if framework == 'desktop':
         process = subprocess.Popen(['/bin/sleep', str(REQUESTED)])
     else:
-        process = launch(SCENES[scene]['binaries'][framework], mode, REQUESTED, log)
+        process = launch(SCENES[scene]['binaries'][framework], mode, requested, log)
+    # Idle: the 5-20 s window too, alongside the settled one, for the record.
+    early = subprocess.Popen([str(SAMPLER), str(process.pid), str(WARMUP - 0.5), str(SAMPLED), str(INTERVAL)],
+                             stdout=subprocess.PIPE, text=True) if idle else None
     meter = powermetrics() if power else None
     pacer = None
     if paced is not None and framework != 'desktop' and mode != 'idle':
@@ -187,7 +203,10 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
         # end loses its stream as the window closes.
         pacer = subprocess.Popen([str(PACER), str(process.pid), str(WARMUP - 0.5), str(PACING_SECONDS)],
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    sample = json.loads(run([str(SAMPLER), str(process.pid), str(WARMUP - 0.5), str(SAMPLED), str(INTERVAL)]))
+    start = IDLE_SETTLE - 0.5 if idle else WARMUP - 0.5
+    sample = json.loads(run([str(SAMPLER), str(process.pid), str(start), str(SAMPLED), str(INTERVAL)]))
+    if early is not None:
+        sample.update({f'early_{key}': value for key, value in json.loads(early.communicate()[0]).items()})
     if pacer is not None:
         output, _ = pacer.communicate()
         try:
@@ -197,7 +216,7 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
         (out / f'{framework}.{mode}.{repeat}.pacing.json').write_text(json.dumps(pace, indent=1) + '\n')
         if 'error' not in pace:
             paced.append(pace)
-    exit_code, terminated = finish(process, REQUESTED)
+    exit_code, terminated = finish(process, requested)
     text = log.read_text() if log.exists() else ''
     ticks = re.search(r'"ticks":(\d+)|workload_ticks=(\d+)|animation_frames=(\d+)', text)
     fps = re.search(r'fps=([0-9.]+)', text)
@@ -268,6 +287,9 @@ def main():
     parser.add_argument('--preflight-threshold', type=float, default=75.,
                         help='percent of a core the rest of the machine may use')
     parser.add_argument('--hide', default='Zeron', help='an app to hide during the run (empty: none)')
+    parser.add_argument('--modes', help="comma-separated, from the scene's (default: all)")
+    parser.add_argument('--into', type=Path,
+                        help="a published run of the scene: replace its idle cells with this run's (with --modes idle)")
     args = parser.parse_args()
     frameworks, modes = list(SCENES[args.scene]['binaries']), SCENES[args.scene]['modes']
     if not args.quickgui:
@@ -276,6 +298,9 @@ def main():
         frameworks = [f for f in frameworks if f in ('zgui', 'gpui-fast')]
     if args.frameworks:
         frameworks = [f for f in args.frameworks.split(',') if f in SCENES[args.scene]['binaries']]
+    if args.modes:
+        modes = [m for m in modes if m in args.modes.split(',')]
+    assert not args.into or modes == ['idle'], '--into takes an idle-only run (--modes idle)'
     repeats = args.repeats or (2 if args.quick else 3)
     if not args.skip_build:
         build(args.scene, frameworks)
@@ -304,13 +329,19 @@ def show(app):
 def measure(args, frameworks, modes, repeats, commit, found):
     started = datetime.datetime.now(datetime.timezone.utc)
     scene = '' if args.scene == 'lab' else f'-{args.scene}'
-    out = ROOT / 'docs/results' / f'latest-macos{scene}{"-quick" if args.quick else ""}-{started:%Y-%m-%d}-{commit[:7]}'
+    out = args.into or ROOT / 'docs/results' / f'latest-macos{scene}{"-quick" if args.quick else ""}-{started:%Y-%m-%d}-{commit[:7]}'
     out.mkdir(parents=True, exist_ok=True)
     rows, paced = [], []
-    for repeat in range(repeats):
+    idle_repeats = min(IDLE_REPEATS, repeats) if args.quick else IDLE_REPEATS
+    if args.into:
+        # The run's earlier idle trials stay, apart: they are what it first published.
+        legacy = out / 'idle-5-20s'
+        legacy.mkdir(exist_ok=True)
+        for path in out.glob('*.idle.*'):
+            path.rename(legacy / path.name)
+    for repeat in range(max(repeats, idle_repeats) if 'idle' in modes else repeats):
         order = frameworks[repeat % len(frameworks):] + frameworks[:repeat % len(frameworks)]
-        # Idle once: its cells move least between repeats.
-        chosen = [m for m in modes if m != 'idle' or repeat == 0]
+        chosen = [m for m in modes if repeat < (idle_repeats if m == 'idle' else repeats)]
         for framework, mode in [('desktop', 'baseline')] + [(f, m) for m in chosen for f in order]:
             row = trial(args.scene, framework, mode, repeat, out, args.powermetrics, paced if args.quick else None)
             print(f"{framework:8} {mode:8} {repeat}: cpu {row['cpu_percent_one_core']:6.2f}% {row['cpu_watts'] * 1000:6.0f} mW "
@@ -327,11 +358,25 @@ def measure(args, frameworks, modes, repeats, commit, found):
                       f"{row.get('interval_p99_ms', 0):5.1f} ms long {row.get('long_interval_fraction', 0):.3f}", flush=True)
                 paced.append(row)
                 time.sleep(2)
+    if args.into:
+        # The published run's other cells, and its pacing, with this run's idle.
+        kept = [r for r in csv.DictReader((out / 'current.csv').open()) if r['mode'] != 'idle']
+        for row in kept:
+            for key in ('repeat', 'workload_ticks', 'exit_code', 'samples'):
+                row[key] = int(row[key])
+            row['terminated_after_report'] = row['terminated_after_report'] == 'True'
+        rows = kept + [r for r in rows if r['framework'] != 'desktop']
+        paced = list(csv.DictReader((out / 'pacing.csv').open()))
+        modes = SCENES[args.scene]['modes']
     write_csv(out / 'current.csv', FIELDS, rows)
     write_csv(out / 'pacing.csv', ['framework', 'mode', 'repeat', 'display_hz', 'frames', *PACING, 'long_intervals'], paced)
     groups = [group(rows, METRICS + POWER, 'desktop', 'baseline')]
     groups += [group(rows, METRICS + POWER + ['reported_fps'], f, m) for f in frameworks for m in modes]
     pacing_groups = [group(paced, PACING, f, m) for f in frameworks for m in modes if m != 'idle']
+    if 'idle' in modes:
+        # What the idle cells read over 5-20 s, as runs before October 24 sampled them.
+        early = [group(rows, [f'early_{k}' for k in METRICS], f, 'idle') for f in frameworks]
+        (out / 'idle-5-20s.json').write_text(json.dumps({'groups': early}, indent=1) + '\n')
     (out / 'summary.json').write_text(json.dumps({'groups': groups, 'pacing': pacing_groups}, indent=1) + '\n')
     apps = [r for r in rows if r['framework'] != 'desktop']
     if args.scene == 'animate':
@@ -356,12 +401,24 @@ def measure(args, frameworks, modes, repeats, commit, found):
              'started_utc': started.isoformat(), 'finished_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
              'environment': environment(), 'preflight': found, 'binaries': binaries,
              'protocol': {'requested_seconds': REQUESTED, 'warmup_seconds': WARMUP, 'sampled_seconds': SAMPLED,
-                          'interval_seconds': INTERVAL, 'repeats': repeats, 'idle_repeats': 1,
+                          'interval_seconds': INTERVAL, 'repeats': repeats, 'idle_repeats': idle_repeats,
+                          'idle_window_seconds': [IDLE_SETTLE, IDLE_SETTLE + SAMPLED],
+                          'idle_requested_seconds': IDLE_SETTLE + SAMPLED + 1,
                           'quick': args.quick, 'frameworks': frameworks, 'modes': modes,
                           'pacing_seconds': PACING_SECONDS,
                           'pacing_repeats': repeats if args.quick else PACING_REPEATS,
                           'pacing_during_trials': args.quick,
                           'acceptance_updates_per_second': [58, 61]}}
+    if args.into:
+        # The published run's own record, with this one's as the idle cells'.
+        published = json.loads((out / 'audit.json').read_text())
+        published.setdefault('protocol', {}).update(
+            {k: audit['protocol'][k] for k in ('idle_repeats', 'idle_window_seconds', 'idle_requested_seconds')})
+        published.update({'accepted': published['accepted'] and accepted, 'trials': len(rows),
+                          'idle_rerun': {k: audit[k] for k in ('commit', 'source_dirty', 'source_diff_sha256',
+                                                               'started_utc', 'finished_utc', 'environment',
+                                                               'preflight', 'binaries')}})
+        audit = published
     (out / 'audit.json').write_text(json.dumps(audit, indent=1) + '\n')
     print(('ACCEPTED' if accepted else 'REJECTED'), out)
 

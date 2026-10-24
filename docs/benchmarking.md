@@ -44,12 +44,43 @@ windowed comparison below stays the evidence for time, GPU and memory.
 ## The macOS comparison, quick and full
 
 `python3 scripts/run_macos_comparison.py --scene heavy --quick` measures zgui
-against GPUI Fast in about ten minutes: two repeats of each active mode, idle
-once, frame pacing captured during the sampling trials. Use it to check a
+against GPUI Fast in about ten minutes: two repeats of each mode, frame
+pacing captured during the sampling trials. Use it to check a
 change on the real window path; its window-server numbers read high for
 every framework (the capture costs the window server), and the site
-builders refuse it. The full run (no `--quick`: three repeats, idle once,
-pacing apart, QuickGUI with `--quickgui`) is for publishing.
+builders refuse it. The full run (no `--quick`: three repeats of each active
+mode, five of idle, pacing apart, QuickGUI with `--quickgui`) is for
+publishing. `--modes idle --into docs/results/<run>` measures the idle cells
+alone and replaces a published run's with them (its first idle trials move to
+`idle-5-20s/`, and `audit.json` records the re-run under `idle_rerun`).
+
+### Why idle is sampled 20–35 s after launch
+
+Any process that has used the GPU lately holds about 180 MB of Metal driver
+memory ("Owned physical footprint (unmapped) (graphics)"), and the driver
+gives it back a few seconds after the process stops drawing. Active cells sit
+on that floor throughout; an idle window gets it back partway through a
+5–20 s sample, so that mean measures *when* more than what the app holds.
+Sampled every 100 ms over 25 s of 41 idle launches on 2026-10-24
+(`heavy_workload`, `component_workload` and GPUI Fast's `heavy` and lab app):
+
+- The floor came back about 6 or about 8 s after launch, for zgui and GPUI
+  Fast alike. Which one follows the desktop's state, not the app: an
+  unchanged zgui lab build gave it back at 8 s in 5 of 5 launches, and at
+  6 s in all 7 two hours later. zgui's own idle trim, after 300 ms, 1.5 s or
+  never, changed neither (21 launches).
+- What a window then settles to is bimodal too, a step of about 25 MB
+  apart: zgui heavy 54 or 79 MB, GPUI Fast heavy 70 or 95; zgui lab 41 or
+  66, GPUI Fast lab 53 or 78.
+- The 5–20 s means of the same binary ranged 92–117 MB (zgui heavy) and
+  87–116 MB (GPUI Fast lab) between launches.
+
+So idle is now sampled 20–35 s after launch, when every framework has had
+its floor back, five times per framework (the step between settled levels
+still shows: report the median and the range). Each idle trial keeps the
+5–20 s figures too, as `early_*` fields in its JSON and in `current.csv`,
+and `idle-5-20s.json` summarizes them: runs before 2026-10-24 sampled idle
+that way, once.
 
 Both start with a preflight (`scripts/perf/preflight.py`): they wait while
 anything heavy runs (compilers and linkers of any agent, VMs, Instruments,
