@@ -1708,6 +1708,8 @@ pub struct Scene {
     free: Vec<u32>,
     /// Slots of nodes removed and not yet freed (`kill`).
     dead: usize,
+    /// Flushes since `slots` last grew (`trim_slots`).
+    slots_settled: u8,
     root: NodeId,
     dirty: Vec<NodeId>,
     damage: Vec<Rect>,
@@ -1871,6 +1873,7 @@ impl Scene {
             }],
             free: Vec::new(),
             dead: 0,
+            slots_settled: 0,
             root,
             dirty: vec![root],
             damage: Vec::new(),
@@ -3335,6 +3338,7 @@ impl Scene {
             }
         } else {
             let index = self.slots.len() as u32;
+            self.slots_settled = 0;
             self.slots.push(Slot {
                 generation: 0,
                 dead: false,
@@ -5895,7 +5899,23 @@ impl Scene {
                 scroll.serial = self.flush_serial;
             }
         }
+        self.trim_slots();
         report
+    }
+    /// Give back the room doubling left in `slots` once they have stopped
+    /// growing for a while (60 flushes): a slot is most of a kilobyte, and
+    /// a mount that just passed a power of two keeps up to half of them
+    /// unused (650 KB in the heavy dashboard's 1,179 nodes). Mounting itself
+    /// grows them by doubling, which copies them least.
+    fn trim_slots(&mut self) {
+        if self.slots_settled < 60 {
+            self.slots_settled += 1;
+            return;
+        }
+        let len = self.slots.len();
+        if self.slots.capacity() > len + len / 2 + 256 {
+            self.slots.shrink_to(len + len / 4 + 64);
+        }
     }
     /// Mark `id` as scroll content: translating it reports a `ScrollMove`
     /// instead of damaging everything it paints.
@@ -7038,6 +7058,41 @@ mod tests {
         assert!(ids.iter().any(|id| id.index == reused.index));
         assert!(ids.iter().all(|id| !scene.contains(*id)));
         scene.flush();
+    }
+    #[test]
+    fn slots_give_back_doublings_room_once_they_stop_growing() {
+        let mut scene = Scene::new(100.0, 100.0);
+        let mut last = None;
+        for i in 0..1100 {
+            last = Some(scene.append(scene.root(), text(&format!("{i}")), Style::default()));
+        }
+        scene.flush();
+        let grown = scene.slots.capacity();
+        assert!(grown >= 2048, "doubling while it mounts: {grown}");
+        // Frames while it settles keep the room; after them it goes.
+        for _ in 0..59 {
+            scene.set_text(last.unwrap(), "changed");
+            scene.set_text(last.unwrap(), "again");
+            scene.flush();
+        }
+        assert_eq!(scene.slots.capacity(), grown);
+        for _ in 0..3 {
+            scene.set_text(last.unwrap(), "changed");
+            scene.flush();
+        }
+        let len = scene.slots.len();
+        assert!(
+            scene.slots.capacity() <= len + len / 4 + 64,
+            "trimmed: {}",
+            scene.slots.capacity()
+        );
+        // A scene that keeps growing is not trimmed between appends.
+        let mut growing = Scene::new(100.0, 100.0);
+        for i in 0..2000 {
+            growing.append(growing.root(), text(&format!("{i}")), Style::default());
+            growing.flush();
+        }
+        assert!(growing.slots.capacity() >= 2001);
     }
     #[test]
     fn opacity_inherits_and_clips_follow_transforms() {
