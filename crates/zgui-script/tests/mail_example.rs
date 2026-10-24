@@ -438,3 +438,30 @@ fn archiving_opens_the_next_message_and_focus_stays_in_the_list() {
     assert_eq!(node.role, Role::ListBoxOption, "{}", node.label);
     assert!(node.label.contains(&subject), "{}", node.label);
 }
+
+#[test]
+fn the_strip_under_the_title_bar_moves_the_window() {
+    use zgui::{
+        input::{InputEvent, Modifiers, PointerButton},
+        widgets::WindowGesture,
+    };
+    let mut h = mail(1180.);
+    // As the host dispatches them (with the keys held): presses counted.
+    let press = |ui: &mut Ui, x: f32| {
+        let (button, none) = (PointerButton::Primary, Modifiers::default());
+        ui.dispatch_with_modifiers(InputEvent::PointerDown { x, y: 15., button }, none);
+        let gesture = ui.take_window_gesture();
+        ui.dispatch_with_modifiers(InputEvent::PointerUp { x, y: 15., button }, none);
+        gesture
+    };
+    // Over the sidebar, the list and the reading pane: the panes are under
+    // it (where a Linux window has no title bar but this).
+    for x in [100., 450., 900.] {
+        assert_eq!(press(&mut h.ui, x), Some(WindowGesture::Drag), "at {x}");
+        // Past a double click's time.
+        std::thread::sleep(std::time::Duration::from_millis(550));
+    }
+    // Twice: the window zooms.
+    assert_eq!(press(&mut h.ui, 900.), Some(WindowGesture::Drag));
+    assert_eq!(press(&mut h.ui, 900.), Some(WindowGesture::DoubleClick));
+}

@@ -71,7 +71,6 @@ return ui.row {
 	w_full = true,
 	h_full = true,
 	color = "$text.primary",
-	ui.div { absolute = true, top = 0, left = 0, right = 0, h = 36, window_drag = true },
 	ui.show(function()
 		return state.layout:get() == "wide"
 	end, ui.row { h_full = true, shrink = 0, Sidebar(), divider() }),
@@ -85,6 +84,10 @@ return ui.row {
 	ui.show(function()
 		return state.layout:get() ~= "narrow" or state.selected:get() ~= nil
 	end, Detail()),
+	-- The strip under the title bar moves the window: over the panes (an
+	-- absolute node paints in its place among its siblings), under the
+	-- drawer and the composer.
+	ui.div { absolute = true, top = 0, left = 0, right = 0, h = 36, window_drag = true },
 	-- The mailboxes over the list, while the window is too narrow for them.
 	ui.show(
 		function()
