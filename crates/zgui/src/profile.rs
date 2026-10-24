@@ -408,14 +408,14 @@ mod counter {
         /// The calling thread's retired user instructions.
         pub fn read(&self) -> u64 {
             unsafe extern "C" {
-                fn read(fd: i32, buffer: *mut u64, count: usize) -> isize;
+                fn read(fd: i32, buffer: *mut std::ffi::c_void, count: usize) -> isize;
             }
             if self.fd < 0 {
                 return 0;
             }
             let mut value = 0u64;
             // SAFETY: A counting perf event reads as one u64.
-            unsafe { read(self.fd, &mut value, 8) };
+            unsafe { read(self.fd, (&raw mut value).cast(), 8) };
             value
         }
     }
