@@ -97,12 +97,18 @@ pub struct Limits {
     pub call: Duration,
 }
 impl Default for Limits {
+    /// In a debug build the time budgets are ten times longer: the same
+    /// script runs several times slower there (the dashboard's sort of
+    /// 100,000 rows, 128 ms of a 50 ms budget, with zgui-script's Rust
+    /// unoptimized, as `cargo run` builds it), and a budget is to stop a
+    /// runaway script, which half a second still does.
     fn default() -> Self {
+        let scale = if cfg!(debug_assertions) { 10 } else { 1 };
         Self {
             memory: 1 << 30,
             plugin_memory: 32 << 20,
-            load: Duration::from_millis(500),
-            call: Duration::from_millis(50),
+            load: Duration::from_millis(500 * scale),
+            call: Duration::from_millis(50 * scale),
         }
     }
 }

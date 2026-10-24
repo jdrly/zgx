@@ -11,8 +11,8 @@ use zgui_script::ScriptHost;
 const APP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/dashboard/app.luau");
 
 fn dashboard() -> Harness {
-    // A debug build runs Luau with its asserts, some 5 times slower: sorting
-    // 100,000 rows takes it past the release budgets.
+    // A debug build runs zgui-script unoptimized: sorting 100,000 rows
+    // takes it past even the debug budgets on a slow runner.
     let limits = zgui_script::Limits {
         load: std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 1 }),
         call: std::time::Duration::from_millis(if cfg!(debug_assertions) { 2000 } else { 50 }),
