@@ -9,6 +9,7 @@
   --zgx-luau: #6aa982;
   --gpui-fast: #b2783a;
   --mygo: #5f73a8;
+  --rune: #a35d8f;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -22,6 +23,7 @@
     --zgx-luau: #3f8a5b;
     --gpui-fast: #d79a58;
     --mygo: #8d9fd6;
+    --rune: #d38fbf;
   }
 }
 * { box-sizing: border-box; }
@@ -81,6 +83,7 @@ h3 { font-size: 1.05rem; margin: 1.25rem 0 0.25rem; }
 .fw-zgx-luau .bar { background: var(--zgx-luau); }
 .fw-gpui-fast .bar { background: var(--gpui-fast); }
 .fw-mygo .bar { background: var(--mygo); }
+.fw-rune .bar { background: var(--rune); }
 .fw-zgx th[scope="row"], .fw-zgx .value { font-weight: 650; color: var(--zgx); }
 .value { font-size: 0.92rem; }
 .range { color: var(--muted); font-size: 0.75rem; }

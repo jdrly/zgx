@@ -2,7 +2,8 @@
 
 The same scenes in each framework, for `scripts/run_macos_comparison.py`:
 zgx (`crates/zgx-desktop/examples`, `crates/zgx-script/examples`), GPUI Fast
-(`gpui-fast`) and MyGo (`mygo`). `workload` is the scenes' shared content and
+(`gpui-fast`), MyGo (`mygo`) and Rune (`rune`: pinned and patched, see its
+README and PATCH.md). `workload` is the scenes' shared content and
 motion: every adapter takes its text, numbers, geometry and colours from it
 (MyGo's Go port checks itself against `workload`'s golden dump), so the
 frameworks draw the same thing. Older adapters (`gpui`, `quickgui`) stay for
@@ -63,6 +64,9 @@ binary's hash, the toolchain's version and the build flags.
   frame (the next tick's scroll would cancel a landing still in progress).
 - GPUI Fast: `list` with a `ListState` (not `uniform_list`), which lays rows
   out to measure them as they come into view.
+- Rune: `El::virtual_rows`, measuring rows as they mount and estimating the
+  rest; scrolled through its own wheel path (`Tx::wheel`, the patch), and a
+  jump reveals the row (nearest) rather than putting it at the top.
 - MyGo: `ui.List` with a `ListState`: keeps its place by an anchor row,
   measures rows as it lays them out, and estimates unmeasured ones at the
   average height.

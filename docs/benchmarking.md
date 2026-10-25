@@ -50,7 +50,7 @@ windowed comparison below stays the evidence for time, GPU and memory.
 
 ## The macOS suite: every scene in under an hour
 
-`python3 scripts/run_macos_suite.py` measures zgx against GPUI Fast and MyGo
+`python3 scripts/run_macos_suite.py` measures zgx against GPUI Fast, MyGo and Rune
 on four scenes, one after another, into
 `docs/results/suite-macos-<date>-<commit>/<scene>/`:
 
@@ -63,7 +63,9 @@ on four scenes, one after another, into
 
 The frameworks: GPUI Fast, the faster of the two GPUI configurations and one
 apps ship with (`gpui = { package = "gpui-fast" }`); MyGo (egoist/mygo) through
-its native UI; and zgx, through its Rust measured list in vlist and through
+its native UI; Rune (anomalyco/rune: Rust, wgpu, Taffy, Parley), pinned, with
+a 14-line patch exposing its own wheel path so a run can scroll it
+(`comparisons/rune/PATCH.md`); and zgx, through its Rust measured list in vlist and through
 the same list in Luau (`ui.list { measured = true }`, framework `zgx-luau`). `comparisons/README.md` is the
 contract each adapter keeps (environment, report, window, build).
 

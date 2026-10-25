@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'https://github.com/zeronsh/zgx'
-NAMES = {'zgx': 'zgx', 'zgx-luau': 'zgx (Luau)', 'gpui-fast': 'GPUI Fast', 'mygo': 'MyGo'}
+NAMES = {'zgx': 'zgx', 'zgx-luau': 'zgx (Luau)', 'gpui-fast': 'GPUI Fast', 'mygo': 'MyGo', 'rune': 'Rune'}
 ORDER = ['heavy', 'lab', 'animate', 'vlist']
 SCENES = {
     'heavy': ('Heavy dashboard', 'A 1280×800 dashboard: 6 tiles, 30 cards of 26 sparkline bars, a status table '
@@ -45,6 +45,16 @@ METRICS = {
     'blank': ('Unfilled rows', '% of window captures showing a gap', 1, 100, 'blank_fraction', 'paced'),
     'memory': ('Memory', 'MB, physical footprint', 0, 1e-6, 'mean_footprint_bytes', 'all'),
 }
+# Rune's adapters' fidelity choices (comparisons/rune/README.md, PATCH.md),
+# each with its reason and what it changes.
+RUNE_NOTES = '''<li><strong>Ticks through <code>AppHandle::update_if</code>.</strong> Rune's per-frame <code>poll</code>, woken by <code>wake_after</code>, ran on frame boundaries up to 16 ms late and dropped about 5% of ticks. A timer thread now hands each tick to the UI thread through <code>update_if</code>, Rune's API for a timer or feed, and waits for it to run, as the other adapters' loops do. This changes the measurement: Rune now does the same 60 ticks a second of work as the others.</li>
+<li><strong>Updates apply at once (<code>Tx::instant</code>).</strong> Rune animates every layout and colour change on a 0.3 s spring by default. Each tick is applied instantly, as the other frameworks apply live data. Leaving the springs on would add animation frames the other frameworks don't draw.</li>
+<li><strong>sRGB blending (<code>App::srgb_blend(true)</code>).</strong> Rune blends translucency in linear light by default, so 10% opacity looked brighter than in the others. Its documented sRGB mode matches CSS and the other three. It is a surface format and a shader flag, with no extra pass, so it changes pixels, not cost.</li>
+<li><strong>Heavy's panel contents sit 1 pt in.</strong> A Rune border takes no layout space, while CSS, which the scene's geometry follows, places absolute children inside the border. The children are offset by the border's width so that everything lands on the same pixels. Geometry only; the cost doesn't change.</li>
+<li><strong>vlist scrolls through a small patch exposing Rune's own wheel path (<code>rune-wheel.patch</code>, 14 lines).</strong> Rune's public API can't set a vertical scroll offset, and only user wheel input moves a list. The patch adds <code>Tx::wheel</code>, which feeds the same <code>Runtime::wheel_xy</code> a real wheel event goes through, at once, between frames. Nothing else in Rune changes. This is what makes Rune's scroll and fling measurable; it adds no work of its own.</li>
+<li><strong>Jump reveals the row (nearest), not at the top.</strong> Rune's <code>scroll_into_view</code> scrolls just far enough to show a row, where the other adapters put the jumped-to row at the top. A jump still mounts and lays out the far rows, but the row lands at a different place in the viewport.</li>
+<li><strong>Rune's window isn't colour-matched by the window server.</strong> Its Metal layer is untagged (wgpu 30's default, which Rune keeps), so sRGB values reach the display unconverted and look slightly more saturated. The window server converts the other three, whose layers are tagged sRGB. Rune may skip that colour-matching work, which could lower its WindowServer cost. Kept as Rune ships it.</li>
+<li><strong>The vlist probe runs headless.</strong> Row heights are read from Rune's headless runtime, with the same font and 720 pt width, after revealing each row. A row's height doesn't depend on where it sits. Only the layout check uses this; it doesn't feed any measured figure.</li>'''
 TRIAL_KEYS = ['cpu_percent_one_core', 'gpu_system_watts', 'gpu_mcycles_per_second', 'mean_footprint_bytes',
               'windowserver_cpu_percent']
 PACING_KEYS = ['interval_p99_ms', 'long_interval_fraction', 'frames_per_second']
@@ -213,6 +223,13 @@ def page(by, verdict, cards):
     date = heavy['started_utc'][:10]
     tools = heavy['toolchains']
     mygo = tools.get('mygo', {})
+    rune = tools.get('rune', {})
+    has_rune = any('rune' in by[n]['frameworks'] for n in ORDER)
+    rune_lede = ' and Rune (Rust, wgpu, Taffy and Parley)' if has_rune else ''
+    rune_build = (f"; Rune at <code>{e(rune.get('rune_rev', '?')[:8])}</code> ({e(rune.get('rune_branch', '?'))}, "
+                  f"{e(rune.get('rune_license', '?'))}) with its own <code>perf</code> profile and a 14-line patch "
+                  f"exposing its wheel path (see below)" if has_rune else '')
+    rune_notes = RUNE_NOTES if has_rune else ''
     displays = env['displays']
     display = (f"{len(displays)} × {displays[0]['name']} ({displays[0]['resolution']})"
                if all(d['name'] == displays[0]['name'] and d['resolution'] == displays[0]['resolution'] for d in displays)
@@ -254,7 +271,7 @@ def page(by, verdict, cards):
     nav = ' '.join(f'<a href="#{n}">{SCENES[n][0]}</a>' for n in ORDER)
     mygo_build = (f"MyGo {e(mygo.get('mygo_version', '?'))} (<code>{e(mygo.get('mygo_commit', '?')[:7])}</code>, "
                   f"{e(mygo.get('mygo_license', '?'))}) built with {e(mygo.get('go', tools.get('go', 'Go')))}, "
-                  f"<code>go build {e(mygo.get('flags', ''))}</code>, cgo {'on' if mygo.get('cgo') else 'off'}")
+                  f"<code>go build {e(mygo.get('flags', ''))}</code>, cgo {'on' if mygo.get('cgo') else 'off'}") + rune_build
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -269,7 +286,7 @@ def page(by, verdict, cards):
 <header>
 <p class="eyebrow">zgx performance · macOS · {date}</p>
 <h1>{e(verdict)}</h1>
-<p class="lede">zgx against GPUI Fast (Zed's GPUI with its fast-path optimizations, as apps ship it) and MyGo (a Go desktop framework, through its GPU-drawn native UI): the same four scenes, built from the same workload code, measured on one Mac in one session. Lower is better throughout.</p>
+<p class="lede">zgx against GPUI Fast (Zed's GPUI with its fast-path optimizations, as apps ship it) MyGo (a Go desktop framework, through its GPU-drawn native UI){rune_lede}: the same four scenes, built from the same workload code, measured on one Mac in one session. Lower is better throughout.</p>
 <dl class="cards">
 {card_html}
 </dl>
@@ -291,8 +308,9 @@ def page(by, verdict, cards):
 <li><strong>Frame time:</strong> the 99th percentile of the intervals between frames shown on screen; at 60 updates a second, 16.7 ms is on time (8.3 ms for the animation, drawn at 120 Hz). <strong>Long frames</strong> are intervals over 25 ms.</li>
 <li><strong>Unfilled rows</strong> (the list): the window captured 10 times a second for {by['vlist']['protocol'].get('blank_seconds', 8)} s per mode; a capture counts when a stretch of the rows' padding over 24 points shows the window's background, where no row was drawn.</li>
 <li><strong>Memory:</strong> the process's physical footprint (what Activity Monitor shows: resident memory plus GPU memory it owns), averaged over the sample.</li>
-<li><strong>The list widgets:</strong> zgx's measured virtual list{', the same list from a Luau script (<code>ui.list {{ measured = true }}</code>),' if luau else ''} and GPUI Fast's <code>list</code> measure each row as they lay it out; MyGo's <code>ui.List</code> keeps its place by an anchor row and estimates unmeasured rows at the average height.</li>
+<li><strong>The list widgets:</strong> zgx's measured virtual list{', the same list from a Luau script (<code>ui.list {{ measured = true }}</code>),' if luau else ''} and GPUI Fast's <code>list</code> measure each row as they lay it out; MyGo's <code>ui.List</code> keeps its place by an anchor row and estimates unmeasured rows at the average height{"; Rune's virtual rows estimate unmeasured rows (28 pt fixed, a three-line row variable) and measure as they mount" if has_rune else ''}.</li>
 </ul>
+{'<h3>How Rune is driven</h3><ul class="facts">' + rune_notes + '</ul>' if rune_notes else ''}
 <h3>Caveats</h3>
 <ul class="facts">
 <li>Compare within this run only: the same binaries measured hours apart read differently (the machine's state changes), so a cell is not comparable across runs, while the frameworks in one run share its session.</li>

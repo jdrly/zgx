@@ -96,12 +96,15 @@ SPREAD, EXTRA = 0.10, 2
 BLANK_SECONDS, BLANK_RATE = 8, 10
 MODES = ['idle', 'stream', 'scroll', 'both']
 MYGO = ROOT / 'comparisons/mygo/bin'
+# Rune (anomalyco/rune, pinned and patched: comparisons/rune/PATCH.md).
+RUNE = ROOT / 'comparisons/rune/bin'
 SCENES = {
     'lab': {
         'modes': MODES,
         'binaries': {
             'zgx': ROOT / 'target/dist/examples/component_workload',
             'mygo': MYGO / 'lab',
+            'rune': RUNE / 'lab',
             'gpui': ROOT / 'comparisons/gpui/target/dist/zgx-compare-gpui',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/zgx-compare-gpui-fast',
             'quickgui': ROOT / 'comparisons/quickgui/target/dist/zgx-compare-quickgui',
@@ -114,6 +117,7 @@ SCENES = {
             'gpui': ROOT / 'comparisons/gpui/target/dist/heavy',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/heavy',
             'mygo': MYGO / 'heavy',
+            'rune': RUNE / 'heavy',
         },
     },
     'animate': {
@@ -123,6 +127,7 @@ SCENES = {
             'gpui': ROOT / 'comparisons/gpui/target/dist/animate',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/animate',
             'mygo': MYGO / 'animate',
+            'rune': RUNE / 'animate',
         },
     },
     # Variable-height rows in each framework's own list (zgx_workload::vlist).
@@ -134,12 +139,13 @@ SCENES = {
             'zgx-luau': ROOT / 'target/dist/examples/vlist_luau',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/vlist',
             'mygo': MYGO / 'vlist',
+            'rune': RUNE / 'vlist',
         },
     },
 }
 # The suite's frameworks: zgx (in Rust, and in Luau where a scene has it),
-# the stronger GPUI, and MyGo.
-SUITE_FRAMEWORKS = ['zgx', 'zgx-luau', 'gpui-fast', 'mygo']
+# the stronger GPUI, MyGo and Rune.
+SUITE_FRAMEWORKS = ['zgx', 'zgx-luau', 'gpui-fast', 'mygo', 'rune']
 SAMPLER, PACER, BLANK = Path('/tmp/zgx-macsample'), Path('/tmp/zgx-framepace'), Path('/tmp/zgx-blankprobe')
 # The one font file every adapter loads (comparisons/fonts), and how each
 # reports the bytes it loaded (zgx_workload::fnv64).
@@ -184,8 +190,11 @@ def build(scene, frameworks):
     if 'zgx-luau' in frameworks:
         luau = SCENES[scene]['binaries']['zgx-luau'].name
         run(['cargo', 'build', '--profile', 'dist', '--locked', '-p', 'zgx-script', '--example', luau], cwd=ROOT)
-    for name in [f for f in frameworks if f not in ('zgx', 'zgx-luau', 'mygo')]:
+    for name in [f for f in frameworks if f not in ('zgx', 'zgx-luau', 'mygo', 'rune')]:
         run(['cargo', 'build', '--profile', 'dist', '--locked'], cwd=ROOT / 'comparisons' / name)
+    if 'rune' in frameworks:
+        # Rune at its pinned rev with the wheel patch (comparisons/rune/build.sh).
+        run([str(ROOT / 'comparisons/rune/build.sh')], cwd=ROOT / 'comparisons/rune')
     if 'mygo' in frameworks:
         # Its release build (comparisons/mygo/build.sh: go build -trimpath, stripped).
         run([str(ROOT / 'comparisons/mygo/build.sh')], cwd=ROOT / 'comparisons/mygo')
@@ -206,6 +215,10 @@ def toolchains(frameworks):
         found['go'] = run(['go', 'version'])
         if manifest.exists():
             found['mygo'] = json.loads(manifest.read_text())
+    if 'rune' in frameworks:
+        manifest = ROOT / 'comparisons/rune/build.json'
+        if manifest.exists():
+            found['rune'] = json.loads(manifest.read_text())
     return found
 
 
@@ -472,8 +485,8 @@ def main():
     if not args.quickgui:
         frameworks = [f for f in frameworks if f != 'quickgui']
     if not args.suite and not args.frameworks:
-        # MyGo is the suite's; the full protocol's runs keep their frameworks.
-        frameworks = [f for f in frameworks if f != 'mygo']
+        # MyGo and Rune are the suite's; the full protocol's runs keep their frameworks.
+        frameworks = [f for f in frameworks if f not in ('mygo', 'rune')]
     if args.quick:
         frameworks = [f for f in frameworks if f in ('zgx', 'gpui-fast')]
     if args.frameworks:
