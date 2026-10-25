@@ -394,6 +394,13 @@ pub(crate) fn mount_links(
     let mut mounted: Vec<Mounted> = Vec::new();
     let mut geometry_key = None;
     let mut geometry: Vec<Vec<Rect>> = Vec::new();
+    // Where the links go, as copied HTML writes them.
+    let mut targets: Vec<(std::ops::Range<usize>, Arc<str>)> = Vec::new();
+    let guard = crate::selection::LinksGuard {
+        ui: ui.downgrade(),
+        paragraph,
+    };
+    ui.retain(owner, guard);
     ui.bind(owner, move || {
         let data = content.get();
         let bounds = bounds.get();
@@ -404,6 +411,15 @@ pub(crate) fn mount_links(
         };
         if !ui.scene.borrow().contains(owner) {
             return;
+        }
+        let now: Vec<_> = data
+            .links
+            .iter()
+            .filter_map(|link| Some((link.range.clone(), link.href.clone()?)))
+            .collect();
+        if now != targets {
+            crate::selection::set_links(&ui, paragraph, now.clone());
+            targets = now;
         }
         let key = (
             data.rich.clone(),

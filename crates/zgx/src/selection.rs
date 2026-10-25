@@ -220,6 +220,12 @@ pub(crate) struct State {
     scroll: Option<(Instant, Instant)>,
     /// The region whose semantic node holds the selection.
     semantic_root: Option<NodeId>,
+    /// Rich text paragraphs' links with somewhere to go: their ranges and
+    /// targets, for copied HTML.
+    links: HashMap<NodeId, Links>,
+    /// Select-all chose the whole region: its ends follow its first and
+    /// last text as virtual lists mount rows, and a copy takes every row.
+    all: bool,
 }
 
 /// Rows a copy takes from one list's row text at most.
@@ -264,6 +270,33 @@ pub(crate) fn mount_row_text(ui: &mut Ui, root: NodeId, text: RowText) {
         content,
     };
     ui.retain(root, guard);
+}
+
+/// A paragraph's links: each one's range in its text and where it goes.
+pub(crate) type Links = Vec<(Range<usize>, Arc<str>)>;
+/// Rich text `paragraph`'s links (their ranges and targets), as copied
+/// HTML writes them.
+pub(crate) fn set_links(ui: &Ui, paragraph: NodeId, links: Links) {
+    let mut state = ui.selection_state().borrow_mut();
+    if links.is_empty() {
+        state.links.remove(&paragraph);
+    } else {
+        state.links.insert(paragraph, links);
+    }
+}
+/// Forgets a paragraph's links once it is unmounted.
+pub(crate) struct LinksGuard {
+    pub(crate) ui: WeakUi,
+    pub(crate) paragraph: NodeId,
+}
+impl Drop for LinksGuard {
+    fn drop(&mut self) {
+        if let Some(ui) = self.ui.upgrade()
+            && let Ok(mut state) = ui.selection_state().try_borrow_mut()
+        {
+            state.links.remove(&self.paragraph);
+        }
+    }
 }
 
 /// Removes a virtual row's entry once it is unmounted.
@@ -776,6 +809,7 @@ impl Ui {
             state.root = root;
             state.anchor = anchor;
             state.focus = focus;
+            state.all = false;
             state.revision = state.revision.wrapping_add(1);
         }
         self.refresh_selection(false);
@@ -783,6 +817,19 @@ impl Ui {
     /// Lay the selection's highlights out again: only the text whose part of
     /// it, or whose layout, changed (all of it if `recolor`).
     pub(crate) fn refresh_selection(&self, recolor: bool) {
+        // All of a region: from its first text to its last, as they are now.
+        let all = {
+            let state = self.selection_state().borrow();
+            state.root.filter(|_| state.all)
+        };
+        if let Some(root) = all.filter(|root| self.scene.borrow().contains(*root)) {
+            let (first, last) = self.region_ends(root);
+            let mut state = self.selection_state().borrow_mut();
+            if first.is_some() {
+                (state.anchor, state.focus) = (first, last);
+                (state.anchor_row, state.focus_row) = (None, None);
+            }
+        }
         let mut state = self.selection_state().borrow_mut();
         // Ends in recycled virtual rows: back in their rows if mounted again.
         let (anchor, focus) = {
@@ -1197,35 +1244,38 @@ impl Ui {
     }
     /// Select all the text in the selectable region holding `node`.
     pub fn select_all_text(&self, node: NodeId) -> bool {
-        let (root, first, last) = {
-            let scene = self.scene.borrow();
-            let Some(root) = scene.selection_root(node) else {
-                return false;
-            };
-            let (mut first, mut last) = (None, None);
-            scene.selectable_text(
-                root,
-                |id| self.is_editor(id),
-                |leaf| {
-                    first.get_or_insert(leaf.id);
-                    last = Some(leaf.id);
-                },
-            );
-            let end = last
-                .and_then(|id| text_of(&scene, id))
-                .map_or(0, |text| text.len());
-            (
-                root,
-                first.map(|node| TextPoint { node, offset: 0 }),
-                last.map(|node| TextPoint { node, offset: end }),
-            )
+        let Some(root) = self.scene.borrow().selection_root(node) else {
+            return false;
         };
+        let (first, last) = self.region_ends(root);
         self.selection_state().borrow_mut().active_root = Some(root);
         if first.is_none() {
             return false;
         }
         self.set_selection(Some(root), first, last);
+        self.selection_state().borrow_mut().all = true;
         true
+    }
+    /// The start of region `root`'s first selectable text and the end of
+    /// its last.
+    fn region_ends(&self, root: NodeId) -> (Option<TextPoint>, Option<TextPoint>) {
+        let scene = self.scene.borrow();
+        let (mut first, mut last) = (None, None);
+        scene.selectable_text(
+            root,
+            |id| self.is_editor(id),
+            |leaf| {
+                first.get_or_insert(leaf.id);
+                last = Some(leaf.id);
+            },
+        );
+        let end = last
+            .and_then(|id| text_of(&scene, id))
+            .map_or(0, |text| text.len());
+        (
+            first.map(|node| TextPoint { node, offset: 0 }),
+            last.map(|node| TextPoint { node, offset: end }),
+        )
     }
     /// Select the word at window point `x`, `y`, as a double press there
     /// does: a long press on a touch screen starts a selection this way.
@@ -1362,19 +1412,28 @@ impl Ui {
             }
         };
         let mut provided = Vec::new();
+        // All of a region: every row of its lists.
+        let all = state.root.filter(|_| state.all);
         for (content, text) in &state.row_texts {
             if !scene.contains(*content) {
                 continue;
             }
-            let lo = match place(&start, *content) {
-                Ok(index) => index,
-                Err(std::cmp::Ordering::Less) => 0,
-                Err(_) => continue,
-            };
-            let hi = match place(&end, *content) {
-                Ok(index) => index,
-                Err(std::cmp::Ordering::Greater) => usize::MAX,
-                Err(_) => continue,
+            let (lo, hi) = match all {
+                Some(root) if scene.ancestors(*content).any(|at| at == root) => (0, usize::MAX),
+                Some(_) => continue,
+                None => {
+                    let lo = match place(&start, *content) {
+                        Ok(index) => index,
+                        Err(std::cmp::Ordering::Less) => 0,
+                        Err(_) => continue,
+                    };
+                    let hi = match place(&end, *content) {
+                        Ok(index) => index,
+                        Err(std::cmp::Ordering::Greater) => usize::MAX,
+                        Err(_) => continue,
+                    };
+                    (lo, hi)
+                }
             };
             // The rows shown here (mounted), by index.
             let mounted: Vec<(usize, usize)> = shown
@@ -1427,42 +1486,102 @@ impl Ui {
         provided.sort_by_key(|(before, _)| *before);
         provided
     }
-    /// The selected text as HTML, for pasting into rich text: paragraphs and
-    /// line breaks where `selected_text` has them, and bold, italic,
-    /// monospace (code), underline and strikethrough runs.
+    /// The selected text as HTML, for pasting into rich text: paragraphs,
+    /// headings (`<h1>`…) and line breaks where `selected_text` has them;
+    /// bold, italic, monospace (code), underline and strikethrough runs;
+    /// links with their targets; and the rows of virtual lists with row
+    /// text that they have not mounted, as `selected_text` copies them.
     pub fn selected_html(&self) -> String {
         let shown = self.selection_state().borrow().shown.clone();
+        let provided = self.provided_rows(&shown);
+        let state = self.selection_state().borrow();
         let scene = self.scene.borrow();
-        let mut out = String::from("<meta charset=\"utf-8\"><p>");
+        let semantics = self.semantics.borrow();
+        // The block a text node is in: a heading's level, or a paragraph.
+        let heading = |id: NodeId| -> Option<usize> {
+            std::iter::once(id)
+                .chain(scene.ancestors(id))
+                .take_while(|at| state.root != Some(*at))
+                .find_map(|at| {
+                    semantics
+                        .get(at)
+                        .filter(|n| n.role == Role::Heading)
+                        .map(|n| n.level.unwrap_or(1).clamp(1, 6))
+                })
+        };
+        let tag = |level: Option<usize>| match level {
+            Some(level) => format!("h{level}"),
+            None => "p".to_owned(),
+        };
+        let mut out = String::from("<meta charset=\"utf-8\">");
+        // The block open now, if any.
+        let mut block: Option<Option<usize>> = None;
+        let enter = |out: &mut String, block: &mut Option<Option<usize>>, level| {
+            if let Some(open) = block.take() {
+                out.push_str(&format!("</{}>", tag(open)));
+            }
+            out.push_str(&format!("<{}>", tag(level)));
+            *block = Some(level);
+        };
         let mut previous: Option<(NodeId, f32)> = None;
-        for part in shown {
+        let mut provided = provided.into_iter().peekable();
+        let row = |out: &mut String, block: &mut Option<Option<usize>>, text: &str| {
+            match block {
+                Some(_) => out.push_str("<br>"),
+                None => enter(out, block, None),
+            }
+            html_run(out, text, &FontStyle::default(), None, false, false);
+        };
+        for (at, part) in shown.into_iter().enumerate() {
+            while let Some((_, text)) = provided.next_if(|(before, _)| *before == at) {
+                row(&mut out, &mut block, &text);
+                previous = None;
+            }
             if !scene.layout_visible(part.node) {
                 continue;
             }
             let size = font_size(&scene, part.node);
-            if let Some((before, before_size)) = previous {
-                out.push_str(
+            let level = heading(part.node);
+            match (block, previous) {
+                (Some(open), Some((before, before_size))) if open == level => {
                     match separator(&scene, before, part.node, before_size.min(size)) {
-                        "\t" => " ",
-                        "\n\n" => "</p><p>",
-                        _ => "<br>",
-                    },
-                );
+                        "\t" => out.push(' '),
+                        "\n\n" => enter(&mut out, &mut block, level),
+                        _ => out.push_str("<br>"),
+                    }
+                }
+                (Some(open), None) if open == level => out.push_str("<br>"),
+                _ => enter(&mut out, &mut block, level),
             }
+            let links = state.links.get(&part.node);
             match scene.kind(part.node) {
                 NodeKind::Text { text, .. } if !scene.font(part.node).masked => {
                     let range = part.range.start.min(text.len())..part.range.end.min(text.len());
-                    html_run(&mut out, &text[range], scene.font(part.node), false, false);
+                    html_run(
+                        &mut out,
+                        &text[range],
+                        scene.font(part.node),
+                        None,
+                        false,
+                        false,
+                    );
                 }
                 NodeKind::RichText { text } => {
                     for run in text.runs() {
                         let start = run.range.start.max(part.range.start);
                         let end = run.range.end.min(part.range.end);
                         if start < end {
+                            let href = links.and_then(|links| {
+                                links
+                                    .iter()
+                                    .find(|(range, _)| range.start <= start && end <= range.end)
+                                    .map(|(_, href)| &**href)
+                            });
                             html_run(
                                 &mut out,
                                 &text.text()[start..end],
                                 &run.font,
+                                href,
                                 run.underline.is_some(),
                                 run.strikethrough.is_some(),
                             );
@@ -1473,7 +1592,13 @@ impl Ui {
             }
             previous = Some((part.node, size));
         }
-        out.push_str("</p>");
+        for (_, text) in provided {
+            row(&mut out, &mut block, &text);
+        }
+        match block {
+            Some(open) => out.push_str(&format!("</{}>", tag(open))),
+            None => out.push_str("<p></p>"),
+        }
         out
     }
     /// The window was activated or sent to the back: selections show the
@@ -1947,7 +2072,19 @@ fn scene_offset(scene: &Scene, id: NodeId, semantic: usize) -> usize {
 }
 
 /// One styled run of `selected_html`: escaped, with its line breaks.
-fn html_run(out: &mut String, text: &str, font: &FontStyle, underline: bool, strike: bool) {
+fn html_run(
+    out: &mut String,
+    text: &str,
+    font: &FontStyle,
+    href: Option<&str>,
+    underline: bool,
+    strike: bool,
+) {
+    if let Some(href) = href {
+        out.push_str("<a href=\"");
+        escape_html(out, href);
+        out.push_str("\">");
+    }
     let tags = [
         (font.weight >= 600, "b"),
         (font.italic, "i"),
@@ -1955,12 +2092,26 @@ fn html_run(out: &mut String, text: &str, font: &FontStyle, underline: bool, str
             font.family == crate::text_layout::FontFamily::Monospace,
             "code",
         ),
-        (underline || font.underline.is_some(), "u"),
+        // A link's underline is the link's.
+        (
+            href.is_none() && (underline || font.underline.is_some()),
+            "u",
+        ),
         (strike, "s"),
     ];
     for (_, tag) in tags.iter().filter(|(on, _)| *on) {
         out.push_str(&format!("<{tag}>"));
     }
+    escape_html(out, text);
+    for (_, tag) in tags.iter().rev().filter(|(on, _)| *on) {
+        out.push_str(&format!("</{tag}>"));
+    }
+    if href.is_some() {
+        out.push_str("</a>");
+    }
+}
+/// `text` escaped for HTML, its line breaks `<br>`.
+fn escape_html(out: &mut String, text: &str) {
     for c in text.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -1971,9 +2122,6 @@ fn html_run(out: &mut String, text: &str, font: &FontStyle, underline: bool, str
             '\u{2060}' | '\u{fffc}' => {}
             c => out.push(c),
         }
-    }
-    for (_, tag) in tags.iter().rev().filter(|(on, _)| *on) {
-        out.push_str(&format!("</{tag}>"));
     }
 }
 

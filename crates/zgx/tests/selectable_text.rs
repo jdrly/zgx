@@ -687,6 +687,59 @@ fn copied_html_keeps_paragraphs_line_breaks_and_inline_styles() {
     );
 }
 
+#[test]
+fn copied_html_keeps_headings_links_and_rows_a_list_has_not_mounted() {
+    let mut ui = Ui::new(400., 300.);
+    let offset = ui.signal(0.);
+    ui.mount(
+        column()
+            .w(300.)
+            .gap(16.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(text("Notes").heading(1))
+            .child(
+                rich_text()
+                    .child(text_span("See "))
+                    .child(text_span("the \"docs\"").href("https://zgx.dev/a?b=1&c=2"))
+                    .child(text_span(".")),
+            )
+            .child(
+                virtual_list(
+                    offset.clone(),
+                    20.,
+                    1,
+                    || 100,
+                    |index| index,
+                    |_, key, _| text(format!("Row {key}")),
+                )
+                .row_text(|index| (index < 100).then(|| format!("Row {index}")))
+                .w(300.)
+                .h(60.),
+            ),
+    );
+    ui.prepare_frame();
+    assert!(ui.select_all_text(texts(&ui)[0]));
+    let html = ui.selected_html();
+    assert!(
+        html.starts_with(
+            "<meta charset=\"utf-8\"><h1>Notes</h1><p>See \
+             <a href=\"https://zgx.dev/a?b=1&amp;c=2\">the &quot;docs&quot;</a>.</p><p>Row 0<br>Row 1"
+        ),
+        "{html}"
+    );
+    // Every row, the unmounted ones from the row text, as plain text has them.
+    assert!(html.ends_with("<br>Row 98<br>Row 99</p>"), "{html}");
+    assert_eq!(html.matches("Row ").count(), 100);
+    assert_eq!(ui.selected_text().matches("Row ").count(), 100);
+    // Rows mounted later show selected too, as all of it is.
+    offset.set(1000.);
+    ui.prepare_frame();
+    assert_eq!(highlighted(&ui).len(), texts(&ui).len());
+    assert_eq!(ui.selected_text().matches("Row ").count(), 100);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_control_click_on_macos_opens_the_menu_and_keeps_the_selection() {
