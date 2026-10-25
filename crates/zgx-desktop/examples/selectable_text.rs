@@ -10,6 +10,10 @@ use zgx_desktop::{Application, WindowOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smoke = std::env::args().any(|arg| arg == "--smoke-test");
+    // macOS: copy all of it as Copy does, read this process's own
+    // pasteboard back (its types and the HTML and plain text), print them
+    // and quit. Reading what it wrote itself asks no one's permission.
+    let pasteboard = std::env::args().any(|arg| arg == "--pasteboard-probe");
     Application::new()
         .window(WindowOptions {
             title: "zgx selectable text".into(),
@@ -27,9 +31,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .child(text_span_label("•"))
                     .child(zgx::compose::text(text).flex_grow(1.).text_wrap(true))
             };
+            // What the window provides (its clipboard), for the probe.
+            let platform: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<zgx::platform::PlatformService>>>> =
+                Default::default();
+            let found = platform.clone();
             let view = cx.render(
                 column()
                     .id("document")
+                    .child(component(move |cx| {
+                        *found.borrow_mut() = cx.try_service::<zgx::platform::PlatformService>();
+                        div()
+                    }))
                     .w_full()
                     .h_full()
                     .p(28.)
@@ -135,6 +147,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
+            if pasteboard {
+                let ui = cx.ui.downgrade();
+                let window = cx.window.clone();
+                let heading = view.find("heading").unwrap();
+                let platform = platform.clone();
+                cx.tasks.spawn(async move {
+                    zgx::timer::sleep(std::time::Duration::from_millis(500)).await;
+                    let Some(ui) = ui.upgrade() else { return };
+                    assert!(ui.select_all_text(heading));
+                    let (text, html) = (ui.selected_text(), ui.selected_html());
+                    let platform = platform.borrow().clone().expect("a platform service");
+                    let written = platform.0.set_clipboard_rich_text(text.clone(), html.clone());
+                    println!("PASTEBOARD written={written}");
+                    report_pasteboard(&text, &html);
+                    window.close();
+                });
+            }
             if smoke {
                 let ui = cx.ui.downgrade();
                 let window = cx.window.clone();
@@ -169,4 +198,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn text_span_label(text: &str) -> View {
     zgx::compose::text(text).text_color(tok::TEXT_TERTIARY)
+}
+
+/// This process's pasteboard: its types, and whether the HTML and the plain
+/// text are what was copied.
+#[cfg(target_os = "macos")]
+fn report_pasteboard(text: &str, html: &str) {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    let board = NSPasteboard::generalPasteboard();
+    let types: Vec<String> = board
+        .types()
+        .map(|types| types.iter().map(|t| t.to_string()).collect())
+        .unwrap_or_default();
+    let read = |kind: &str| {
+        board
+            .stringForType(&NSString::from_str(kind))
+            .map(|s| s.to_string())
+    };
+    let (got_html, got_text) = (read("public.html"), read("public.utf8-plain-text"));
+    println!("PASTEBOARD types={types:?}");
+    println!(
+        "PASTEBOARD html_matches={} html_bytes={} html_start={:?}",
+        got_html.as_deref().is_some_and(|got| got.contains(html)),
+        got_html.as_ref().map_or(0, String::len),
+        got_html
+            .as_deref()
+            .map(|h| h.chars().take(120).collect::<String>()),
+    );
+    println!(
+        "PASTEBOARD text_matches={} text_lines={}",
+        got_text.as_deref() == Some(text),
+        got_text.as_deref().map_or(0, |t| t.lines().count()),
+    );
+}
+#[cfg(not(target_os = "macos"))]
+fn report_pasteboard(_: &str, _: &str) {
+    println!("PASTEBOARD unsupported: macOS only");
 }

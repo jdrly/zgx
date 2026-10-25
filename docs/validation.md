@@ -871,3 +871,16 @@ selectable and pressable. Passed on macOS 26 (M5), 2026-10-24; it fails
 without the AccessKit patch (AXRows 0). The macOS bundle
 (`macos_native_validation.py`) runs it. Speech itself (VoiceOver reading
 aloud, its rotor) is not checked: the tree it reads is.
+
+## macOS pasteboard (copying selected text)
+
+`scripts/macos_pasteboard_probe.py` runs the selectable_text example with
+`--pasteboard-probe`: it selects all of its document (headings, rich text,
+a virtual transcript of 10,000 lines), copies it through the same writer as
+⌘C and the context menu's Copy, and reads its own pasteboard back. It
+checks that the copy offers `public.html` and `public.utf8-plain-text`,
+that each holds what was copied, and that the transcript's rows the list
+never mounted are in it (their text derived from how the rows are built).
+The app reads only what it wrote, so macOS prompts no one; it is launched
+as a direct child from a temporary directory and sends no input. Passed on
+macOS 26 (M5), 2026-10-25: 10,012 lines, 670 KB of HTML.
