@@ -137,6 +137,14 @@ instructions. A window that loses its kept frame to a change no patch
 makes keeps one again after two frames in a row that would have patched
 (#446).
 
+A plain box among the repainted leaves (a flat colour, or a box without
+decoration, shadows or a pass over its content, outside any clip region)
+is made straight into its place by the quad and clip code the frame loop
+uses, rather than through the frame loop: about 900 instructions a box,
+found and made, rather than 1,250. Heavy `stream` renders 6% fewer instructions again
+(3,150 K to 2,955 K a frame), and a single bound colour write about 1.5%
+fewer.
+
 Anything else draws whole: a container repainting, a composite change, a
 node mounted or removed, a layer, an effect, a shader fill or polyline.
 Patching those too was measured first and is waiting. The plan was to

@@ -848,6 +848,112 @@ const KEPT_SHARE: f32 = 0.1;
 /// lost its kept frame keeps one again (`render_once`): one alone may be a
 /// change's last, and keeping costs a whole frame.
 const KEEP_AGAIN: u8 = 2;
+/// Whether `item` is a box `render_kept` makes alone (`patch_box`): a
+/// flat colour, or a box without decoration, shadows or a pass over its
+/// content, drawn flat (no layer, filter, clip region or fade mask).
+#[inline(always)]
+fn plain_box(item: &zgx::scene::PaintItem<'_>) -> bool {
+    let plain = match item.kind {
+        NodeKind::Rect(_) => true,
+        NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => {
+            style.decoration.is_none() && style.shadows().is_empty() && !style.paints_over()
+        }
+        _ => false,
+    };
+    plain
+        && !item.isolated
+        && !item.border_pass
+        && item.effects.blur_radius <= 0.
+        && item.matrix().is_none()
+        && item.mask().is_none()
+        && item.rounded().iter().all(Option::is_none)
+        && item.color().is_none()
+}
+/// A flat colour's quad over `fade` (a box's place), as it shows.
+#[inline(always)]
+fn rect_quad(color: Color, fade: [f32; 4], effects: zgx::scene::Effects) -> Quad {
+    Quad {
+        rect: fade,
+        uv: [0.; 4],
+        color: rgba(color, effects.opacity),
+        fade,
+        options: [effects.edge_fade, 0., 0., 0.],
+        shape: [0.; 4],
+        border: [0.; 4],
+        mask: NO_MASK,
+    }
+}
+/// A box's quad with no decoration: its fill, corner radius and border
+/// (none when drawn by its border pass, `later`), before `push_panel`.
+#[inline(always)]
+fn plain_panel_quad(
+    style: &zgx::scene::QuadStyle,
+    fade: [f32; 4],
+    opacity: f32,
+    edge_fade: f32,
+    later: bool,
+) -> Quad {
+    let border = match later {
+        true => 0.,
+        false => style.border_width.max(0.),
+    };
+    Quad {
+        rect: fade,
+        uv: [0.; 4],
+        color: rgba(style.fill, opacity),
+        fade,
+        options: [edge_fade, 0., 0., 0.],
+        shape: [style.radius.max(0.), border, 0., 1.],
+        border: rgba(style.border_color, opacity),
+        mask: NO_MASK,
+    }
+}
+/// When `clip` only culls whole quads of those from `start`, apply it on
+/// the CPU and draw under the viewport, so a change of clip never splits a
+/// batch: neighbouring text, icons and rows become one draw. Quads it
+/// would cut and transformed quads keep the scissor. The draw's clip, and
+/// the kept quads' bounds when culled here.
+#[inline(always)]
+fn cull_on_cpu(
+    quads: &mut Vec<Quad>,
+    start: usize,
+    clip: Rect,
+    viewport: Rect,
+    scale: f32,
+) -> (Rect, Option<Rect>) {
+    let limit = snap_out(clip, scale);
+    // One pass: each quad inside the clip, outside it, or cut.
+    let (mut cut, mut outside, mut kept) = (false, false, None::<Rect>);
+    for quad in &quads[start..] {
+        if quad.options[2] >= 0.5 {
+            cut = true;
+            break;
+        }
+        let rect = quad_rect(quad);
+        if rect_inside(rect, limit) {
+            kept = Some(kept.map_or(rect, |bounds| bounds.union(rect)));
+        } else if rect_outside(rect, limit) {
+            outside = true;
+        } else {
+            cut = true;
+            break;
+        }
+    }
+    if cut {
+        return (clip, None);
+    }
+    if outside {
+        let mut kept = start;
+        for index in start..quads.len() {
+            if inside(&quads[index], limit) {
+                quads[kept] = quads[index];
+                kept += 1;
+            }
+        }
+        quads.truncate(kept);
+    }
+    (viewport, Some(kept.unwrap_or_default()))
+}
 /// Close the open item range (`render_flat`'s `item_ranges`): its quads'
 /// count, its room (`pad`: a text's spare quads, added empty) and where
 /// its draws end.
@@ -1968,6 +2074,10 @@ pub struct GpuRenderer {
     item_ranges: Vec<(u32, u32, u32, u32, u32)>,
     /// A kept frame's clip regions, while it is patched (`PATCH`).
     patch_clips: Vec<Region>,
+    /// A plain box's quads and draws as `patch_box` makes them, kept for
+    /// their room.
+    box_quads: Vec<Quad>,
+    box_draws: Vec<Draw>,
     /// Whether the frame's quads, draws, polyline points and clips
     /// (`patch_clips`) are made already, for the next frame to draw as
     /// they are.
@@ -2423,6 +2533,8 @@ impl GpuRenderer {
             patchable: Patchable::default(),
             item_ranges: Vec::new(),
             patch_clips: Vec::new(),
+            box_quads: Vec::new(),
+            box_draws: Vec::new(),
             draw_made: false,
             frame_draws: Vec::new(),
             frame_peaks: (0, 0),
@@ -3355,6 +3467,8 @@ impl GpuRenderer {
         // (a box painting over what it holds has a border pass after it).
         let mut items = Vec::new();
         let mut places = Vec::new();
+        // Plain boxes, made here into their places (`patch_box`).
+        let mut boxes: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
         for &(id, flags) in repaints {
             if flags & zgx::scene::repaint::COMPOSITE != 0
                 || !scene.contains(id)
@@ -3381,14 +3495,26 @@ impl GpuRenderer {
                 let Some(item) = scene.item_in(id, &kept.items[place].inherited) else {
                     return Ok(None);
                 };
-                items.push(item);
-                places.push(place);
+                if plain_box(&item) {
+                    boxes.push((item, place));
+                } else {
+                    items.push(item);
+                    places.push(place);
+                }
             }
         }
-        self.patch_clips = std::mem::take(&mut kept.clips);
-        let mut stats =
-            self.render_flat::<PATCH>(scene, items, &[viewport], Some(vec![viewport]), false)?;
-        kept.clips = std::mem::take(&mut self.patch_clips);
+        // (Plain boxes alone, as a bound colour's: nothing for it to make.)
+        let mut stats = GpuStats::default();
+        if !items.is_empty() {
+            self.patch_clips = std::mem::take(&mut kept.clips);
+            stats =
+                self.render_flat::<PATCH>(scene, items, &[viewport], Some(vec![viewport]), false)?;
+            kept.clips = std::mem::take(&mut self.patch_clips);
+        } else {
+            // (As a patch of no items leaves them.)
+            self.item_ranges.clear();
+            self.frame_points.clear();
+        }
         let ranges = std::mem::take(&mut self.item_ranges);
         // Into their places, unless one grew past its room, drew more draws
         // or polylines (whose points a kept frame doesn't hold).
@@ -3426,6 +3552,21 @@ impl GpuRenderer {
             stats.patched_items = places.len();
         }
         self.item_ranges = ranges;
+        // Then the plain boxes, each made as `render_flat` makes it.
+        let fits = fits && {
+            let (mut quads, mut draws) = (
+                std::mem::take(&mut self.box_quads),
+                std::mem::take(&mut self.box_draws),
+            );
+            let fit = boxes.iter().all(|(item, place)| {
+                self.patch_box(&mut kept, *place, item, viewport, &mut quads, &mut draws)
+            });
+            (self.box_quads, self.box_draws) = (quads, draws);
+            fit
+        };
+        if fits {
+            stats.patched_items += boxes.len();
+        }
         if !fits {
             // Drawn as usual, reporting what was made.
             stats.patched_items = 0;
@@ -3458,6 +3599,81 @@ impl GpuRenderer {
         drawn.add_made(&stats);
         self.kept = Some(kept);
         Ok(Some(drawn))
+    }
+    /// Make plain box `item`'s quads and draws (`plain_box`), as
+    /// `render_flat::<PATCH>` makes them, into its place in `kept`: false
+    /// if they don't fit there (more quads than its room, other draws).
+    fn patch_box(
+        &self,
+        kept: &mut Kept,
+        place: usize,
+        item: &zgx::scene::PaintItem<'_>,
+        viewport: Rect,
+        quads: &mut Vec<Quad>,
+        draws: &mut Vec<Draw>,
+    ) -> bool {
+        quads.clear();
+        draws.clear();
+        let clip = item.clip.unwrap_or(viewport).intersection(viewport);
+        if let Some(clip) = clip.filter(|_| item.effects.opacity > 0.) {
+            let painted = match item.kind {
+                NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => {
+                    style.paint_bounds(item.bounds)
+                }
+                _ => item.bounds,
+            };
+            if viewport.intersects(clip) && viewport.intersects(painted) {
+                let bounds = item.bounds;
+                let fade = [bounds.x, bounds.y, bounds.width, bounds.height];
+                let (opacity, edge_fade) = (item.effects.opacity, item.effects.edge_fade);
+                match item.kind {
+                    NodeKind::Rect(color) => quads.push(rect_quad(*color, fade, item.effects)),
+                    NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => push_panel(
+                        quads,
+                        plain_panel_quad(style, fade, opacity, edge_fade, false),
+                        self.scale,
+                        self.split_shading,
+                    ),
+                    _ => unreachable!("a plain box"),
+                }
+                let (draw_clip, culled) = cull_on_cpu(quads, 0, clip, viewport, self.scale);
+                if !quads.is_empty() {
+                    let draw = Draw {
+                        shading: Shading::Full,
+                        layer: None,
+                        blur: None,
+                        start: 0,
+                        end: quads.len() as u32,
+                        clip: draw_clip,
+                        bounds: culled.unwrap_or_else(|| quad_bounds(quads)),
+                        image: None,
+                    };
+                    push_draw(draws, quads, draw, self.split_shading, false, self.scale);
+                }
+            }
+        }
+        let kept_item = &mut kept.items[place];
+        let len = quads.len() as u32;
+        if len > kept_item.room || draws.len() as u32 != kept_item.draws.end - kept_item.draws.start
+        {
+            return false;
+        }
+        let at = kept_item.start as usize;
+        kept.quads[at..at + quads.len()].copy_from_slice(quads);
+        // What a longer value left past this one's, emptied.
+        if len < kept_item.len {
+            kept.quads[at + quads.len()..at + kept_item.len as usize]
+                .fill(bytemuck::Zeroable::zeroed());
+        }
+        kept_item.len = len;
+        for (to, draw) in (kept_item.draws.start..).zip(draws.drain(..)) {
+            kept.draws[to as usize] = Draw {
+                start: draw.start + kept_item.start,
+                end: draw.end + kept_item.start,
+                ..draw
+            };
+        }
+        true
     }
     /// `merged`: `damage` merged into regions already (`merge_damage`).
     fn render_flat<const MODE: u8>(
@@ -3791,16 +4007,7 @@ impl GpuRenderer {
                         });
                     }
                 }
-                NodeKind::Rect(color) => quads.push(Quad {
-                    rect: fade,
-                    uv: [0.; 4],
-                    color: rgba(*color, item.effects.opacity),
-                    fade,
-                    options: [item.effects.edge_fade, 0., 0., 0.],
-                    shape: [0.; 4],
-                    border: [0.; 4],
-                    mask: NO_MASK,
-                }),
+                NodeKind::Rect(color) => quads.push(rect_quad(*color, fade, item.effects)),
                 NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => {
                     if style.shadows().len() > 32 {
                         return Err(GpuError("panel exceeds 32 shadows".into()));
@@ -4024,22 +4231,9 @@ impl GpuRenderer {
                                 mask: NO_MASK,
                             });
                         } else {
-                            let border = match later {
-                                true => 0.,
-                                false => style.border_width.max(0.),
-                            };
                             push_panel(
                                 &mut quads,
-                                Quad {
-                                    rect: fade,
-                                    uv: [0.; 4],
-                                    color: rgba(style.fill, opacity),
-                                    fade,
-                                    options: [edge_fade, 0., 0., 0.],
-                                    shape: [style.radius.max(0.), border, 0., 1.],
-                                    border: rgba(style.border_color, opacity),
-                                    mask: NO_MASK,
-                                },
+                                plain_panel_quad(style, fade, opacity, edge_fade, later),
                                 self.scale,
                                 self.split_shading,
                             );
@@ -4651,43 +4845,11 @@ impl GpuRenderer {
             // draw under the viewport, so a change of clip never splits a
             // batch: neighbouring text, icons and rows become one draw. Quads
             // it would cut, transformed quads and filters keep the scissor.
-            let mut draw_clip = clip;
-            let limit = snap_out(clip, self.scale);
-            // The kept quads' bounds, when the clip culls on the CPU.
-            let mut culled_bounds = None;
-            if item.effects.blur_radius <= 0. {
-                // One pass: each quad inside the clip, outside it, or cut.
-                let (mut cut, mut outside, mut kept) = (false, false, None::<Rect>);
-                for quad in &quads[start as usize..] {
-                    if quad.options[2] >= 0.5 {
-                        cut = true;
-                        break;
-                    }
-                    let rect = quad_rect(quad);
-                    if rect_inside(rect, limit) {
-                        kept = Some(kept.map_or(rect, |bounds| bounds.union(rect)));
-                    } else if rect_outside(rect, limit) {
-                        outside = true;
-                    } else {
-                        cut = true;
-                        break;
-                    }
-                }
-                if !cut {
-                    if outside {
-                        let mut kept = start as usize;
-                        for index in start as usize..quads.len() {
-                            if inside(&quads[index], limit) {
-                                quads[kept] = quads[index];
-                                kept += 1;
-                            }
-                        }
-                        quads.truncate(kept);
-                    }
-                    draw_clip = viewport;
-                    culled_bounds = Some(kept.unwrap_or_default());
-                }
-            }
+            // (The kept quads' bounds, when the clip culls on the CPU.)
+            let (draw_clip, culled_bounds) = match item.effects.blur_radius <= 0. {
+                true => cull_on_cpu(&mut quads, start as usize, clip, viewport, self.scale),
+                false => (clip, None),
+            };
             if quads.len() as u32 > start || item.effects.blur_radius > 0. {
                 let draw = Draw {
                     shading: fill_shading.unwrap_or(Shading::Full),

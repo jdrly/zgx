@@ -215,3 +215,116 @@ fn a_window_keeps_a_frame_again_after_a_change_no_patch_makes() {
     }
     assert!(patched >= 5, "{patched} frames patched");
 }
+
+/// Boxes a frame patches alone (`patch_box`): a flat colour, translucent,
+/// edge-faded, bordered and rounded, and one sliding across a clip's edge
+/// (inside it, cut by it, then outside), each frame as drawn afresh.
+fn boxes(live: Signal<u32>) -> View {
+    let shade = live.clone();
+    let tint = live.clone();
+    let slide = live.clone();
+    let border = live.clone();
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .child(
+            div()
+                .absolute()
+                .ml(10.)
+                .mt(10.)
+                .size(60., 40.)
+                .reactive_style(move || {
+                    Styles::new().bg(Color((shade.get() * 37 % 256) as u8, 90, 140, 255))
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(80.)
+                .mt(10.)
+                .size(60., 40.)
+                .rounded(9.)
+                .opacity(0.6)
+                .reactive_style(move || {
+                    Styles::new().bg(Color(200, (tint.get() * 53 % 256) as u8, 60, 255))
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(150.)
+                .mt(10.)
+                .size(70., 44.)
+                .edge_fade(6.)
+                .bg(Color(90, 200, 120, 255))
+                .reactive_style(move || Styles::new().w(40. + (border.get() % 5) as f32 * 7.5)),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(230.)
+                .mt(10.)
+                .size(90., 60.)
+                .rounded(4.)
+                .border(2.)
+                .border_color(Color(250, 250, 250, 255))
+                .bg(Color(40, 60, 90, 255))
+                .reactive_style({
+                    let live = live.clone();
+                    move || Styles::new().h(30. + (live.get() % 4) as f32 * 9.5)
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(20.)
+                .mt(100.)
+                .size(200., 60.)
+                .overflow_hidden()
+                .bg(Color(30, 30, 30, 255))
+                .child(
+                    div()
+                        .absolute()
+                        .mt(10.)
+                        .size(50., 30.)
+                        .bg(Color(255, 196, 61, 255))
+                        .reactive_style(move || {
+                            Styles::new().ml(-70. + (slide.get() % 12) as f32 * 30.5)
+                        }),
+                ),
+        )
+}
+
+#[test]
+fn a_box_patched_alone_is_the_box_drawn_afresh() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(boxes(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(1);
+    draw(&mut ui, &mut gpu);
+    let mut patched = 0;
+    for value in 2..26 {
+        live.set(value);
+        let stats = draw(&mut ui, &mut gpu);
+        patched += usize::from(stats.patched_items > 0);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the boxes drawn afresh (patched {})",
+            stats.patched_items
+        );
+    }
+    assert!(patched >= 16, "{patched} frames patched");
+}
