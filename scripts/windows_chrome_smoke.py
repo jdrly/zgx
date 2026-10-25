@@ -6,9 +6,10 @@ commands) and the resize bands of the frameless window, driven by SendInput.
     cargo build -p zgx-desktop --example kitchen_sink
     python scripts/windows_chrome_smoke.py target/debug/examples/kitchen_sink.exe
 
-Windows 11 also shows snap layouts on the maximize button (the window reports
-it as `HTMAXBUTTON`); its flyout is not shown for synthesized hovers, so it is
-not checked here.
+Windows 11 shows snap layouts on the maximize button, which it finds by the
+window's hit test: each caption button must answer `WM_NCHITTEST` as the
+system's own (`HTCLOSE`, `HTMAXBUTTON`, `HTMINBUTTON`). The flyout itself is
+not shown for synthesized hovers, so the hit test is what is checked.
 """
 import argparse
 import ctypes
@@ -24,6 +25,15 @@ user32.IsZoomed.argtypes = [wintypes.HWND]
 user32.IsIconic.argtypes = [wintypes.HWND]
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 CLOSE, MAXIMIZE, MINIMIZE = 0, 1, 2
+user32.SendMessageW.restype = ctypes.c_ssize_t
+user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+# What each button answers WM_NCHITTEST with, as the system's buttons do.
+HIT = {CLOSE: 20, MAXIMIZE: 9, MINIMIZE: 8}  # HTCLOSE, HTMAXBUTTON, HTMINBUTTON
+
+
+def hit_test(window, point):
+    x, y = win.to_screen(window, *point)
+    return user32.SendMessageW(window, 0x0084, 0, ((y & 0xFFFF) << 16) | (x & 0xFFFF))
 
 
 def button(window, index):
@@ -56,6 +66,8 @@ def main():
         window = win.wait_window(proc)
         time.sleep(1)
         win.activate(window)
+        hits = {index: hit_test(window, button(window, index)) for index in HIT}
+        assert hits == HIT, f"the caption buttons hit-test as {hits}, not {HIT} (snap layouts need HTMAXBUTTON)"
         win.move(window, 200, 300)
         time.sleep(0.3)
         rest = pixel_at(window, button(window, CLOSE))
@@ -89,7 +101,8 @@ def main():
         time.sleep(0.3)
         win.click(window, *button(window, CLOSE))
         proc.wait(timeout=5)
-        print(f"PASS: caption buttons (close hover {red}), maximize {size} -> {maximized} -> restore, "
+        print(f"PASS: caption buttons hit-test as the system's (HTMAXBUTTON for snap layouts), "
+              f"close hover {red}, maximize {size} -> {maximized} -> restore, "
               f"edge resize -> {resized}, minimize, close")
     finally:
         if proc.poll() is None:
