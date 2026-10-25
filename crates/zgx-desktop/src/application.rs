@@ -1183,6 +1183,8 @@ struct Host {
     focus_memory: crate::focus_memory::FocusMemory,
     last_accessibility: Option<(u64, Option<NodeId>)>,
     accessibility_geometry_dirty: bool,
+    /// Geometry alone reaches assistive technology at most every 100 ms.
+    accessibility_pacer: crate::accessibility::GeometryPacer,
     /// The display text selection last published as the primary selection.
     #[cfg(target_os = "linux")]
     primary_revision: u64,
@@ -1426,6 +1428,7 @@ impl Host {
             focus_memory: crate::focus_memory::FocusMemory::default(),
             last_accessibility: None,
             accessibility_geometry_dirty: true,
+            accessibility_pacer: Default::default(),
             #[cfg(target_os = "linux")]
             primary_revision: 0,
             native_cursor: None,
@@ -1540,7 +1543,21 @@ impl Host {
             self.context.ui.semantics.borrow().revision(),
             self.context.ui.input.focused(),
         );
-        if !self.accessibility_geometry_dirty && self.last_accessibility == Some(state) {
+        let changed = self.last_accessibility != Some(state);
+        let geometry = self.accessibility_geometry_dirty;
+        // Nothing reads the tree (AccessKit then builds none): nothing to
+        // pace, no wake for it.
+        if !self.context.ui.assistive_technology() {
+            if changed || geometry {
+                self.last_accessibility = Some(state);
+                self.accessibility_geometry_dirty = false;
+            }
+            return;
+        }
+        if !self
+            .accessibility_pacer
+            .update_now(std::time::Instant::now(), changed, geometry)
+        {
             return;
         }
         self.last_accessibility = Some(state);
@@ -3554,6 +3571,16 @@ impl Host {
         }
         self.native.sync_focus(&self.context.ui);
         self.poll_frame_deadline(std::time::Instant::now());
+        // A paced accessibility update falling due between frames goes out
+        // now (frames send theirs as they draw): its deadline past, the
+        // loop would otherwise wake for it at once, again and again.
+        if self
+            .accessibility_pacer
+            .deadline()
+            .is_some_and(|at| at <= std::time::Instant::now())
+        {
+            self.sync_accessibility();
+        }
         if self.scroll.pending() {
             // Each refresh applies the motion due by then; with no refreshes
             // coming (hidden, minimized), everything applies at once.
@@ -5005,6 +5032,7 @@ impl WindowManager {
                     host.touch.hold_deadline(),
                     host.trim_at,
                     host.frame_save_at,
+                    host.accessibility_pacer.deadline(),
                     match host.startup_trim {
                         StartupTrim::At(at) => Some(at),
                         _ => None,

@@ -7,6 +7,48 @@ use zgx::{
     semantics::{Live, Role, ScrollAxis, SemanticRevision, Semantics},
 };
 
+/// How often assistive technology hears of geometry alone changing (things
+/// moving, scrolling, fading) while nothing it reads by name, value,
+/// selection or focus did: an animation otherwise rebuilt the tree every
+/// frame. AccessKit answers bounds and hit tests from the tree it was last
+/// given, so those are at most this stale while content moves, and exact
+/// once it stops.
+pub(crate) const GEOMETRY_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// When a window's accessibility tree is updated: at once for a change a
+/// reader hears (`changed`: names, values, selection, focus, the first
+/// tree), and for geometry alone at most every `GEOMETRY_EVERY`, a change
+/// held meanwhile going out at its `deadline`.
+#[derive(Default)]
+pub(crate) struct GeometryPacer {
+    last: Option<std::time::Instant>,
+    held: Option<std::time::Instant>,
+}
+impl GeometryPacer {
+    /// Whether to update the tree at `now`.
+    pub(crate) fn update_now(
+        &mut self,
+        now: std::time::Instant,
+        changed: bool,
+        geometry: bool,
+    ) -> bool {
+        let due = self.last.is_none_or(|last| now >= last + GEOMETRY_EVERY);
+        if changed || ((geometry || self.held.is_some()) && due) {
+            self.last = Some(now);
+            self.held = None;
+            return true;
+        }
+        if geometry && let Some(last) = self.last {
+            self.held.get_or_insert(last + GEOMETRY_EVERY);
+        }
+        false
+    }
+    /// When a held geometry change goes out, if one is held.
+    pub(crate) fn deadline(&self) -> Option<std::time::Instant> {
+        self.held
+    }
+}
+
 /// Projects a scene's semantics into AccessKit tree updates, keeping each
 /// node's accessible ID for as long as the node lives.
 #[derive(Default)]
@@ -2098,5 +2140,46 @@ mod atspi_tests {
         assert!(state("Alpha").contains(State::Expandable | State::Expanded));
         assert!(state("Beta").contains(State::Expandable | State::Collapsed));
         assert!(!state("Apple").contains(State::Expandable));
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::{GEOMETRY_EVERY, GeometryPacer};
+    use std::time::{Duration, Instant};
+
+    /// An animation's frames move things every 16 ms: geometry goes out at
+    /// most every `GEOMETRY_EVERY`, the last held change at its deadline
+    /// once the frames stop; a name or focus change goes out at once,
+    /// whenever it comes.
+    #[test]
+    fn geometry_alone_goes_out_at_most_every_100_ms_and_changes_at_once() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut pacer = GeometryPacer::default();
+        // The first tree.
+        assert!(pacer.update_now(at(0), true, true));
+        // Frames moving things: held until 100 ms on.
+        assert!(!pacer.update_now(at(16), false, true));
+        assert_eq!(pacer.deadline(), Some(at(0) + GEOMETRY_EVERY));
+        assert!(!pacer.update_now(at(32), false, true));
+        assert!(!pacer.update_now(at(96), false, true));
+        assert!(pacer.update_now(at(112), false, true));
+        assert_eq!(pacer.deadline(), None);
+        // A name changing mid-animation: at once.
+        assert!(pacer.update_now(at(128), true, true));
+        // The frames stop after one more move; nothing else comes but the
+        // wake at its deadline, which sends it.
+        assert!(!pacer.update_now(at(144), false, true));
+        assert_eq!(pacer.deadline(), Some(at(228)));
+        assert!(!pacer.update_now(at(200), false, false));
+        assert!(pacer.update_now(at(228), false, false));
+        // Then quiet: nothing to send, nothing held.
+        assert!(!pacer.update_now(at(400), false, false));
+        assert_eq!(pacer.deadline(), None);
+        // Geometry after a quiet spell goes out at once.
+        assert!(pacer.update_now(at(500), false, true));
+        // Focus moving goes out at once, even right after.
+        assert!(pacer.update_now(at(501), true, false));
     }
 }
