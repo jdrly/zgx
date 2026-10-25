@@ -123,7 +123,7 @@ fn off_thread(
     Ok(PromiseUd(promise))
 }
 
-/// Installs `ui.clipboard`, `ui.open_files`, `ui.save_file`, `ui.read_file`
+/// Installs `ui.clipboard` (text and images), `ui.open_files`, `ui.save_file`, `ui.read_file`
 /// and `ui.write_file`. `clipboard` and `files` are false for a plugin the
 /// host did not grant them.
 pub(crate) fn install(
@@ -158,6 +158,35 @@ pub(crate) fn install(
                 Ok(platform(&shared, "ui.clipboard.write")?
                     .0
                     .set_clipboard_text(text))
+            })?,
+        )?;
+    }
+    {
+        let shared = shared.clone();
+        board.set(
+            "read_image",
+            lua.create_function(move |_, ()| {
+                if !clipboard {
+                    return Err(denied("ui.clipboard.read_image", "Clipboard"));
+                }
+                Ok(platform(&shared, "ui.clipboard.read_image")?
+                    .0
+                    .clipboard_image()
+                    .map(|image| crate::node::BitmapUd(std::sync::Arc::new(image))))
+            })?,
+        )?;
+    }
+    {
+        let shared = shared.clone();
+        board.set(
+            "write_image",
+            lua.create_function(move |_, image: mlua::UserDataRef<crate::node::BitmapUd>| {
+                if !clipboard {
+                    return Err(denied("ui.clipboard.write_image", "Clipboard"));
+                }
+                Ok(platform(&shared, "ui.clipboard.write_image")?
+                    .0
+                    .set_clipboard_image(&image.0))
             })?,
         )?;
     }

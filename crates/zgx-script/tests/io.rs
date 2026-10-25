@@ -14,6 +14,7 @@ use zgx_script::ScriptHost;
 
 struct Fake {
     clipboard: RefCell<String>,
+    image: RefCell<Option<zgx::image::ImageData>>,
     /// What the open dialog picks, and where the save dialog saves.
     opens: PathBuf,
     saves: PathBuf,
@@ -24,6 +25,16 @@ impl Platform for Fake {
     }
     fn set_clipboard_text(&self, text: String) -> bool {
         *self.clipboard.borrow_mut() = text;
+        true
+    }
+    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
+        let image = self.image.borrow();
+        let image = image.as_ref()?;
+        zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok()
+    }
+    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
+        *self.image.borrow_mut() =
+            zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok();
         true
     }
     fn open_files(&self, _: FilePicker) -> Pending<Result<Vec<PathBuf>, String>> {
@@ -43,6 +54,12 @@ return ui.column {
     ui.button { id = "copy", w = 40, h = 20, "c", on_click = function()
         ui.clipboard.write("copied text")
         shown:set(ui.clipboard.read() or "")
+    end },
+    ui.button { id = "image", w = 40, h = 20, "i", on_click = function()
+        local before = ui.clipboard.read_image()
+        ui.clipboard.write_image(ui.bitmap(3, 2, function(x, y) return x / 2 end))
+        local image = ui.clipboard.read_image()
+        shown:set(`{before == nil} {image.w}x{image.h}`)
     end },
     ui.button { id = "open", w = 40, h = 20, "o", on_click = function()
         ui.task(function()
@@ -71,6 +88,7 @@ fn dir(name: &str) -> PathBuf {
 fn app(dir: &std::path::Path, code: &'static str, plugin: Option<&'static str>) -> Harness {
     let fake = Rc::new(Fake {
         clipboard: RefCell::new(String::new()),
+        image: RefCell::new(None),
         opens: dir.join("in.txt"),
         saves: dir.join("out.txt"),
     });
@@ -111,6 +129,14 @@ fn the_clipboard_takes_and_gives_text() {
 }
 
 #[test]
+fn the_clipboard_takes_and_gives_images() {
+    let dir = dir("clipboard-image");
+    let mut h = app(&dir, APP, None);
+    h.click("image");
+    wait_for(&mut h, "true 3x2");
+}
+
+#[test]
 fn a_picked_file_reads_and_a_saved_one_is_written() {
     let dir = dir("files");
     std::fs::write(dir.join("in.txt"), "hello from disk").unwrap();
@@ -142,6 +168,13 @@ fn a_plugin_needs_its_hosts_grant() {
         &dir,
         r#"return ui.text { "app", id = "label" }"#,
         Some(r#"ui.clipboard.read()"#),
+    );
+    let error = h.host.error().get().unwrap_or_default();
+    assert!(error.contains("Capability::Clipboard"), "{error}");
+    let h = app(
+        &dir,
+        r#"return ui.text { "app", id = "label" }"#,
+        Some(r#"ui.clipboard.read_image()"#),
     );
     let error = h.host.error().get().unwrap_or_default();
     assert!(error.contains("Capability::Clipboard"), "{error}");

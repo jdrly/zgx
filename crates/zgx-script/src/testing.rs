@@ -52,6 +52,7 @@ use zgx::{
 #[derive(Default)]
 pub struct FakeDesktop {
     clipboard: RefCell<String>,
+    image: RefCell<Option<zgx::image::ImageData>>,
     opens: RefCell<std::collections::VecDeque<Vec<std::path::PathBuf>>>,
     saves: RefCell<std::collections::VecDeque<std::path::PathBuf>>,
     asked: RefCell<Vec<zgx::platform::FilePicker>>,
@@ -74,6 +75,18 @@ impl FakeDesktop {
     pub fn clipboard(&self) -> String {
         self.clipboard.borrow().clone()
     }
+    /// The clipboard's image: its width, height and RGBA pixels.
+    pub fn clipboard_image(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let image = self.image.borrow();
+        let image = image.as_ref()?;
+        Some((image.width(), image.height(), image.pixels().to_vec()))
+    }
+    /// Put an image (`width` by `height` RGBA `pixels`) on the clipboard, as
+    /// another app copies one.
+    pub fn copy_image(&self, width: u32, height: u32, pixels: Vec<u8>) {
+        *self.image.borrow_mut() =
+            Some(zgx::image::ImageData::new(width, height, pixels).expect("a valid image"));
+    }
 }
 impl zgx::platform::Platform for FakeDesktop {
     fn clipboard_text(&self) -> Option<String> {
@@ -81,6 +94,16 @@ impl zgx::platform::Platform for FakeDesktop {
     }
     fn set_clipboard_text(&self, text: String) -> bool {
         *self.clipboard.borrow_mut() = text;
+        true
+    }
+    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
+        let image = self.image.borrow();
+        let image = image.as_ref()?;
+        zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok()
+    }
+    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
+        *self.image.borrow_mut() =
+            zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok();
         true
     }
     fn open_files(
