@@ -295,6 +295,8 @@ Each run also records whether a UI Automation client read zgx's window (zgx prin
 
 Keep the windows uncovered, the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI Fast, MyGo): see `vendor/wgpu-hal/ZGX_PATCH.md` and [windows.md](windows.md).
 
+The runner holds Windows' High performance power plan for its runs and restores the user's after (`--power-plan keep` leaves it). Under Balanced, Windows clocked a busy UI thread up and down from run to run, and since the cycles it counts are time, one binary's cycles a frame spread 30% (5% under High performance). Each run records the processors' clock against nominal (`processor_performance_percent`).
+
 ## Selecting and validating the zgx renderer
 
 `zgx-demo` is `comparisons/demo` (`cargo build --release -p zgx-demo`), apart from the published crates.
