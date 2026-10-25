@@ -4038,18 +4038,24 @@ impl GpuRenderer {
         // own rectangles into a stencil and draws through it, so the GPU
         // shades only what changed (`metal_frame::Stenciled`). Only where the
         // rectangles leave much of the regions untouched: the stamp is a draw.
+        // Not presenting through the window's own surfaces (`shown`): each
+        // is brought up to date from the one shown around what a frame
+        // repaints, and a stamped frame repaints less than its regions, so
+        // what lies between kept a surface's content of frames before
+        // (stale patches in windows).
         #[cfg(target_os = "macos")]
-        let stamp = if self.stencil && !self.fresh && !has_blur && reported.len() > 1 {
-            let area = |r: &Rect| r.width * r.height;
-            // Overlaps count twice, rounding not at all: about right.
-            let stamped: f32 = reported.iter().map(area).sum();
-            let grouped: f32 = regions.iter().map(|(region, _)| area(region)).sum();
-            (stamped < STAMP_SHARE * grouped
-                && (grouped - stamped) * self.scale * self.scale >= STAMP_PIXELS)
-                .then_some(reported)
-        } else {
-            None
-        };
+        let stamp =
+            if self.stencil && shown.is_none() && !self.fresh && !has_blur && reported.len() > 1 {
+                let area = |r: &Rect| r.width * r.height;
+                // Overlaps count twice, rounding not at all: about right.
+                let stamped: f32 = reported.iter().map(area).sum();
+                let grouped: f32 = regions.iter().map(|(region, _)| area(region)).sum();
+                (stamped < STAMP_SHARE * grouped
+                    && (grouped - stamped) * self.scale * self.scale >= STAMP_PIXELS)
+                    .then_some(reported)
+            } else {
+                None
+            };
         // What this frame changes in the retained target, for surfaces that
         // must catch up later (`begin_layer_frame`).
         #[cfg(target_os = "macos")]
@@ -4075,7 +4081,11 @@ impl GpuRenderer {
         };
         #[cfg(target_os = "macos")]
         let mut catch_up = shown.and_then(|shown| {
-            let cuts = if stamp.is_some() { &repainted } else { &regions };
+            let cuts = if stamp.is_some() {
+                &repainted
+            } else {
+                &regions
+            };
             let (bind, draws) = self.catch_up_draws(shown, &copies, cuts)?;
             stats.scroll_copies += copies.len();
             let start = quads.len() as u32;
@@ -6627,6 +6637,30 @@ impl GpuRenderer {
     /// Of those, frames drawn through a stencil of their damage.
     pub fn debug_stamped_frames(&self) -> u64 {
         self.stamped_frames
+    }
+    /// Test hook: a renderer presenting through surfaces of its own, as a
+    /// window's does, into `host` (a layer of the caller's), without a
+    /// window: `width` by `height` pixels.
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn debug_for_layer(
+        host: objc2::rc::Retained<objc2_quartz_core::CALayer>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, GpuError> {
+        let context = GpuContext::new()?;
+        let mut renderer = Self::create(None, width, height, &context)?;
+        if renderer.info.backend != wgpu::Backend::Metal {
+            return Err(GpuError(
+                "layer presentation needs the Metal backend".into(),
+            ));
+        }
+        renderer.layer_present = Some(LayerPresent {
+            host: Some(host),
+            plain_only: true,
+            ..Default::default()
+        });
+        Ok(renderer)
     }
     /// Test hook: draw plain quads with the basic shader, or every quad with
     /// the full shader.

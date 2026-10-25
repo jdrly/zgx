@@ -79,6 +79,11 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["
 windows = { version = "0.62", default-features = false, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 # Tests of a format need its feature.
+# On the main thread, as layer presentation runs (`fn main`).
+[[test]]
+name = "layer_frames"
+harness = false
+
 [[test]]
 name = "gif"
 required-features = ["gif"]
