@@ -76,6 +76,22 @@ def chosen(args):
     return [scene[:4] for scene in scenes]
 
 
+def package_in(checkout, package):
+    """`package` as `checkout` names it: a revision from before the rename to
+    zgx has the crates under their old names."""
+    old = package.replace('zgx', 'zgui')  # rename-to-zgx: keep
+    renamed = not (checkout / 'crates' / package).exists() and (checkout / 'crates' / old).exists()
+    return old if renamed else package
+
+
+def has_example(checkout, package, example):
+    """Whether `checkout` has the example (a scene newer than a revision has
+    not)."""
+    crate = checkout / 'crates' / package_in(checkout, package)
+    manifest = (crate / 'Cargo.toml').read_text() if (crate / 'Cargo.toml').exists() else ''
+    return (crate / 'examples' / f'{example}.rs').exists() or f'name = "{example}"' in manifest
+
+
 def claim(checkout, target):
     """Make `target` build `checkout`'s workspace crates. Cargo names them the
     same from any checkout and judges them fresh by modification time, so a
@@ -97,9 +113,10 @@ def claim(checkout, target):
 
 def build(checkout, target, scenes):
     claim(checkout, target)
+    scenes = [s for s in scenes if has_example(checkout, s[1], s[2])]
     command = ['cargo', 'build', '--release', '--locked', '--quiet']
     for package in dict.fromkeys(scene[1] for scene in scenes):
-        command += ['-p', package]
+        command += ['-p', package_in(checkout, package)]
         for example in dict.fromkeys(s[2] for s in scenes if s[1] == package):
             command += ['--example', example]
     env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_INCREMENTAL='0')
@@ -112,8 +129,10 @@ def build(checkout, target, scenes):
 
 
 def measure(binary, env):
-    """(instructions, seconds, the scene's last lines) for one run."""
-    env = dict(os.environ, **env)
+    """(instructions, seconds, the scene's last lines) for one run. Each
+    `ZGX_` variable is set under its old name too, which a build from before
+    the rename reads."""
+    env = dict(os.environ, **env, **{'ZGUI_' + k[4:]: v for k, v in env.items() if k.startswith('ZGX_')})  # rename-to-zgx: keep
     if platform.system() == 'Darwin':
         command = ['/usr/bin/time', '-l', str(binary)]
     else:
@@ -191,7 +210,7 @@ def worktree(slot, revision):
 
 def ab(args):
     scenes = chosen(args)
-    sides = []
+    sides, checkouts = [], []
     for slot, revision in (('a', args.a), ('b', args.b)):
         if revision == '.':
             # A target of this checkout's own: the slots' are their worktrees'.
@@ -203,6 +222,10 @@ def ab(args):
             label = f'{revision} ({label}' + (f', {lag} behind {remote})' if lag else ')')
             target = WORK / f'target-{slot}'
         sides.append((label, build(checkout, target, scenes)))
+        checkouts.append(checkout)
+    # The scenes both have: one newer than a revision is left out (its
+    # target may still hold a binary from a later build).
+    scenes = [s for s in scenes if all(has_example(c, s[1], s[2]) for c in checkouts)]
     compare(scenes, sides, args.repeat)
 
 

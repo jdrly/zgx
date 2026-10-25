@@ -125,3 +125,13 @@ their sizes, grouped by 16 KB page). Under `MallocStackLogging` macOS uses
 other size classes and `malloc_history -allBySize` lists VM mappings too
 (a fallback font's clean mapping once read as heap), so attribute sizes
 without it.
+
+## Accepted costs
+
+- **A moved or resized leaf's damage as one area** (fe7a9886, October 2026)
+  costs `widget_bench` +0.45% retired instructions: 3,148 → 3,163 M, all of
+  it the new leaf path (with it off, 3,147.5 M), not the inlining that came
+  with it. The bench mounts 1,500 widgets, each placed once, which pays the
+  two-area work without a pair to merge. Kept: the same change cut the heavy
+  dashboard's prepare by 1.4%, and the cost is under the gate's 1%. Found by
+  `suite.py ab 7d559ad origin/main` and bisecting.
