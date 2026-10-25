@@ -186,6 +186,19 @@ jobs:
           key: perf-gate
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # What a pull request is measured against: the main commit its merge
+      # ref (the checkout) was made on, its first parent; not base.sha,
+      # where the branch left main, which a later main has passed: a PR
+      # opened before main changed counted main's change as its own (#488
+      # took #482's +1.25%). On main, the commit before.
+      - name: Base
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
       # The head's binaries first: main keeps them by commit as soon as they
       # are built (the gate checks the compiler too), and a pull request
       # looks for its base's only once its own are, minutes after a merge
@@ -196,7 +209,7 @@ jobs:
         env:
           ZGX_GATE_TARGET: target/perf-gate
           ZGX_GATE_BIN_CACHE: ${{ runner.temp }}/gate-bin
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE: ${{ steps.base.outputs.sha }}
         run: |
           python3 scripts/perf/gate.py "$BASE" --stage head
           if [ -f "$ZGX_GATE_BIN_CACHE/built-from" ]; then echo "binaries=yes" >> "$GITHUB_OUTPUT"; fi
@@ -210,12 +223,12 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/gate-bin
-          key: gate-bin-${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          key: gate-bin-${{ steps.base.outputs.sha }}
       - name: Instruction counts
         env:
           ZGX_GATE_TARGET: target/perf-gate
           ZGX_GATE_BIN_CACHE: ${{ runner.temp }}/gate-bin
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          BASE: ${{ steps.base.outputs.sha }}
         run: |
           status=0
           python3 scripts/perf/gate.py "$BASE" --stage run --markdown perf.md || status=$?
