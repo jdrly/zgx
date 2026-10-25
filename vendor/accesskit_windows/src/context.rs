@@ -90,9 +90,16 @@ impl Context {
     /// what a client listens for. Raising what no one listens for made UIA
     /// call back into the provider about ten times an event: a dashboard's
     /// live labels raised two thousand text and name changes a second.
-    pub(crate) fn wanted(&self, event_id: UIA_EVENT_ID, property_id: Option<UIA_PROPERTY_ID>) -> bool {
+    /// `screen_reader` is `screen_reader()`'s answer, read once an update:
+    /// a system call each event cost as much as raising them.
+    pub(crate) fn wanted(
+        &self,
+        event_id: UIA_EVENT_ID,
+        property_id: Option<UIA_PROPERTY_ID>,
+        screen_reader: bool,
+    ) -> bool {
         event_id == UIA_AutomationFocusChangedEventId
-            || screen_reader()
+            || screen_reader
             || listened(&self.subscriptions.lock().unwrap(), event_id, property_id)
     }
 
@@ -129,7 +136,7 @@ impl Context {
 }
 
 /// Whether a screen reader runs (`SPI_GETSCREENREADER`).
-fn screen_reader() -> bool {
+pub(crate) fn screen_reader() -> bool {
     let mut on = windows::core::BOOL(0);
     // SAFETY: SPI_GETSCREENREADER writes one BOOL to the pointer given.
     let read = unsafe {
