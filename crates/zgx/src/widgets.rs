@@ -912,6 +912,8 @@ struct UiStorage {
     elastic: RefCell<crate::elastic::State>,
     /// Scrollbars hide until their view scrolls (`Ui::set_overlay_scrollbars`).
     overlay_scrollbars: Signal<bool>,
+    /// Editors' caret width in points (`Ui::set_caret_width`).
+    caret_width: Rc<Cell<f32>>,
     /// Assistive technology reads the semantics (`Ui::set_assistive_technology`).
     assistive: Signal<bool>,
     /// Overlay scrollbars shown, to fade once their view stops scrolling.
@@ -1068,6 +1070,7 @@ impl Ui {
             text_geometry_revision: runtime.signal(0),
             presented: runtime.signal(true),
             overlay_scrollbars: runtime.signal(false),
+            caret_width: Rc::new(Cell::new(1.)),
             assistive: runtime.signal(true),
             popup_screens: runtime.signal(Vec::new()),
             popup_limits: runtime.signal(Vec::new()),
@@ -1912,6 +1915,26 @@ impl Ui {
     }
     pub(crate) fn overlay_scrollbars(&self) -> Signal<bool> {
         self.storage.overlay_scrollbars.clone()
+    }
+    /// How wide editors draw their caret, in points: the system's text
+    /// cursor thickness, which the desktop host gives (Windows'
+    /// `SPI_GETCARETWIDTH`, which people who lose a thin caret raise); 1
+    /// until it does. Held between 1 and 20; NaN leaves it as it was.
+    pub fn set_caret_width(&self, points: f32) {
+        if points.is_nan() {
+            return;
+        }
+        let points = points.clamp(1., 20.);
+        if self.storage.caret_width.replace(points) != points {
+            let editors: Vec<_> = self.storage.editors.borrow().values().cloned().collect();
+            for editor in editors {
+                editor.refresh();
+            }
+        }
+    }
+    /// Editors' caret width in points (`Ui::set_caret_width`).
+    pub fn caret_width(&self) -> f32 {
+        self.storage.caret_width.get()
     }
     /// Whether assistive technology (a screen reader, a switch control)
     /// reads this document's semantics. While none does, the names and
@@ -3022,6 +3045,7 @@ impl Ui {
         let sem = self.semantics.clone();
         let edit = editor.clone();
         let focus = focused.clone();
+        let draw_caret_width = self.storage.caret_width.clone();
         let scroll_for_draw = scroll.clone();
         let reveal_caret = Rc::new(Cell::new(true));
         let draw_reveal_caret = reveal_caret.clone();
@@ -3313,7 +3337,8 @@ impl Ui {
                 // One line, centred in the box (negative: pushed down).
                 (line_height - inner_height) / 2.
             };
-            s.set_style(caret, fixed(1., line_height));
+            let caret_width = draw_caret_width.get();
+            s.set_style(caret, fixed(caret_width, line_height));
             // Aligned, the text's box is its layout's width, which the text
             // aligns in as the layout does; its placeholder, the field's.
             let aligned_placeholder = factor > 0. && shown.is_some();
@@ -3453,7 +3478,7 @@ impl Ui {
                 caret,
                 Transform {
                     x: if draw_wrap.get() {
-                        cx.min((inner_width - 1.).max(0.))
+                        cx.min((inner_width - caret_width).max(0.))
                     } else {
                         cx - scroll.0
                     },

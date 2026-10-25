@@ -287,6 +287,11 @@ window whatever its title bar:
 - Always show scrollbars off (Accessibility, Visual effects; the default):
   scrollbars hide at rest and show while the user scrolls
   (`Ui::set_overlay_scrollbars`), as Edge's and WinUI's do.
+- The text cursor's thickness (Accessibility, Text cursor): editors draw
+  their caret that many points wide (`SPI_GETCARETWIDTH`, `Ui::set_caret_width`),
+  changed live. macOS and GTK have no such setting to follow. Windows' text
+  cursor indicator does not find zgx's caret yet: it reads a system caret or
+  UI Automation's `GetCaretRange`, and zgx gives neither.
 - The wheel's lines and characters to scroll at a time (Bluetooth & devices,
   Mouse): a notch scrolls each line or character at 100/3 pixels, 100 for
   the default 3, as Chromium does; "one screen at a time" scrolls by the

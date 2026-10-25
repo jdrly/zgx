@@ -13,7 +13,10 @@ keys in `text_selection`'s editors:
 - Windows' emoji panel (Win+.) opens under the caret, for carets at two
   places: Windows places it from the caret area zgx gives input methods,
   where their candidate windows show; and the emoji Enter chooses in it is
-  typed at the caret, through the input method's path (IMM32).
+  typed at the caret, through the input method's path (IMM32);
+- the caret widens as Windows' text cursor thickness (`SPI_SETCARETWIDTH`)
+  is raised while the window runs, as Settings raises it (the user's own put
+  back after).
 
 Selections are read through UI Automation (`windows_uia_dump.ps1`). The
 user's clipboard is saved first and restored after, and what the smoke puts
@@ -162,14 +165,14 @@ def press(window, x, y):
     win.click(window, x, y)
 
 
-def changed_box(before, after, threshold=40, ignore=None):
+def changed_box(before, after, threshold=40, ignore=None, step=2):
     """The box (left, top, right, bottom) of the pixels that differ, but for
     those in `ignore` (left, top, right, bottom): the caret, which blinks."""
     width, height, a = before
     b = after[2]
     xs, ys = [], []
-    for y in range(0, height, 2):
-        for x in range(0, width, 2):
+    for y in range(0, height, step):
+        for x in range(0, width, step):
             if ignore and ignore[0] <= x <= ignore[2] and ignore[1] <= y <= ignore[3]:
                 continue
             i = (y * width + x) * 4
@@ -219,6 +222,38 @@ def emoji_panel(binary, offset, insert=False):
             proc.wait()
     report = next((line for line in lines if line.startswith("TEXT ")), "")
     return caret, (x, y, w, h), box, report
+
+
+def caret_width(binary, width=4):
+    """The extra pixels the caret takes when Windows' text cursor thickness
+    (`SPI_SETCARETWIDTH`) goes from what it is to `width`, changed while the
+    window runs: their box. The user's own is put back after."""
+    original = ctypes.c_uint(0)
+    user32.SystemParametersInfoW(0x2006, 0, ctypes.byref(original), 0)  # SPI_GETCARETWIDTH
+    proc = subprocess.Popen([str(binary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        window = win.wait_window(proc)
+        time.sleep(1)
+        win.activate(window)
+        (x, y, w, h), _ = editors(window)["Words"]
+        scale = win.dpi(window) / 96
+        # The caret at the end of the line, nothing to its right.
+        press(window, x + w - 20, y + h / 2)
+        time.sleep(0.3)
+        before = win.capture(window)
+        # SPI_SETCARETWIDTH; SPIF_UPDATEINIFILE | SPIF_SENDCHANGE, as Settings
+        # changes it: running apps hear it only with the profile updated.
+        user32.SystemParametersInfoW(0x2007, 0, ctypes.c_void_p(width), 3)
+        time.sleep(0.4)
+        box = changed_box(before, win.capture(window), threshold=60, step=1)
+        win.close(window)
+        proc.wait(timeout=10)
+    finally:
+        user32.SystemParametersInfoW(0x2007, 0, ctypes.c_void_p(original.value), 3)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return original.value, box, scale
 
 
 def main():
@@ -333,6 +368,13 @@ def main():
                 "these words"), f"the emoji panel's choice reached the editor as {words}"
             results.append(f"emoji panel's choice inserted at the caret: {words}")
     results.append("emoji panel under the caret: " + ", ".join(f"caret x {c:.0f}, panel x {p}" for c, p in panels))
+    # Windows' text cursor thickness, changed live: the caret widens.
+    original, grown, scale = caret_width(args.binary)
+    assert grown, f"the caret did not widen as the text cursor thickness went from {original} to 4"
+    extra = grown[2] - grown[0] + 1
+    assert abs(extra - (4 - original) * scale) <= scale, \
+        f"the caret widened by {extra} px, not {(4 - original) * scale:.0f}, for a thickness of 4 (was {original})"
+    results.append(f"text cursor thickness {original} to 4: the caret {extra} px wider")
     for line in results:
         print(f"  {line}")
     print(f"PASS: text selection at {interval * 1000:.0f} ms and a {box[0]}x{box[1]} box; clipboard line ends; "

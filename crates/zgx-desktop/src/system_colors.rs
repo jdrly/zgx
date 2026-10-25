@@ -434,6 +434,7 @@ pub(crate) fn sync(ui: &zgx::widgets::Ui) {
         if let Some((width, height)) = windows_double_click_area() {
             ui.input.set_double_click_area(width, height);
         }
+        ui.set_caret_width(windows_caret_width());
     }
     // On X11 the session's XSETTINGS come first, as GTK takes them there.
     #[cfg(target_os = "linux")]
@@ -536,6 +537,30 @@ fn windows_double_click_area() -> Option<(f32, f32)> {
     (x > 0 && y > 0).then_some((x as f32, y as f32))
 }
 
+/// Windows' text cursor thickness (Settings, Accessibility, Text cursor:
+/// `SPI_GETCARETWIDTH`, 1 to 20, 1 by default), at 96 DPI: in points.
+#[cfg(windows)]
+fn windows_caret_width() -> f32 {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCARETWIDTH, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    let mut width = 0u32;
+    // SAFETY: fills one DWORD.
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCARETWIDTH,
+            0,
+            Some(&mut width as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if read.is_ok() && width > 0 {
+        width as f32
+    } else {
+        f32::NAN
+    }
+}
+
 /// Windows' "Text size" (Settings, Accessibility): 1 to 2.25, scaling text
 /// alone, as WinUI's text follows it.
 #[cfg(windows)]
@@ -594,6 +619,17 @@ mod tests {
         let system = super::windows_drag_threshold();
         assert!(system >= 1., "{system}");
         assert_eq!(ui.input.drag_threshold(), system);
+    }
+
+    /// A window's carets are as thick as Windows' text cursor
+    /// (`SPI_GETCARETWIDTH`).
+    #[test]
+    fn the_caret_width_is_the_systems() {
+        let ui = zgx::widgets::Ui::new(100., 100.);
+        super::sync(&ui);
+        let system = super::windows_caret_width();
+        assert!(system >= 1., "{system}");
+        assert_eq!(ui.caret_width(), system);
     }
 
     /// A window's double-click box is Windows' own (`SM_CXDOUBLECLK` by
