@@ -44,8 +44,12 @@ fn the_team_loads_and_a_failed_load_retries() {
         "{}",
         h.text("load-error")
     );
+    // Held: a loaded machine could take the latency within the click,
+    // answered before the loading state was looked for.
+    server.hold(true);
     h.click("retry");
     assert!(h.find("loading").is_some(), "loading again");
+    server.hold(false);
     assert!(h.wait_until(|h| h.find("member-m1").is_some()));
     assert!(h.find("member-m2").is_some());
     assert_eq!(h.error(), None);

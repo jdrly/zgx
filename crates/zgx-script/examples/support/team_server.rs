@@ -2,6 +2,8 @@
 //! added, changed and removed, each answer after `latency`. An email two
 //! people would share is refused, as a server would, and `fail(n)` makes
 //! the next `n` requests fail (a network down) to show the app's errors.
+//! `hold(true)` keeps answers back until `hold(false)`, for a test to see
+//! what shows while a request is out.
 // Shared with its tests, which use what the example does not.
 #![allow(dead_code)]
 use std::{cell::RefCell, rc::Rc, time::Duration};
@@ -12,6 +14,7 @@ struct Inner {
     members: Vec<Value>,
     made: u32,
     failing: u32,
+    held: bool,
     asked: Vec<String>,
 }
 
@@ -49,6 +52,10 @@ impl TeamServer {
     pub fn fail(&self, n: u32) {
         self.0.borrow_mut().failing = n;
     }
+    /// Keep answers back (`true`) until released (`false`).
+    pub fn hold(&self, held: bool) {
+        self.0.borrow_mut().held = held;
+    }
     /// The requests answered so far, as `"GET /members"`.
     pub fn asked(&self) -> Vec<String> {
         self.0.borrow().asked.clone()
@@ -57,13 +64,17 @@ impl TeamServer {
     pub fn len(&self) -> usize {
         self.0.borrow().members.len()
     }
-    /// Serve `host`'s `ui.fetch`, answering each request after `latency`.
+    /// Serve `host`'s `ui.fetch`, answering each request after `latency`
+    /// (and once no longer held).
     pub fn serve(&self, host: &ScriptHost, latency: Duration) {
         let server = self.clone();
         host.fetcher(move |request: Request| {
             let server = server.clone();
             async move {
                 zgx::timer::sleep(latency).await;
+                while server.0.borrow().held {
+                    zgx::timer::sleep(Duration::from_millis(1)).await;
+                }
                 server.answer(&request)
             }
         });
