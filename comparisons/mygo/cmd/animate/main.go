@@ -3,6 +3,12 @@
 // character's colour change on every frame, which the view asks for with
 // AnimationFrame, its clock at the frame's time (Context.Now).
 //
+// The shimmer is one ui.RichText with a span for each character, MyGo's way
+// to colour characters apart: the zgx and GPUI adapters build a text for
+// each character in a row, but in MyGo a text of a space alone has no width
+// (as CSS drops a flex item of white space), so the words would run
+// together.
+//
 //	ZGX_SECONDS=10 bin/animate
 package main
 
@@ -20,7 +26,7 @@ import (
 type scene struct {
 	start, last time.Time
 	frames      uint64
-	chars       []string
+	spans       []ui.Span
 }
 
 func (s *scene) view(c *ui.Context) {
@@ -39,19 +45,17 @@ func (s *scene) view(c *ui.Context) {
 			ui.Box(c).Absolute().Left(x).Top(y).Size(w.Dot, w.Dot).Radius(w.Dot / 2).
 				Background(adapter.RGB(w.DotColor)).Opacity(w.DotOpacity(i, t))
 		}
-		ui.Row(c).Absolute().Left(w.ShimmerOrigin[0]).Top(w.ShimmerOrigin[1]).Children(func() {
-			for i, ch := range s.chars {
-				a := w.ShimmerAlpha(i, len(s.chars), t)
-				ui.Text(c, ch).TextColor(ui.Color{R: 255, G: 255, B: 255, A: a})
-			}
-		})
+		for i := range s.spans {
+			s.spans[i].Color = ui.Color{R: 255, G: 255, B: 255, A: w.ShimmerAlpha(i, len(s.spans), t)}
+		}
+		ui.RichText(c, s.spans...).Absolute().Left(w.ShimmerOrigin[0]).Top(w.ShimmerOrigin[1]).NoWrap()
 	})
 }
 
 func main() {
 	s := &scene{start: time.Now()}
 	for _, r := range w.Shimmer {
-		s.chars = append(s.chars, string(r))
+		s.spans = append(s.spans, ui.Span{Text: string(r)})
 	}
 	adapter.Window("MyGo animation", w.Width, w.Height, s.view, func(win *mygo.Window) {
 		adapter.Ticks(win, w.SecondsFromEnv(), false, nil, nil, func() {
