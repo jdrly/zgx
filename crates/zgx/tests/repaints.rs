@@ -214,3 +214,46 @@ fn a_flush_names_the_nodes_it_repainted() {
         .count();
     assert_eq!(texts, 6, "each flush's three texts");
 }
+
+#[test]
+fn a_parent_whose_children_changed_is_named_with_them() {
+    use zgx::scene::{Layout, NodeKind, Style};
+    let mut scene = Scene::new(400., 300.);
+    let column = || NodeKind::Container(Layout::Column);
+    let sized = || Style {
+        width: Some(40.),
+        height: Some(20.),
+        ..Default::default()
+    };
+    let root = scene.root();
+    let [gains, loses, reorders, still] = [(); 4].map(|_| scene.append(root, column(), sized()));
+    let leaf = |scene: &mut Scene, parent| {
+        scene.append(parent, NodeKind::Rect(Color(1, 2, 3, 255)), sized())
+    };
+    let lost = leaf(&mut scene, loses);
+    leaf(&mut scene, loses);
+    let first = leaf(&mut scene, reorders);
+    let second = leaf(&mut scene, reorders);
+    leaf(&mut scene, still);
+    scene.flush();
+    let _ = scene.repaints();
+    let gained = leaf(&mut scene, gains);
+    scene.remove(lost);
+    assert!(scene.reorder_children(reorders, &[second, first]));
+    scene.flush();
+    let (_, repaints) = scene.repaints();
+    let flags = |id| {
+        repaints
+            .iter()
+            .find(|(entry, _)| *entry == id)
+            .map(|(_, flags)| *flags)
+    };
+    for parent in [gains, loses, reorders] {
+        assert!(
+            flags(parent).is_some_and(|flags| flags & repaint::CHILDREN != 0),
+            "{parent:?}"
+        );
+    }
+    assert_eq!(flags(still), None);
+    assert!(flags(gained).is_none_or(|flags| flags & repaint::CHILDREN == 0));
+}

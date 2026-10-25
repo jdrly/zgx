@@ -1104,6 +1104,9 @@ const COMPOSITE: u8 = 4;
 /// Repainted where its damage is already recorded: layout damaged a node it
 /// moved where it was and where it lands (see `arrange`).
 const PAINTED: u8 = 8;
+/// Its children changed: one was added or removed, or their order changed
+/// (`children_changed`). Damage is the children's own.
+const CHILDREN: u8 = 16;
 /// Repaints a scene holds for a renderer before giving up on its patching
 /// (`Scene::repaints`): past them, it would draw the frame whole anyway.
 const REPAINTS_KEPT: usize = 1 << 14;
@@ -1118,6 +1121,10 @@ pub mod repaint {
     pub const MOVED: u8 = super::PAINTED;
     /// How it composites: opacity, transform, filters.
     pub const COMPOSITE: u8 = super::COMPOSITE;
+    /// Its children: one was added or removed, or they were reordered.
+    /// Every node a flush added or removed lies under a node repainted
+    /// with this.
+    pub const CHILDREN: u8 = super::CHILDREN;
 }
 struct Node {
     cursor: Option<crate::cursor::Cursor>,
@@ -2832,8 +2839,10 @@ impl Scene {
         };
         self.apply_style(id, style);
     }
-    /// After `parent` gained, lost or reordered children.
+    /// After `parent` gained, lost or reordered children: queued already
+    /// (`invalidate_layout`), it repaints with `CHILDREN`.
     fn children_changed(&mut self, parent: NodeId) {
+        self.node_mut(parent).dirty |= CHILDREN;
         if self.contents_count > 0 && self.node(parent).contents {
             self.sync_contents(parent);
         }
@@ -6085,7 +6094,7 @@ impl Scene {
             if flags & (PAINT | PAINTED) != 0 {
                 report.paint_nodes += 1;
             }
-            if keep && flags & (PAINT | PAINTED | COMPOSITE) != 0 {
+            if keep && flags & (PAINT | PAINTED | COMPOSITE | CHILDREN) != 0 {
                 self.repaints.push((*id, flags));
             }
             if flags & PAINT != 0 {
