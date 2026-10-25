@@ -6,9 +6,9 @@
   --line: #e2e3e5;
   --card: #ffffff;
   --zgx: #2f7d4b;
-  --gpui: #6b7c9b;
+  --zgx-luau: #6aa982;
   --gpui-fast: #b2783a;
-  --quickgui: #9da1a7;
+  --mygo: #5f73a8;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -19,9 +19,9 @@
     --line: #2a2e34;
     --card: #191c20;
     --zgx: #5cbf7e;
-    --gpui: #8d9dbb;
+    --zgx-luau: #3f8a5b;
     --gpui-fast: #d79a58;
-    --quickgui: #6f747b;
+    --mygo: #8d9fd6;
   }
 }
 * { box-sizing: border-box; }
@@ -78,12 +78,10 @@ h3 { font-size: 1.05rem; margin: 1.25rem 0 0.25rem; }
 .track { display: inline-block; width: calc(100% - 7.6rem); vertical-align: middle; margin-right: 0.45rem; }
 .bar { display: block; height: 0.8rem; min-width: 2px; border-radius: 0.2rem; }
 .fw-zgx .bar { background: var(--zgx); }
-.fw-gpui .bar { background: var(--gpui); }
+.fw-zgx-luau .bar { background: var(--zgx-luau); }
 .fw-gpui-fast .bar { background: var(--gpui-fast); }
-.fw-quickgui .bar { background: var(--quickgui); }
+.fw-mygo .bar { background: var(--mygo); }
 .fw-zgx th[scope="row"], .fw-zgx .value { font-weight: 650; color: var(--zgx); }
-.fw-quickgui th[scope="row"], .fw-quickgui .value, .fw-quickgui .range { color: var(--quickgui); }
-.fw-quickgui .bar { opacity: 0.6; }
 .value { font-size: 0.92rem; }
 .range { color: var(--muted); font-size: 0.75rem; }
 .facts { padding-left: 1.1rem; max-width: 52rem; }

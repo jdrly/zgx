@@ -1,0 +1,3 @@
+framework,mode,repeat,captures,blank_captures,blank_fraction,longest_blank_points,error
+zgx,jump,0,75,0,0.0,6.0,
+gpui-fast,jump,0,75,0,0.0,6.0,

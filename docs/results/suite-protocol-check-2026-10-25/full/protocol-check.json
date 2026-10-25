@@ -1,0 +1,43 @@
+{
+ "suite": "/tmp/perf-tools/reval-full",
+ "full": "docs/results/latest-macos-heavy-2026-10-25-282bfc0",
+ "cells": "gpui-fast:*",
+ "checked": 3,
+ "within_range": 0,
+ "within_allowance": 2,
+ "rows": [
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "cpu",
+   "suite_median": 18.1721,
+   "full_min": 15.7347,
+   "full_max": 15.9452,
+   "full_median": 15.9256,
+   "within_range": false,
+   "within_allowance": false
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "gpu",
+   "suite_median": 22.143,
+   "full_min": 21.539,
+   "full_max": 21.827,
+   "full_median": 21.585,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "memory",
+   "suite_median": 263424123.0,
+   "full_min": 268290629.0,
+   "full_max": 274453036.0,
+   "full_median": 274418203.0,
+   "within_range": false,
+   "within_allowance": true
+  }
+ ]
+}

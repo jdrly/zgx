@@ -1,6 +1,6 @@
 use gpui::{prelude::*, *};
 use std::time::Instant;
-use zgx_workload::{row_label, Mode, Workload, PERIOD, ROW_HEIGHT};
+use zgx_workload::{Mode, PERIOD, ROW_HEIGHT, Workload, row_label};
 struct Lab {
     work: Workload,
     items: Vec<i32>,
@@ -109,6 +109,12 @@ impl Render for Lab {
 }
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
+        // The comparisons' one font file (comparisons/fonts), as every framework loads it.
+        if let Some(bytes) = zgx_workload::font_file() {
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Owned(bytes)])
+                .unwrap();
+        }
         let bounds = Bounds::centered(None, size(px(960.), px(720.)), cx);
         cx.open_window(
             WindowOptions {

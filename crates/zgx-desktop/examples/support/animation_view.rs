@@ -33,6 +33,7 @@ pub fn animation(clock: Signal<f32>) -> View {
         .w_full()
         .h_full()
         .bg(rgb(BACKGROUND))
+        .font_family(zgx_workload::FONT)
         .text_size(18.)
         .children(dots)
         .child(line)

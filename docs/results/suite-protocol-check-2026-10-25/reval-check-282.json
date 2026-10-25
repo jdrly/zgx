@@ -1,0 +1,197 @@
+{
+ "suite": "/tmp/perf-tools/reval-suite",
+ "full": "docs/results/latest-macos-heavy-2026-10-25-282bfc0",
+ "cells": "gpui-fast:*,zgx:cpu,zgx:memory",
+ "checked": 17,
+ "within_range": 2,
+ "within_allowance": 14,
+ "rows": [
+  {
+   "framework": "zgx",
+   "mode": "idle",
+   "metric": "cpu",
+   "suite_median": 0.0012,
+   "full_min": 0.002,
+   "full_max": 0.0026,
+   "full_median": 0.0024,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "stream",
+   "metric": "cpu",
+   "suite_median": 9.4276,
+   "full_min": 8.0113,
+   "full_max": 8.8949,
+   "full_median": 8.5485,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "stream",
+   "metric": "memory",
+   "suite_median": 255272648.0,
+   "full_min": 258503371.0,
+   "full_max": 260264592.0,
+   "full_median": 258555007.0,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "scroll",
+   "metric": "cpu",
+   "suite_median": 3.114,
+   "full_min": 3.118,
+   "full_max": 3.2939,
+   "full_median": 3.2078,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "scroll",
+   "metric": "memory",
+   "suite_median": 252143215.0,
+   "full_min": 253978828.0,
+   "full_max": 255024793.0,
+   "full_median": 254859938.0,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "both",
+   "metric": "cpu",
+   "suite_median": 10.3363,
+   "full_min": 8.4145,
+   "full_max": 9.6051,
+   "full_median": 9.08,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "zgx",
+   "mode": "both",
+   "metric": "memory",
+   "suite_median": 256395454.0,
+   "full_min": 258722043.0,
+   "full_max": 260958603.0,
+   "full_median": 259107800.0,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "idle",
+   "metric": "cpu",
+   "suite_median": 0.3697,
+   "full_min": 0.3818,
+   "full_max": 0.4045,
+   "full_median": 0.3979,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "stream",
+   "metric": "cpu",
+   "suite_median": 16.6438,
+   "full_min": 13.6318,
+   "full_max": 16.2472,
+   "full_median": 13.8789,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "stream",
+   "metric": "gpu",
+   "suite_median": 21.968,
+   "full_min": 21.406,
+   "full_max": 21.751,
+   "full_median": 21.683,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "stream",
+   "metric": "memory",
+   "suite_median": 269703613.0,
+   "full_min": 257107297.0,
+   "full_max": 275739922.0,
+   "full_median": 274973605.0,
+   "within_range": true,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "scroll",
+   "metric": "cpu",
+   "suite_median": 9.1364,
+   "full_min": 8.3567,
+   "full_max": 8.8684,
+   "full_median": 8.7152,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "scroll",
+   "metric": "gpu",
+   "suite_median": 22.341,
+   "full_min": 21.827,
+   "full_max": 21.89,
+   "full_median": 21.871,
+   "within_range": false,
+   "within_allowance": false
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "scroll",
+   "metric": "memory",
+   "suite_median": 267523853.0,
+   "full_min": 255247681.0,
+   "full_max": 257856576.0,
+   "full_median": 256173311.0,
+   "within_range": false,
+   "within_allowance": false
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "cpu",
+   "suite_median": 18.4631,
+   "full_min": 15.7347,
+   "full_max": 15.9452,
+   "full_median": 15.9256,
+   "within_range": false,
+   "within_allowance": false
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "gpu",
+   "suite_median": 22.019,
+   "full_min": 21.539,
+   "full_max": 21.827,
+   "full_median": 21.585,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "memory",
+   "suite_median": 270965903.0,
+   "full_min": 268290629.0,
+   "full_max": 274453036.0,
+   "full_median": 274418203.0,
+   "within_range": true,
+   "within_allowance": true
+  }
+ ]
+}

@@ -1,45 +1,50 @@
 #!/usr/bin/env python3
 """The public performance page (site/): one page of the latest accepted macOS
-comparison, every scene of it, from the runs scripts/run_macos_comparison.py
-recorded.
+suite run (scripts/run_macos_suite.py), every scene of it.
 
-    python3 scripts/build_site.py \\
-        docs/results/latest-macos-<date>-<commit> \\
-        docs/results/latest-macos-heavy-<date>-<commit> \\
-        docs/results/latest-macos-animate-<date>-<commit>
+    python3 scripts/build_site.py docs/results/suite-macos-<date>-<commit>
 
-Only accepted, full (not quick or profile-guided) runs of one clean commit are
-published. Every median and range shown is recomputed from the runs' trials
-(current.csv, pacing.csv) and checked against their summaries, and every
-claim the page's headline makes is checked against the numbers. Writes
-site/index.html (charts as text and CSS, no script), site/data.json and
-site/data.csv.
+Only an accepted suite run of one clean commit is published, every scene of
+it accepted. Every median and range shown is recomputed from the scenes'
+trials (current.csv, pacing.csv, blank.csv) and checked against their
+summaries. The headline says only what the numbers show: its verdict and
+figures are worked out from them, never written in. Writes site/index.html
+(charts as text and CSS, no script), site/data.json and site/data.csv.
 """
 import argparse, csv, html, json, math, statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'https://github.com/zeronsh/zgx'
-NAMES = {'zgx': 'zgx', 'gpui': 'GPUI', 'gpui-fast': 'GPUI Fast', 'quickgui': 'QuickGUI'}
+NAMES = {'zgx': 'zgx', 'zgx-luau': 'zgx (Luau)', 'gpui-fast': 'GPUI Fast', 'mygo': 'MyGo'}
+ORDER = ['heavy', 'lab', 'animate', 'vlist']
 SCENES = {
     'heavy': ('Heavy dashboard', 'A 1280×800 dashboard: 6 tiles, 30 cards of 26 sparkline bars, a status table '
               'and a log. Most values change 60 times a second; the table scrolls.'),
     'lab': ('Text and a 100,000-row list', 'A streaming transcript beside a 100,000-row virtual list, updated 60 '
-            'times a second. QuickGUI runs this scene only.'),
+            'times a second.'),
     'animate': ('Animation', '48 blinking dots and a shimmering line of text, animated on every refresh of a '
                 '120 Hz display.'),
+    'vlist': ('Variable-height list', '100,000 chat rows of wrapped text, 1 to 8 lines each, about one in four '
+              'with an image, in each framework\'s own list widget, which measures the rows: scrolled steadily, '
+              'flung, and scrolled with a jump to a far row every half second.'),
 }
-MODES = {'idle': 'Idle', 'stream': 'Streaming', 'scroll': 'Scrolling', 'both': 'Both', 'animate': 'Animating'}
+MODES = {'idle': 'Idle', 'stream': 'Streaming', 'scroll': 'Scrolling', 'both': 'Both', 'animate': 'Animating',
+         'fling': 'Flinging', 'jump': 'Jumping'}
 # metric: (title, unit, digits, scale, source, modes it applies to)
 METRICS = {
     'cpu': ('CPU', '% of one core', 1, 1, 'cpu_percent_one_core', 'all'),
+    'server': ('WindowServer CPU', '% of one core: the system compositor, while the app runs', 1, 1,
+               'windowserver_cpu_percent', 'all'),
     'gpu': ('GPU work', 'million GPU cycles a second', 1, 1, 'gpu_mcycles_per_second', 'active'),
     'p99': ('Frame time, 99th percentile', 'ms between frames', 1, 1, 'interval_p99_ms', 'paced'),
     'long': ('Long frames', '% of frames over 25 ms', 1, 100, 'long_interval_fraction', 'paced'),
+    'blank': ('Unfilled rows', '% of window captures showing a gap', 1, 100, 'blank_fraction', 'paced'),
     'memory': ('Memory', 'MB, physical footprint', 0, 1e-6, 'mean_footprint_bytes', 'all'),
 }
 TRIAL_KEYS = ['cpu_percent_one_core', 'gpu_mcycles_per_second', 'mean_footprint_bytes', 'windowserver_cpu_percent']
 PACING_KEYS = ['interval_p99_ms', 'long_interval_fraction', 'frames_per_second']
+BLANK_KEYS = ['blank_fraction', 'longest_blank_points']
 
 
 def spread(values):
@@ -52,23 +57,25 @@ def check(summary_cell, values, what):
 
 
 def load(directory):
-    """One accepted run: its cells, each recomputed from the trials."""
+    """One accepted scene of the suite: its cells, each recomputed from the trials."""
     audit = json.loads((directory / 'audit.json').read_text())
     summary = json.loads((directory / 'summary.json').read_text())
     protocol = audit['protocol']
-    assert audit['accepted'], f'{directory}: not accepted'
-    assert not protocol.get('quick') and not protocol.get('pgo'), f'{directory}: a quick or PGO run'
+    assert audit['accepted'] and not audit.get('invalid_trials'), f'{directory}: not accepted'
+    assert protocol.get('suite') and not protocol.get('quick') and not protocol.get('pgo'), f'{directory}: not a suite run'
     assert not audit['source_dirty'], f'{directory}: measured with uncommitted changes'
     frameworks, modes = protocol['frameworks'], protocol['modes']
     trials = list(csv.DictReader((directory / 'current.csv').open()))
     paced = list(csv.DictReader((directory / 'pacing.csv').open()))
+    blanks = list(csv.DictReader((directory / 'blank.csv').open())) if (directory / 'blank.csv').exists() else []
+    extended = set(protocol.get('extended_cells') or [])
     cells = []
     for framework in frameworks:
         for mode in modes:
             rows = [t for t in trials if (t['framework'], t['mode']) == (framework, mode)]
-            want = protocol.get('idle_repeats', protocol['repeats']) if mode == 'idle' else protocol['repeats']
+            want = protocol['idle_repeats'] if mode == 'idle' else protocol['repeats']
+            want += protocol['extra_trials'] if f'{framework}/{mode}' in extended else 0
             assert len(rows) == want and {int(t['repeat']) for t in rows} == set(range(want)), (directory, framework, mode)
-            assert all(int(t['exit_code']) == 0 or t['terminated_after_report'].lower() == 'true' for t in rows)
             group = next(g for g in summary['groups'] if (g['framework'], g['mode']) == (framework, mode))
             cell = {'framework': framework, 'mode': mode, 'repeats': want}
             for key in TRIAL_KEYS:
@@ -77,8 +84,6 @@ def load(directory):
                     check(group[key], values, (directory.name, framework, mode, key))
                     cell[key] = spread(values)
             if mode != 'idle':
-                ticks = [int(t['workload_ticks']) for t in rows]
-                assert all(t > 0 for t in ticks), (directory, framework, mode)
                 captures = [p for p in paced if (p['framework'], p['mode']) == (framework, mode)]
                 assert len(captures) == protocol['pacing_repeats'], (directory, framework, mode)
                 pace = next(p for p in summary['pacing'] if (p['framework'], p['mode']) == (framework, mode))
@@ -87,13 +92,25 @@ def load(directory):
                     check(pace[key], values, (directory.name, framework, mode, key))
                     cell[key] = spread(values)
                 cell['pacing_captures'] = len(captures)
+                shots = [b for b in blanks if (b['framework'], b['mode']) == (framework, mode)]
+                if shots:
+                    assert all(not b.get('error') for b in shots), (directory, framework, mode, 'blank capture failed')
+                    group = next(g for g in summary['blank'] if (g['framework'], g['mode']) == (framework, mode))
+                    for key in BLANK_KEYS:
+                        values = [float(b[key]) for b in shots]
+                        check(group[key], values, (directory.name, framework, mode, key))
+                        cell[key] = spread(values)
+                    cell['blank_captures'] = sum(int(b['captures']) for b in shots)
             cells.append(cell)
-    env = audit['environment']
+    # WindowServer with no app running, each repeat's desktop baseline.
+    desktop = [float(t['windowserver_cpu_percent']) for t in trials if t['framework'] == 'desktop']
     return {
-        'scene': audit['scene'], 'run': f'docs/results/{directory.name}', 'commit': audit['commit'],
+        'desktop_server': statistics.median(desktop),
+        'scene': audit['scene'], 'run': str(directory.relative_to(ROOT)), 'commit': audit['commit'],
         'started_utc': audit['started_utc'], 'frameworks': frameworks, 'modes': modes, 'cells': cells,
         'trials': audit['trials'], 'pacing_trials': audit['pacing_trials'], 'protocol': protocol,
-        'environment': env, 'binaries': audit['binaries'],
+        'environment': audit['environment'], 'binaries': audit['binaries'],
+        'toolchains': audit.get('toolchains', {}), 'preflight': audit.get('preflight'),
     }
 
 
@@ -109,43 +126,49 @@ def fmt(v, digits):
     return f'{v:,.{digits}f}'
 
 
+def percent_less(ours, theirs):
+    """`ours` against `theirs` in words: "43% less" or "12% more"."""
+    change = 1 - ours / theirs
+    return f'{abs(change) * 100:.0f}% {"less" if change >= 0 else "more"}'
+
+
 def headline(by):
-    """The verdict and headline numbers, each checked against the data."""
-    heavy = by['heavy']
+    """The verdict and headline figures, worked out from the numbers."""
+    rivals = [f for f in by['heavy']['frameworks'] if not f.startswith('zgx')]
+    named = ' and '.join(NAMES[r] for r in rivals)
     active = [(s, m) for s in by.values() for m in s['modes'] if m != 'idle']
-    rivals = ['gpui', 'gpui-fast']
-    # zgx below both GPUIs in CPU and GPU work in every active cell of every scene.
-    for key in ('cpu_percent_one_core', 'gpu_mcycles_per_second'):
-        for scene, mode in active:
-            for rival in rivals:
-                assert value(scene, 'zgx', mode, key) < value(scene, rival, mode, key), (scene['scene'], mode, key, rival)
-    less = lambda key, mode, rival: 1 - value(heavy, 'zgx', mode, key) / value(heavy, rival, mode, key)
-    heavy_modes = [m for m in heavy['modes'] if m != 'idle']
-    gpu = [less('gpu_mcycles_per_second', m, r) for m in heavy_modes for r in rivals]
+    led = {key: sum(all(value(s, 'zgx', m, key) < value(s, r, m, key) for r in rivals if r in s['frameworks'])
+                    for s, m in active)
+           for key in ('cpu_percent_one_core', 'gpu_mcycles_per_second')}
+    tests = len(active)
     long_zgx = max(value(s, 'zgx', m, 'long_interval_fraction') for s, m in active)
-    long_rivals = max(value(s, r, m, 'long_interval_fraction') for s, m in active for r in rivals)
-    assert long_zgx == 0, 'the headline says zgx has no long frames'
+    if led['cpu_percent_one_core'] == tests and led['gpu_mcycles_per_second'] == tests:
+        verdict = f'In every test, zgx uses less CPU and less GPU than {named}'
+    else:
+        verdict = (f'zgx uses the least CPU in {led["cpu_percent_one_core"]} of {tests} tests and the least GPU '
+                   f'in {led["gpu_mcycles_per_second"]}, against {named}')
+    verdict += ', and none of its frames run long.' if long_zgx == 0 else '.'
+    heavy = by['heavy']
+    against = lambda key, mode: ', '.join(
+        f'{percent_less(value(heavy, "zgx", mode, key), value(heavy, r, mode, key))} than {NAMES[r]}' for r in rivals)
+    long_rivals = max(value(s, r, m, 'long_interval_fraction') for s, m in active for r in rivals if r in s['frameworks'])
     idle = {f: value(heavy, f, 'idle', 'cpu_percent_one_core') for f in ['zgx', *rivals]}
-    assert idle['zgx'] < min(idle[r] for r in rivals)
-    verdict = ('In every test, zgx uses less CPU and less GPU than GPUI and GPUI Fast, '
-               'and none of its frames run long.')
     cards = [
-        (f"{less('cpu_percent_one_core', 'both', 'gpui') * 100:.0f}% / {less('cpu_percent_one_core', 'both', 'gpui-fast') * 100:.0f}%",
-         'less CPU than GPUI / GPUI Fast',
-         f"heavy dashboard, both: {fmt(value(heavy, 'zgx', 'both', 'cpu_percent_one_core'), 1)}% of a core against "
-         f"{fmt(value(heavy, 'gpui', 'both', 'cpu_percent_one_core'), 1)}% and {fmt(value(heavy, 'gpui-fast', 'both', 'cpu_percent_one_core'), 1)}%"),
-        (f'{min(gpu) * 100:.0f}–{max(gpu) * 100:.0f}%', 'less GPU work than either GPUI',
-         'heavy dashboard, every active mode'),
-        ('0%', 'long frames (over 25 ms)',
-         f'median of 8 captures, every mode of every scene; GPUI and GPUI Fast: medians up to {long_rivals * 100:.1f}%'),
-        (f"{fmt(idle['zgx'], 2)}%", 'CPU while idle',
-         f"GPUI {fmt(idle['gpui'], 2)}%, GPUI Fast {fmt(idle['gpui-fast'], 2)}%"),
+        (f"{fmt(value(heavy, 'zgx', 'both', 'cpu_percent_one_core'), 1)}%", 'CPU, heavy dashboard (both)',
+         against('cpu_percent_one_core', 'both')),
+        (f"{fmt(value(heavy, 'zgx', 'both', 'gpu_mcycles_per_second'), 1)} Mcyc/s", 'GPU work, heavy dashboard (both)',
+         against('gpu_mcycles_per_second', 'both')),
+        (f'{long_zgx * 100:.0f}%' if long_zgx == 0 else f'{long_zgx * 100:.1f}%', 'long frames (over 25 ms), at most',
+         f'median of each mode\'s captures, every scene; {named}: up to {long_rivals * 100:.1f}%'),
+        (f"{fmt(idle['zgx'], 2)}%", 'CPU while idle', ', '.join(f"{NAMES[r]} {fmt(idle[r], 2)}%" for r in rivals)),
     ]
     return verdict, cards
 
 
 def chart(scene, metric):
     title, unit, digits, scale, key, applies = METRICS[metric]
+    if metric == 'server':
+        unit += f' (the desktop alone: {fmt(scene["desktop_server"], 1)})'
     modes = [m for m in scene['modes'] if applies == 'all' or m != 'idle']
     rows = [(m, f, c[key]) for m in modes for f in scene['frameworks']
             for c in [cell(scene, f, m)] if key in c]
@@ -174,11 +197,12 @@ def chart(scene, metric):
     return '\n'.join(out)
 
 
-def page(by, verdict, cards, data):
-    env = by['heavy']['environment']
-    protocol = by['heavy']['protocol']
-    commit = by['heavy']['commit']
-    date = by['heavy']['started_utc'][:10]
+def page(by, verdict, cards):
+    heavy = by['heavy']
+    env, protocol, commit = heavy['environment'], heavy['protocol'], heavy['commit']
+    date = heavy['started_utc'][:10]
+    tools = heavy['toolchains']
+    mygo = tools.get('mygo', {})
     displays = env['displays']
     display = (f"{len(displays)} × {displays[0]['name']} ({displays[0]['resolution']})"
                if all(d['name'] == displays[0]['name'] and d['resolution'] == displays[0]['resolution'] for d in displays)
@@ -187,17 +211,26 @@ def page(by, verdict, cards, data):
     card_html = '\n'.join(f'<div class="card"><dt>{e(label)}</dt><dd><span class="big">{e(big)}</span>'
                           f'<span class="note">{e(note)}</span></dd></div>' for big, label, note in cards)
     sections = []
-    for name in ('heavy', 'lab', 'animate'):
+    for name in ORDER:
         scene = by[name]
         title, note = SCENES[name]
-        charts = '\n'.join(chart(scene, m) for m in METRICS
-                           if any(METRICS[m][4] in c for c in scene['cells']))
+        charts = '\n'.join(chart(scene, m) for m in METRICS if any(METRICS[m][4] in c for c in scene['cells']))
         sections.append(
             f'<section id="{name}" aria-labelledby="{name}-h"><h2 id="{name}-h">{e(title)}</h2>'
             f'<p class="scene-note">{e(note)} <a href="{REPO}/tree/main/{scene["run"]}">Raw data</a></p>'
             f'<div class="charts">{charts}</div></section>')
     runs = ''.join(f'<li><a href="{REPO}/tree/main/{by[n]["run"]}"><code>{by[n]["run"]}</code></a> '
-                   f'({by[n]["trials"]} trials, {by[n]["pacing_trials"]} pacing captures)</li>' for n in ('heavy', 'lab', 'animate'))
+                   f'({by[n]["trials"]} trials, {by[n]["pacing_trials"]} pacing captures)</li>' for n in ORDER)
+    luau = 'zgx-luau' in by['vlist']['frameworks']
+    # Where WindowServer works harder for zgx's window than for a rival's.
+    active = [(s, m) for s in by.values() for m in s['modes'] if m != 'idle']
+    rivals = [f for f in heavy['frameworks'] if not f.startswith('zgx')]
+    server_more = sum(any(value(s, 'zgx', m, 'windowserver_cpu_percent') > value(s, r, m, 'windowserver_cpu_percent')
+                          for r in rivals if r in s['frameworks']) for s, m in active)
+    nav = ' '.join(f'<a href="#{n}">{SCENES[n][0]}</a>' for n in ORDER)
+    mygo_build = (f"MyGo {e(mygo.get('mygo_version', '?'))} (<code>{e(mygo.get('mygo_commit', '?')[:7])}</code>, "
+                  f"{e(mygo.get('mygo_license', '?'))}) built with {e(mygo.get('go', tools.get('go', 'Go')))}, "
+                  f"<code>go build {e(mygo.get('flags', ''))}</code>, cgo {'on' if mygo.get('cgo') else 'off'}")
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -212,11 +245,11 @@ def page(by, verdict, cards, data):
 <header>
 <p class="eyebrow">zgx performance · macOS · {date}</p>
 <h1>{e(verdict)}</h1>
-<p class="lede">zgx against GPUI (0.2.2) and GPUI Fast, the same three scenes built from the same workload code, measured on one Mac. Lower is better throughout.</p>
+<p class="lede">zgx against GPUI Fast (Zed's GPUI with its fast-path optimizations, as apps ship it) and MyGo (a Go desktop framework, through its GPU-drawn native UI): the same four scenes, built from the same workload code, measured on one Mac in one session. Lower is better throughout.</p>
 <dl class="cards">
 {card_html}
 </dl>
-<nav aria-label="Scenes"><a href="#heavy">Heavy dashboard</a> <a href="#lab">Text and list</a> <a href="#animate">Animation</a> <a href="#method">How this was measured</a></nav>
+<nav aria-label="Scenes">{nav} <a href="#method">How this was measured</a></nav>
 </header>
 <main>
 {''.join(sections)}
@@ -225,30 +258,35 @@ def page(by, verdict, cards, data):
 <ul class="facts">
 <li><strong>Machine:</strong> {e(env['chip'])} ({e(env['machine'])}, {env['cores']} cores, {env['memory_bytes'] // 2**30} GB), macOS {e(env['macos'])}, {e(env['power'])}.</li>
 <li><strong>Displays:</strong> {e(display)}; the window on the main display, nothing covering it.</li>
-<li><strong>Builds:</strong> every framework with its <code>dist</code> profile (release, fat LTO, one codegen unit) and the system allocator; {e(env['rust'])}. zgx at <a href="{REPO}/commit/{commit}"><code>{commit[:7]}</code></a>.</li>
-<li><strong>Trials:</strong> each a fresh launch of {protocol['requested_seconds']} s, the first {protocol['warmup_seconds']} s discarded, the next {protocol['sampled_seconds']} s sampled every {int(protocol['interval_seconds'] * 1000)} ms; {protocol['repeats']} trials of each active mode, {protocol.get('idle_repeats', protocol['repeats'])} of idle, sampled {protocol['idle_window_seconds'][0]}–{protocol['idle_window_seconds'][1]} s after launch. Medians are shown, the trials' range beside them. Frame timing is {protocol['pacing_repeats']} separate {protocol['pacing_seconds']} s captures per mode.</li>
+<li><strong>Builds:</strong> zgx and GPUI Fast with their <code>dist</code> profile (release, fat LTO, one codegen unit), {e(tools.get('rust', env.get('rust', 'Rust')))}; {mygo_build}. Every framework uses the system allocator. zgx at <a href="{REPO}/commit/{commit}"><code>{commit[:7]}</code></a>.</li>
+<li><strong>Trials:</strong> each a fresh launch, the first {protocol['warmup_seconds']} s discarded and the next {protocol['sampled_seconds']} s sampled every {int(protocol['interval_seconds'] * 1000)} ms; {protocol['repeats']} trials of each mode, in alternating order, and {protocol['extra_trials']} more of any whose CPU or GPU spread past {protocol['spread_for_extra_trials'] * 100:.0f}% of its median; idle {protocol['idle_repeats']} times in the dashboard, {protocol['idle_window_seconds'][0]}–{protocol['idle_window_seconds'][1]} s after launch. Every trial had to run as long as asked, at 60 updates a second. Medians are shown, the trials' range beside them. Frame timing is {protocol['pacing_repeats']} separate {protocol['pacing_seconds']} s captures of each mode.</li>
 <li><strong>CPU:</strong> the app process's CPU time over the sample, as a percentage of one core (it can exceed 100).</li>
+<li><strong>WindowServer CPU:</strong> the CPU of macOS's compositor, which puts every app's frames on screen, over the same sample: what showing the app costs the system beside the app's own CPU. It includes what WindowServer does anyway (the desktop alone, measured each repeat, is beside each chart's title).</li>
 <li><strong>GPU work:</strong> GPU cycles the app's process used per second, from the GPU's counters.</li>
 <li><strong>Frame time:</strong> the 99th percentile of the intervals between frames shown on screen; at 60 updates a second, 16.7 ms is on time (8.3 ms for the animation, drawn at 120 Hz). <strong>Long frames</strong> are intervals over 25 ms.</li>
+<li><strong>Unfilled rows</strong> (the list): the window captured 10 times a second for {by['vlist']['protocol'].get('blank_seconds', 8)} s per mode; a capture counts when a stretch of the rows' padding over 24 points shows the window's background, where no row was drawn.</li>
 <li><strong>Memory:</strong> the process's physical footprint (what Activity Monitor shows: resident memory plus GPU memory it owns), averaged over the sample.</li>
+<li><strong>The list widgets:</strong> zgx's measured virtual list{', the same list from a Luau script (<code>ui.list {{ measured = true }}</code>),' if luau else ''} and GPUI Fast's <code>list</code> measure each row as they lay it out; MyGo's <code>ui.List</code> keeps its place by an anchor row and estimates unmeasured rows at the average height.</li>
 </ul>
 <h3>Caveats</h3>
 <ul class="facts">
+<li>Compare within this run only: the same binaries measured hours apart read differently (the machine's state changes), so a cell is not comparable across runs, while the frameworks in one run share its session.</li>
 <li>Idle memory is two-level: an idle window settles at one of two levels about 25 MB apart, launch to launch, as the Metal driver returns its startup memory. Which level a launch lands on is the driver's timing, not the app's, so read idle memory with its range.</li>
-<li>In the text-and-list scene, zgx's memory ties GPUI Fast's in the active modes.</li>
-<li>The window server's own CPU, which drawing to the screen adds, is level for all three frameworks; it is in the data, not charted.</li>
+<li>MyGo is immediate mode: each frame it draws builds and draws its whole window, which is how MyGo apps work.</li>
+{'' if luau else '<li>zgx through Luau is not in the list scene: zgx-script&#8217;s <code>ui.list</code> does not measure its rows yet.</li>'}
+{f'<li>WindowServer spends more CPU on zgx&#8217;s window than on a rival&#8217;s in {server_more} of {len(active)} tests (its chart follows CPU in each scene): showing zgx&#8217;s frames costs the system more than the others&#8217;, a cost zgx has yet to bring down.</li>' if server_more else ''}
 <li>Binary size is not compared.</li>
-<li>One machine, one session per scene; a personal Mac in use, other applications kept running (each run waited until the machine was quiet). Windows and Linux are not compared here.</li>
+<li>One machine, one session; a personal Mac in use, other applications kept running (the run waited until the machine was quiet). Windows and Linux are not compared here.</li>
 </ul>
 <h3>Data</h3>
 <ul class="facts">
 <li>This page's numbers: <a href="data.csv">data.csv</a>, <a href="data.json">data.json</a>.</li>
-<li>Every trial, raw: {runs}</li>
-<li>How the runs are made: <a href="{REPO}/blob/main/docs/benchmarking.md">benchmarking</a>; the code: <a href="{REPO}">github.com/zeronsh/zgx</a>.</li>
+<li>Every trial, raw:<ul>{runs}</ul></li>
+<li>How the runs are made: <a href="{REPO}/blob/main/docs/benchmarking.md">benchmarking</a>; the adapters: <a href="{REPO}/tree/main/comparisons">comparisons</a>; the code: <a href="{REPO}">github.com/zeronsh/zgx</a>.</li>
 </ul>
 </section>
 </main>
-<footer><p>Built by <code>scripts/build_site.py</code> from the accepted runs; every number recomputed from their trials.</p></footer>
+<footer><p>Built by <code>scripts/build_site.py</code> from the accepted run; every number recomputed from its trials.</p></footer>
 </body>
 </html>
 '''
@@ -256,11 +294,11 @@ def page(by, verdict, cards, data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('results', type=Path, nargs=3, help='the lab, heavy and animate runs, in any order')
+    parser.add_argument('suite', type=Path, help='docs/results/suite-macos-<date>-<commit>')
     parser.add_argument('--output', type=Path, default=ROOT / 'site')
     args = parser.parse_args()
-    by = {s['scene']: s for s in map(load, args.results)}
-    assert set(by) == {'heavy', 'lab', 'animate'}, f'one run of each scene, not {sorted(by)}'
+    suite = args.suite.resolve()
+    by = {name: load(suite / name) for name in ORDER}
     assert len({s['commit'] for s in by.values()}) == 1, 'every scene measured on one commit'
     verdict, cards = headline(by)
     data = {
@@ -269,22 +307,22 @@ def main():
         'frameworks': NAMES,
         'metrics': {m: {'title': t, 'unit': u, 'source': k} for m, (t, u, _, _, k, _) in METRICS.items()},
         'scenes': [{k: by[n][k] for k in ('scene', 'run', 'started_utc', 'frameworks', 'modes', 'trials',
-                                          'pacing_trials', 'protocol', 'environment', 'cells')}
-                   for n in ('heavy', 'lab', 'animate')],
+                                          'pacing_trials', 'protocol', 'environment', 'toolchains', 'cells')}
+                   for n in ORDER],
     }
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'data.json').write_text(json.dumps(data, indent=1) + '\n')
     with (args.output / 'data.csv').open('w', newline='') as out:
         writer = csv.writer(out, lineterminator='\n')
         writer.writerow(['scene', 'mode', 'framework', 'metric', 'median', 'min', 'max', 'trials'])
-        for n in ('heavy', 'lab', 'animate'):
+        for n in ORDER:
             for c in by[n]['cells']:
-                for key in TRIAL_KEYS + PACING_KEYS:
+                for key in TRIAL_KEYS + PACING_KEYS + BLANK_KEYS:
                     if key in c:
-                        trials = c['pacing_captures'] if key in PACING_KEYS else c['repeats']
+                        trials = c['pacing_captures'] if key in PACING_KEYS else 1 if key in BLANK_KEYS else c['repeats']
                         writer.writerow([n, c['mode'], c['framework'], key, c[key]['median'], c[key]['min'], c[key]['max'], trials])
-    (args.output / 'index.html').write_text(page(by, verdict, cards, data))
-    counts = ', '.join(f"{n} ({by[n]['trials']} trials)" for n in ('heavy', 'lab', 'animate'))
+    (args.output / 'index.html').write_text(page(by, verdict, cards))
+    counts = ', '.join(f"{n} ({by[n]['trials']} trials)" for n in ORDER)
     print(f"Published {counts} at {by['heavy']['commit'][:7]} to {args.output}")
 
 

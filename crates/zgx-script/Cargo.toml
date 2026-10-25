@@ -66,6 +66,8 @@ path = "examples/web_view.rs"
 
 [dev-dependencies]
 zgx-desktop = { path = "../zgx-desktop" }
+# The benchmark workload of the vlist_luau example.
+zgx-workload = { path = "../../comparisons/workload" }
 
 [[test]]
 name = "anime"

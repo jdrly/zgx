@@ -7,6 +7,25 @@ pub const ROW_COUNT: usize = 100_000;
 pub const VIEWPORT_HEIGHT: f32 = 400.0;
 pub const PERIOD: Duration = Duration::from_nanos(16_666_667);
 pub const TOKEN: &str = "The quick brown fox streams a token. ";
+/// Every scene's font: the one file in comparisons/fonts, which each adapter
+/// loads itself (`font_file`), so every framework shapes the same glyphs.
+pub const FONT: &str = "DejaVu Sans";
+
+/// FNV-1a, 64-bit: how an adapter names the font file it loaded.
+pub fn fnv64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+/// The font file the runner staged (`ZGX_FONT_FILE`), read, and reported as
+/// the runner checks it (`font_family=… font_file_fnv64=…`, on stderr).
+pub fn font_file() -> Option<Vec<u8>> {
+    let path = var("ZGX_FONT_FILE").ok()?;
+    let bytes = std::fs::read(&path).ok()?;
+    eprintln!("font_family={FONT} font_file_fnv64={:016x}", fnv64(&bytes));
+    Some(bytes)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Idle,
@@ -235,8 +254,8 @@ pub mod heavy {
     use std::{collections::VecDeque, fmt::Write, ops::Range};
     pub const WIDTH: f32 = 1280.;
     pub const HEIGHT: f32 = 800.;
-    /// Installed on every Mac, so no adapter falls back to another face.
-    pub const FONT: &str = "Arial";
+    /// Every scene's font (the bundled file, see `font_file`).
+    pub const FONT: &str = super::FONT;
     pub const BACKGROUND: u32 = 0x0e1218;
     pub const PANEL: u32 = 0x161c26;
     pub const HEADER: u32 = 0x1c2430;
@@ -510,6 +529,221 @@ pub mod heavy {
             assert_eq!((heavy.live, heavy.scroll), (1, 14.));
             assert_ne!(before, heavy.visible_log());
             assert_eq!(heavy.log.len(), LOG_LINES);
+        }
+    }
+}
+
+/// A variable-height virtual list: 100,000 deterministic chat rows of
+/// wrapped text, 1 to 8 lines each, about one in four with a fixed-size
+/// image placeholder under its text, shown by each framework's own list
+/// widget. Every adapter uses the same font, size, line height and widths,
+/// so the same rows wrap to the same lines; the widget measures the heights.
+/// Modes: a steady scroll, flings (a velocity curve), and a steady scroll
+/// with a jump to a seeded row every `JUMP_EVERY` ticks.
+pub mod vlist {
+    pub const WIDTH: f32 = 720.;
+    pub const HEIGHT: f32 = 800.;
+    pub const ROWS: usize = 100_000;
+    pub const FONT: &str = super::FONT;
+    pub const FONT_SIZE: f32 = 14.;
+    pub const LINE_HEIGHT: f32 = 20.;
+    /// A row's padding around its content, and the gap between its parts.
+    pub const PAD: (f32, f32) = (16., 10.);
+    pub const GAP: f32 = 6.;
+    /// The text's width: the window less the padding (it wraps to this).
+    pub const TEXT_WIDTH: f32 = WIDTH - 2. * PAD.0;
+    pub const IMAGE: (f32, f32) = (160., 90.);
+    pub const BACKGROUND: u32 = 0x0e1218;
+    pub const ROW_COLORS: [u32; 2] = [0x161c26, 0x19202b];
+    pub const AUTHOR: u32 = 0x5eb1ff;
+    pub const TEXT: u32 = 0xe5edf7;
+    pub const MUTED: u32 = 0x8b98ab;
+    pub const IMAGE_COLOR: u32 = 0x2b3a52;
+    /// Scroll: pixels a tick. Fling: the first tick's velocity, its decay a
+    /// tick, and the ticks before the next fling. Jump: ticks between jumps.
+    pub const SCROLL_STEP: f32 = 12.;
+    pub const FLING: (f32, f32, u64) = (160., 0.94, 90);
+    pub const JUMP_EVERY: u64 = 30;
+    const WORDS_PER_LINE: usize = 16;
+    const WORDS: [&str; 48] = [
+        "the",
+        "build",
+        "passed",
+        "on",
+        "main",
+        "after",
+        "we",
+        "moved",
+        "layout",
+        "into",
+        "its",
+        "own",
+        "pass",
+        "and",
+        "a",
+        "list",
+        "of",
+        "rows",
+        "now",
+        "measures",
+        "each",
+        "height",
+        "once",
+        "text",
+        "wraps",
+        "at",
+        "the",
+        "width",
+        "so",
+        "scrolling",
+        "stays",
+        "smooth",
+        "even",
+        "with",
+        "images",
+        "and",
+        "long",
+        "messages",
+        "from",
+        "everyone",
+        "who",
+        "reviewed",
+        "it",
+        "today",
+        "thanks",
+        "for",
+        "looking",
+        "again",
+    ];
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Scroll,
+        Fling,
+        Jump,
+        /// Before any trial counts: show each of `probe_rows()` at the top in
+        /// turn, let it lay out, and report the heights the list measured
+        /// (`row_heights=<row>:<points>,…` with `list_width=` and
+        /// `text_width=`), then exit. The runner checks every framework's
+        /// heights agree (within 2 points): the same rows wrap the same way.
+        Probe,
+    }
+    impl Mode {
+        /// ZGX_MODE: `scroll` (the default), `fling`, `jump` or `probe`.
+        pub fn from_env() -> Self {
+            match super::var("ZGX_MODE").as_deref() {
+                Ok("fling") => Self::Fling,
+                Ok("jump") => Self::Jump,
+                Ok("probe") => Self::Probe,
+                _ => Self::Scroll,
+            }
+        }
+    }
+
+    /// The rows the probe measures: for every line count, the first row with
+    /// it and no image; for 1, 4 and 8 lines the first with an image; and two
+    /// far rows.
+    pub fn probe_rows() -> Vec<usize> {
+        let first = |lines_wanted: usize, image: bool| {
+            (0..ROWS)
+                .find(|&r| lines(r) == lines_wanted && has_image(r) == image)
+                .unwrap()
+        };
+        let mut rows: Vec<usize> = (1..=8)
+            .map(|n| first(n, false))
+            .chain([1, 4, 8].map(|n| first(n, true)))
+            .collect();
+        rows.extend([54_321, 99_999]);
+        rows
+    }
+    /// How a probe reports: `row_heights=…`, the list's and the text's widths.
+    pub fn probe_report(heights: &[(usize, f32)], list_width: f32) -> String {
+        let rows: Vec<String> = heights
+            .iter()
+            .map(|(row, h)| format!("{row}:{h:.1}"))
+            .collect();
+        format!(
+            "row_heights={} list_width={list_width:.1} text_width={TEXT_WIDTH:.1}",
+            rows.join(",")
+        )
+    }
+
+    /// splitmix64: a row's (or a jump's) deterministic randomness.
+    pub fn hash(x: u64) -> u64 {
+        let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    /// The lines row `row`'s text is written to fill, 1 to 8: sixteen words
+    /// a line, which at the text width wrap to about this many.
+    pub fn lines(row: usize) -> usize {
+        1 + (hash(row as u64) % 8) as usize
+    }
+    pub fn has_image(row: usize) -> bool {
+        (hash(row as u64) >> 8).is_multiple_of(4)
+    }
+    pub fn author(row: usize) -> String {
+        format!("user-{:04}", hash(row as u64 ^ 0xa5a5) % 10_000)
+    }
+    pub fn time(row: usize) -> String {
+        let minutes = (row / 3) % (24 * 60);
+        format!("{:02}:{:02}", minutes / 60, minutes % 60)
+    }
+    pub fn text(row: usize) -> String {
+        let words = lines(row) * WORDS_PER_LINE;
+        let mut seed = hash(row as u64 + 0x5151);
+        let mut text = String::with_capacity(words * 7);
+        for word in 0..words {
+            seed = hash(seed);
+            if word > 0 {
+                text.push(' ');
+            }
+            text.push_str(WORDS[(seed % WORDS.len() as u64) as usize]);
+        }
+        text
+    }
+    /// The scroll a tick adds (every mode; a jump's tick lands on its row instead).
+    pub fn delta(mode: Mode, tick: u64) -> f32 {
+        match mode {
+            Mode::Scroll => SCROLL_STEP,
+            Mode::Fling => FLING.0 * FLING.1.powi((tick % FLING.2) as i32),
+            Mode::Probe => 0.,
+            // Jump scrolls between its jumps, so frames keep coming and their
+            // times show what each jump costs.
+            Mode::Jump => SCROLL_STEP,
+        }
+    }
+    /// The row a jump lands on at `tick`, if one does then.
+    pub fn jump(tick: u64) -> Option<usize> {
+        (tick > 0 && tick.is_multiple_of(JUMP_EVERY))
+            .then(|| (hash(tick ^ 0x1234_5678) % ROWS as u64) as usize)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn rows_are_deterministic_and_varied() {
+            assert_eq!(text(42), text(42));
+            let counts = (0..1000).fold([0; 9], |mut c, r| {
+                c[lines(r)] += 1;
+                c
+            });
+            assert!(counts[1..].iter().all(|&n| n > 80), "{counts:?}");
+            let images = (0..1000).filter(|&r| has_image(r)).count();
+            assert!((200..300).contains(&images), "{images}");
+            assert_eq!(text(7).split(' ').count(), lines(7) * WORDS_PER_LINE);
+        }
+        #[test]
+        fn modes_move_as_described() {
+            assert_eq!(delta(Mode::Scroll, 5), SCROLL_STEP);
+            assert!(delta(Mode::Fling, 0) > delta(Mode::Fling, 30));
+            assert_eq!(delta(Mode::Fling, FLING.2), FLING.0);
+            assert_eq!(jump(0), None);
+            assert!(jump(JUMP_EVERY).is_some_and(|r| r < ROWS));
+            assert_eq!(jump(JUMP_EVERY + 1), None);
+            assert_eq!(delta(Mode::Jump, 7), SCROLL_STEP);
         }
     }
 }

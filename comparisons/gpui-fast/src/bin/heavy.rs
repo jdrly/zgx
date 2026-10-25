@@ -3,7 +3,7 @@
 //! notifies only the views whose data changed.
 use gpui::{prelude::*, *};
 use std::time::Instant;
-use zgx_workload::{heavy::*, Mode};
+use zgx_workload::{Mode, heavy::*};
 
 fn at((x, y): (f32, f32), w: f32, h: f32) -> Div {
     div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h))
@@ -177,6 +177,12 @@ impl Render for Root {
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
+        // The comparisons' one font file (comparisons/fonts), as every framework loads it.
+        if let Some(bytes) = zgx_workload::font_file() {
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Owned(bytes)])
+                .unwrap();
+        }
         let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
         cx.open_window(
             WindowOptions {

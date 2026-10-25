@@ -1,0 +1,7 @@
+framework,mode,repeat,ran_seconds,requested_seconds,wall_seconds,cpu_seconds,cpu_percent_one_core,cpu_energy_joules,cpu_watts,instructions,cycles,gpu_seconds,gpu_percent,gpu_mcycles_per_second,gpu_active_mhz,gpu_system_watts,windowserver_cpu_percent,windowserver_gpu_percent,gpu_utilization_percent,mean_footprint_bytes,peak_footprint_bytes,mean_rss_bytes,peak_rss_bytes,samples,workload_ticks,reported_fps,package_mw,cpu_mw,gpu_mw,exit_code,terminated_after_report,early_mean_footprint_bytes,early_cpu_percent_one_core
+desktop,baseline,0,20.06,20,15.042,0.0,0.0,0.0,0.0,0,0,0.0,0.0,0.0,338.0,0.0007,0.2057,0.0,0.063,1016024,1016024,1294336,1294336,237,0,,,,,0,False,,
+gpui-fast,both,0,19.82,20,15.0249,2.6402,17.572,3.3299,0.22163,19647723467,5779215611,0.94842,6.5512,22.143,338.0,0.1676,9.3252,4.7555,0.0,263424123,281346792,80685486,82378752,238,1199,,,,,0,False,,
+desktop,baseline,1,20.03,20,15.0215,0.0,0.0,0.0,0.0,0,0,0.0,0.0,0.0,338.0,0.0006,0.2036,0.0,0.0,1016024,1016024,1294336,1294336,232,0,,,,,0,False,,
+gpui-fast,both,1,19.81,20,15.0054,2.749,18.3201,3.2591,0.2172,19646523462,5922693046,0.94952,6.4912,21.94,338.0,0.167,9.5024,4.6698,0.0,275351196,281346792,80650928,82313216,238,1199,,,,,0,False,,
+desktop,baseline,2,20.06,20,15.0479,0.0,0.0,0.0,0.0,0,0,0.0,0.0,0.0,338.0,0.0008,0.6209,0.0252,0.0,1016024,1016024,1294336,1294336,237,0,,,,,0,False,,
+gpui-fast,both,2,19.83,20,15.0286,2.731,18.1721,3.1293,0.20823,19648192598,5797436012,0.95269,6.5612,22.177,338.0,0.1667,9.0909,4.74,0.021,257632350,264372968,80511253,82165760,237,1199,,,,,0,False,,

@@ -60,6 +60,8 @@ def launch(app, mode, parity, seconds):
     own, path = app.split(':', 1) if ':' in app else (mode, app)
     env = {'HOME': os.environ['HOME'], 'PATH': os.environ['PATH'], 'ZGX_MODE': own,
            'ZGX_SECONDS': str(seconds + 12), 'ZGX_PARITY': parity}
+    # And under the names from before the rename, for builds that read only those.
+    env.update({'ZGUI_' + k[4:]: v for k, v in list(env.items()) if k.startswith('ZGX_')})  # rename-to-zgx: keep
     # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
     return subprocess.Popen([str(stage(path))], env=env, cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

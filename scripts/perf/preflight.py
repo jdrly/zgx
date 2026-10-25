@@ -107,14 +107,20 @@ def quiet(seconds=3.0, threshold=75.0, ignore=()):
         'busiest': [f'{name} {cpu:.1f}%' for name, _, cpu in others[:6] if cpu >= 0.5],
         'window_server_percent': round(sum(u[2] for u in usage if u[0] == 'WindowServer'), 1),
         'residents': [f'{name} {cpu:.1f}%' for name, _, cpu in usage if name in RESIDENTS],
+        # The agent app's own processes (its UI drew frames while hidden,
+        # 2026-10-25): recorded with every run.
+        'zeron': [f'{name} ({pid}) {cpu:.1f}%' for name, pid, cpu in usage if name in ('zeron', 'Zeron', 'Zeron Engine') and cpu >= 0.5],
         'dialogs': dialogs(),
     }
     return not heavy and not findings['dialogs'] and load < threshold, findings
 
 
-def wait_until_quiet(log=print, threshold=75.0, patience=1800, ignore=()):
-    """Check until quiet (or `patience` seconds pass: then raise)."""
+def wait_until_quiet(log=print, threshold=75.0, patience=1800, ignore=(), dialog_patience=120):
+    """Check until quiet (or `patience` seconds pass: then raise). A system
+    dialog that stays `dialog_patience` seconds stops it at once: it needs a
+    person, and a quiet window should not wait it out."""
     started = time.monotonic()
+    dialog_since = None
     while True:
         ok, findings = quiet(threshold=threshold, ignore=ignore)
         if ok:
@@ -122,9 +128,14 @@ def wait_until_quiet(log=print, threshold=75.0, patience=1800, ignore=()):
                 f'{", ".join(findings["busiest"]) or "none"})')
             return findings
         if findings['dialogs']:
+            dialog_since = dialog_since or time.monotonic()
             log('preflight: waiting for a system dialog to be dismissed (not clicking it): '
                 + ' | '.join(findings['dialogs']))
+            if time.monotonic() - dialog_since > dialog_patience:
+                raise SystemExit('preflight: a system dialog is on screen; dismiss it by hand: '
+                                 + ' | '.join(findings['dialogs']))
         else:
+            dialog_since = None
             log(f'preflight: waiting (above {threshold:g}%): heavy {findings["heavy"] or "none"}, others '
                 f'{findings["other_cpu_percent"]}% ({", ".join(findings["busiest"])})')
         if time.monotonic() - started > patience:

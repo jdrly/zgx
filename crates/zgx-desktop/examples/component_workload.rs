@@ -12,10 +12,13 @@ use zgx::{
     scene::Color,
     task::yield_now,
 };
-use zgx_desktop::{Application, WindowOptions};
+use zgx_desktop::WindowOptions;
 use zgx_workload::{
     HEIGHT, Mode, PERIOD, ROW_COUNT, ROW_HEIGHT, VIEWPORT_HEIGHT, WIDTH, Workload, row_label,
 };
+
+#[path = "support/bench_font.rs"]
+mod bench_font;
 
 const FG: Color = Color(229, 237, 247, 255);
 const SURFACE: Color = Color(25, 34, 48, 255);
@@ -191,7 +194,7 @@ fn app(stream: Signal<String>, offset: Signal<f32>, mounted: Rc<Cell<usize>>) ->
     })
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Application::new().window(WindowOptions {
+    bench_font::application()?.window(WindowOptions {
         title: "zgx performance lab".into(), width: WIDTH as f64, height: HEIGHT as f64,
         resizable: false, ..Default::default()
     }).run(|cx| {

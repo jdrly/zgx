@@ -7,14 +7,17 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-use zgx_desktop::{Application, WindowOptions};
+use zgx_desktop::WindowOptions;
 use zgx_workload::{Mode, heavy::*};
+
+#[path = "support/bench_font.rs"]
+mod bench_font;
 
 #[path = "support/heavy_view.rs"]
 mod view;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Application::new()
+    bench_font::application()?
         .window(WindowOptions {
             title: "zgx heavy".into(),
             width: WIDTH as f64,
