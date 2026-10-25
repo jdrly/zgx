@@ -9,11 +9,23 @@ use taffy::{
 pub(super) struct AdvancedLayoutCache {
     tree: t::TaffyTree<NodeId>,
     root: t::NodeId,
-    nodes: crate::scene::NodeMap<t::NodeId>,
+    /// Each child's leaf, and what its style was mapped from (`Mapped`).
+    nodes: crate::scene::NodeMap<(t::NodeId, Mapped)>,
     order: Vec<NodeId>,
     /// The percentage bases children were last measured under: taffy keys
     /// a leaf's cached size by its known and available sizes alone.
     bases: (Option<f32>, Option<f32>),
+}
+/// What a child's leaf style was mapped from: its style and the style of
+/// the node it lays out as (`laid_out_as`), each by node and count of
+/// writes (`Node::style_writes`), and whether its parent stacks it. The same
+/// again, the mapping is too.
+#[derive(Clone, Copy, PartialEq)]
+struct Mapped {
+    writes: u32,
+    laid: NodeId,
+    laid_writes: u32,
+    stacked: bool,
 }
 impl AdvancedLayoutCache {
     fn new() -> Self {
@@ -262,7 +274,7 @@ fn overlay_down(value: Justify) -> t::AlignItems {
 }
 /// A child's style in its overlay parent: in the one grid area, its own
 /// `align_self` across.
-fn stacked(mut mapped: t::Style) -> t::Style {
+fn stacked_style(mut mapped: t::Style) -> t::Style {
     if mapped.position != t::Position::Absolute {
         mapped.grid_row = t::Line {
             start: line(1),
@@ -564,26 +576,43 @@ impl Scene {
                 .copied()
                 .collect();
             for removed in removed {
-                let key = cache.nodes.remove(&removed).unwrap();
+                let (key, _) = cache.nodes.remove(&removed).unwrap();
                 cache.tree.remove(key).expect("owned retained layout child");
             }
         }
         let children: Vec<_> = ids
             .iter()
             .map(|child| {
-                let mut mapped = style(&self.node(*child).style, Layout::Column, true);
-                // A `contents` child clips as the child it lays out as.
-                mapped.overflow =
-                    overflow(super::clips(&self.node(self.laid_out_as(*child)).style));
-                if layout == Layout::Overlay && root_options.display != Some(ViewDisplay::Grid) {
-                    mapped = stacked(mapped);
-                }
-                if let Some(key) = cache.nodes.get(child).copied() {
-                    if cache.tree.style(key).expect("retained style") != &mapped {
-                        cache
-                            .tree
-                            .set_style(key, mapped)
-                            .expect("retained style update");
+                let laid = self.laid_out_as(*child);
+                let stacked =
+                    layout == Layout::Overlay && root_options.display != Some(ViewDisplay::Grid);
+                let stamp = Mapped {
+                    writes: self.node(*child).style_writes,
+                    laid,
+                    laid_writes: self.node(laid).style_writes,
+                    stacked,
+                };
+                let map = |scene: &Self| {
+                    let mut mapped = style(&scene.node(*child).style, Layout::Column, true);
+                    // A `contents` child clips as the child it lays out as.
+                    mapped.overflow = overflow(super::clips(&scene.node(laid).style));
+                    if stacked {
+                        mapped = stacked_style(mapped);
+                    }
+                    mapped
+                };
+                if let Some((key, last)) = cache.nodes.get_mut(child) {
+                    let key = *key;
+                    // Mapped from the same styles: the leaf's style as it is.
+                    if *last != stamp {
+                        *last = stamp;
+                        let mapped = map(self);
+                        if cache.tree.style(key).expect("retained style") != &mapped {
+                            cache
+                                .tree
+                                .set_style(key, mapped)
+                                .expect("retained style update");
+                        }
                     }
                     if self.node(*child).dirty & LAYOUT != 0 {
                         cache
@@ -595,9 +624,9 @@ impl Scene {
                 } else {
                     let key = cache
                         .tree
-                        .new_leaf_with_context(mapped, *child)
+                        .new_leaf_with_context(map(self), *child)
                         .expect("retained leaf");
-                    cache.nodes.insert(*child, key);
+                    cache.nodes.insert(*child, (key, stamp));
                     key
                 }
             })
@@ -858,6 +887,58 @@ impl Scene {
 mod tests {
     use super::*;
     #[test]
+    fn a_retained_child_restyled_either_way_lays_out_as_a_fresh_one() {
+        // A row with a gap (laid out by taffy) of three boxes; the middle
+        // one's width given as `widths` says, and its box (`set_box`) or its
+        // style (`set_style`) changed after the first layout.
+        let build = |width: f32| {
+            let mut scene = Scene::new(500., 300.);
+            let row = scene.append(
+                scene.root(),
+                NodeKind::Container(Layout::Row),
+                Style {
+                    layout_options: Some(Arc::new(crate::layout::LayoutOptions {
+                        gap_x: Some(Length::Px(6.)),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            );
+            let boxes: Vec<_> = [20., width, 30.]
+                .into_iter()
+                .map(|width| {
+                    scene.append(
+                        row,
+                        NodeKind::Container(Layout::Column),
+                        Style {
+                            width: Some(width),
+                            height: Some(10.),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            scene.flush();
+            (scene, row, boxes)
+        };
+        let (mut scene, row, boxes) = build(40.);
+        let mut kept = None;
+        for (i, width) in [55., 12., 80., 33.].into_iter().enumerate() {
+            let mut style = scene.style(boxes[1]);
+            style.width = Some(width);
+            match i % 2 {
+                0 => scene.set_box(boxes[1], &style, &mut kept),
+                _ => scene.set_style(boxes[1], style),
+            }
+            scene.flush();
+            let (fresh, fresh_row, fresh_boxes) = build(width);
+            assert_eq!(scene.bounds(row), fresh.bounds(fresh_row), "at {width}");
+            for (id, fresh_id) in boxes.iter().zip(&fresh_boxes) {
+                assert_eq!(scene.bounds(*id), fresh.bounds(*fresh_id), "at {width}");
+            }
+        }
+    }
+    #[test]
     fn advanced_cache_survives_changes_and_removes_stale_children() {
         let mut scene = Scene::new(500., 300.);
         let root = scene.root();
@@ -894,7 +975,7 @@ mod tests {
         scene.flush();
         let cache = scene.node(grid).advanced_layout.as_ref().unwrap();
         let pointer = (&**cache) as *const AdvancedLayoutCache;
-        let second_key = cache.nodes[&second];
+        let second_key = cache.nodes[&second].0;
         assert!(scene.node(first).advanced_layout.is_none());
         assert_eq!(scene.flush().layout_nodes, 0);
         let mut style = scene.style(first);
@@ -906,7 +987,7 @@ mod tests {
             pointer
         );
         assert_eq!(
-            scene.node(grid).advanced_layout.as_ref().unwrap().nodes[&second],
+            scene.node(grid).advanced_layout.as_ref().unwrap().nodes[&second].0,
             second_key
         );
         scene.remove(first);
@@ -914,6 +995,6 @@ mod tests {
         let cache = scene.node(grid).advanced_layout.as_ref().unwrap();
         assert!(!cache.nodes.contains_key(&first));
         assert_eq!(cache.nodes.len(), 1);
-        assert_eq!(cache.nodes[&second], second_key);
+        assert_eq!(cache.nodes[&second].0, second_key);
     }
 }
