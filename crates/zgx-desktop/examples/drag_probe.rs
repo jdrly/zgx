@@ -15,7 +15,9 @@
 //!
 //! On Windows `scripts/windows_drag_smoke.py` drives it from outside, with
 //! real input, onto a test-owned drop target (`drop_target_probe`).
-//! `DRAG_PROBE_ANIMATE=1` moves a bar every display frame.
+//! `DRAG_PROBE_ANIMATE=1` moves a bar every display frame;
+//! `DRAG_PROBE_FILE=<path>` makes the chip carry that file beside its text,
+//! as a file dragged out to Explorer does (`CF_HDROP`).
 use zgx::compose::prelude::*;
 use zgx_desktop::{Application, WindowBounds, WindowOptions};
 
@@ -101,7 +103,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .justify_center()
                         .child(zgx::compose::text(text))
                 })
-                .drag_export(|text: &String| vec![zgx::input::DragItem::Text(text.clone())])
+                .drag_export(|text: &String| {
+                    let mut items = vec![zgx::input::DragItem::Text(text.clone())];
+                    if let Some(file) = std::env::var_os("DRAG_PROBE_FILE") {
+                        items.push(zgx::input::DragItem::File(file.into()));
+                    }
+                    items
+                })
                 .on_drag_end(|_: &String, accepted| println!("DRAG_END accepted={accepted}"));
             // `DRAG_PROBE_ANIMATE=1`: a bar moving every display frame, to
             // see that the window goes on animating while the platform runs

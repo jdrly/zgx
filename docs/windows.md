@@ -615,7 +615,8 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   alone. `--idle` adds the probe's idle spans (about a minute).
 - `windows_drag_smoke.py` (`drag_probe` and `drop_target_probe`, a
   test-owned OLE drop target in another process placed against the probe):
-  the chip dragged out onto the target, which receives its text while the
+  the chip dragged out onto the target, which receives its text and a file
+  (`CF_HDROP`, as Explorer takes one) while the
   source hears it accepted; the target's description of the drop shown under
   the drag image (the white of Windows' label, absent when the source does
   not allow descriptions); the probe animating at the display's rate through

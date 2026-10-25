@@ -27,7 +27,9 @@ import ctypes
 import os
 import pathlib
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -152,7 +154,10 @@ def main():
     parser.add_argument("examples", type=pathlib.Path)
     args = parser.parse_args()
     # Its bar moves every display frame; its presents are logged.
-    env = dict(os.environ, DRAG_PROBE_ANIMATE="1", ZGX_PRESENT_LOG="1")
+    # The chip carries a file too, as one dragged out to Explorer.
+    exported = pathlib.Path(tempfile.mkdtemp(prefix="zgx-drag-out-"), "dragged-out.txt")
+    exported.write_text("zgx")
+    env = dict(os.environ, DRAG_PROBE_ANIMATE="1", ZGX_PRESENT_LOG="1", DRAG_PROBE_FILE=str(exported))
     source = subprocess.Popen([str(args.examples / "drag_probe.exe")], stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, env=env)
     source_lines = reader(source)
@@ -210,8 +215,10 @@ def main():
         wait_for(lambda: any(line.startswith("DROPPED") for line in target_lines), "the drop")
         dropped = next(line for line in target_lines if line.startswith("DROPPED"))
         assert "text=Some(\"Some text\")" in dropped, dropped
+        # The file as Explorer takes one: CF_HDROP, its path whole.
+        assert "dragged-out.txt" in dropped and str(exported).replace("\\", "\\\\") in dropped, dropped
         wait_for(lambda: "DRAG_END accepted=true" in source_lines, "the source to hear it accepted")
-        print(f"ok: dragged out onto another app's window, which took the text ({dropped})")
+        print(f"ok: dragged out onto another app's window, which took the text and the file ({dropped})")
         assert "DESCRIBED" in target_lines, "the target did not describe the drop"
         assert held[1] > 300 * scale * scale, f"no drop description under the drag image ({held[1]} white pixels)"
         print(f"ok: the target's drop description shows under the drag image ({held[1]} white label pixels)")
@@ -283,6 +290,7 @@ def main():
         print("ok: a tab let go outside the app's windows tears off")
         print("drag smoke passed")
     finally:
+        shutil.rmtree(exported.parent, ignore_errors=True)
         for proc in (source, target):
             if proc and proc.poll() is None:
                 proc.kill()
