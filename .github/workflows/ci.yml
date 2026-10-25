@@ -322,4 +322,4 @@ jobs:
       # Direct3D 12 on WARP (no GPU on the runner): pixel tests of what the
       # D3D shader compiler alone gets wrong (coarse derivatives, #38), and
       # the device on DXGI's first low-power adapter (`adapter`, #217).
-      - run: cargo test -p zgx-gpu --test borders --test transforms --test rounded_clip --test adapter --locked
+      - run: cargo test -p zgx-gpu --test borders --test transforms --test rounded_clip --test adapter --test shader_cache --locked
