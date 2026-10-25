@@ -4236,7 +4236,12 @@ impl Scene {
     /// is worked out by the first and kept for the rest. Valid while the
     /// ancestors keep their places, clips and visibility.
     fn damage_subtree_with(&mut self, id: NodeId, context: &mut Option<DamageContext>) {
-        if self.damage_is_full() {
+        // Hidden, or never laid out (a mounting row's nodes, each closing in
+        // turn): it damages nothing (`damage_subtree_in`), so its ancestors
+        // need no working out.
+        let node = self.node(id);
+        let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
+        if !own_visible(&node.style) || unplaced || self.damage_is_full() {
             return;
         }
         // Resolve the ancestors once, then carry translation and clipping down
