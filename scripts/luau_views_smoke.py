@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """A Luau board canvas and a measured list, natively, on X11 (Xvfb/Openbox,
 xdotool) and as a Wayland client of a headless sway (virtual pointer):
-scripts/luau_views/app.luau, run by zgx-script's hot_reload example
-(`ZGX_SCRIPT_DIR`), its pixels read from screen captures and its calls
-from what it prints. `cargo build -p zgx-script --example hot_reload`
-builds it; CI's test step (`cargo test --all-targets`) builds it only under
-a hashed name, which is run when there is no other.
+scripts/luau_views/app.luau, run by zgx-desktop's luau_probe example (as
+zgx-run runs it), its pixels read from screen captures and its calls from
+what it prints.
 
 - the canvas's `bg_grid` shows a 2-pixel magenta dot every 20 points, and
   `each`'s two shapes where they are drawn, each drawn once (`draw_item`);
@@ -85,18 +83,11 @@ def grid(board):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("binaries", type=pathlib.Path, help="the examples directory, with hot_reload")
+    parser.add_argument("runner", type=pathlib.Path, help="the luau_probe example")
     parser.add_argument("--output", type=pathlib.Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     processes, checks = [], {}
-    # hot_reload, or the newest hot_reload-<hash> a test build left.
-    runner = args.binaries / "hot_reload"
-    if not runner.exists():
-        built = [p for p in args.binaries.glob("hot_reload-*") if p.suffix == "" and os.access(p, os.X_OK)]
-        assert built, f"no hot_reload in {args.binaries}: cargo build -p zgx-script --example hot_reload"
-        runner = max(built, key=lambda p: p.stat().st_mtime)
-    checks["runner"] = runner.name
 
     def launch(name, command, env):
         log = args.output / (name + ".log")
@@ -117,7 +108,7 @@ def main():
         """The checks on one display: `shot()` captures it, `origin()` finds
         the window's content, `wheel()` pans the board, `click(x, y)` presses
         at the window's points."""
-        app, log = launch(f"{name}-app", [str(runner)], dict(env, ZGX_SCRIPT_DIR=str(APP)))
+        app, log = launch(f"{name}-app", [str(args.runner), str(APP)], env)
         text = lambda: log.read_text(errors="replace")
         draws = lambda: re.findall(r"^DRAW_ITEM (\d+)$", text(), re.M)
         views = lambda: [tuple(map(float, v)) for v in re.findall(r"^VIEW (\S+) (\S+) (\S+)$", text(), re.M)]
@@ -271,7 +262,7 @@ def main():
                 return image
 
             def x11_window():
-                found = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Luau hot reload"], env=x11,
+                found = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "^Luau views$"], env=x11,
                                        capture_output=True, text=True).stdout.split()
                 return found[0] if found else None
 

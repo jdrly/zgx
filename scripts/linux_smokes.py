@@ -3,10 +3,9 @@
 
 Every probe owns its display or compositor session, so independent probes run
 side by side. Probes that expect an ambient X11 desktop get a private
-Xvfb/Openbox pair. Build the zgx-desktop examples, zgx-script's hot_reload
-(for Luau probes) and, for the ignored host tests, `cargo test -p
-zgx-desktop --lib --no-run` first. A failed or timed-out probe fails the
-run after all the others finish; nothing is retried.
+Xvfb/Openbox pair. Build the zgx-desktop examples (and, for the ignored host
+tests, `cargo test -p zgx-desktop --lib --no-run`) first. A failed or
+timed-out probe fails the run after all the others finish; nothing is retried.
 """
 import argparse
 import os
@@ -97,7 +96,7 @@ SMOKES = [
     ("selection-copy", "python3 scripts/selection_copy_smoke.py {bin}/selectable_text --output {out}", False),
     ("selection-copy-wayland", "python3 scripts/selection_copy_smoke.py {bin}/selectable_text --wayland --output {out}", False),
     ("selectable-text", "python3 scripts/selectable_text_smoke.py {bin}/selectable_text --output {out}", False),
-    ("luau-views", "python3 scripts/luau_views_smoke.py {bin} --output {out}", False),
+    ("luau-views", "python3 scripts/luau_views_smoke.py {bin}/luau_probe --output {out}", False),
     ("editor-autoscroll", "python3 scripts/editor_autoscroll_smoke.py {bin}/editor_autoscroll --output {out}", False),
     ("transparency", "python3 scripts/transparency_smoke.py {bin}/transparency --output {out}", False),
     ("wayland-transparency", "python3 scripts/wayland_transparency_smoke.py {bin}/transparency --output {out}", False),
