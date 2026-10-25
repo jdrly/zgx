@@ -771,6 +771,10 @@ pub(crate) enum Kind {
         /// `measured = true`: rows take their content's height, measured as
         /// they mount (`height` the estimate for the rest until then).
         measured: bool,
+        /// `row_text = function(i) … end`: the plain text of row `i`, what
+        /// a copy of a selection over rows the list has not mounted takes
+        /// (without it, the text each row's description shows).
+        row_text: Option<Function>,
         /// `follow = true` (with `measured` or `heights`): resting at the
         /// end, it stays there as rows come and are measured (a chat).
         follow: bool,
@@ -1878,6 +1882,7 @@ const WIDGET_FIELDS: &[&str] = &[
     "overscan",
     "heights",
     "measured",
+    "row_text",
     "sticky",
     "sticky_top",
     "placement",
@@ -3305,6 +3310,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                             build,
                             key: table.get::<Option<Function>>("key")?,
                             measured,
+                            row_text: table.get::<Option<Function>>("row_text")?,
                             follow: table.get::<Option<bool>>("follow")?.unwrap_or(false),
                             offset,
                             scrollbar: table.get::<Option<bool>>("scrollbar")?.unwrap_or(false),

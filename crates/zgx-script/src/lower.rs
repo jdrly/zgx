@@ -3669,6 +3669,67 @@ fn list_keys(vm: &Vm, key: &mlua::Function, count: usize) -> Vec<ListKey> {
         .collect()
 }
 
+/// What `builder` describes for `args`, built as a row is but not mounted,
+/// in a scope of its own that ends at once: for the text of a row a list
+/// has not mounted.
+fn described(
+    vm: &Rc<Vm>,
+    builder: &mlua::Function,
+    args: impl mlua::IntoLuaMulti,
+) -> Option<Rc<Node>> {
+    let scope = Rc::new(Scope::default());
+    let previous = vm
+        .lua
+        .app_data_ref::<crate::node::Env>()
+        .map(|env| env.scope.replace(Some(scope.clone())));
+    let result = vm.call::<mlua::Value>(builder, args);
+    if let (Some(previous), Some(env)) = (previous, vm.lua.app_data_ref::<crate::node::Env>()) {
+        *env.scope.borrow_mut() = previous;
+    }
+    match result {
+        Ok(mlua::Value::UserData(ud)) => ud.borrow::<NodeUd>().ok().map(|n| n.0.clone()),
+        Ok(_) => None,
+        Err(e) => {
+            vm.report(e);
+            None
+        }
+    }
+}
+
+/// The text `node` shows, as a copy of it takes it: its texts in order, a
+/// tab between a row's children and a line break between others'.
+fn node_text(node: &Node, vm: &Vm) -> String {
+    match &node.kind {
+        Kind::Text(text) => return render_text(text, vm),
+        Kind::Rich(spans) => return spans.iter().map(|s| render_text(&s.text, vm)).collect(),
+        Kind::Show {
+            when,
+            then,
+            otherwise,
+        } => {
+            let on = resolve(&resolve_owned(when), Ty::Bool, None, vm) == Some(Lit::Bool(true));
+            return match (on, otherwise) {
+                (true, _) => node_text(then, vm),
+                (false, Some(otherwise)) => node_text(otherwise, vm),
+                (false, None) => String::new(),
+            };
+        }
+        _ => {}
+    }
+    let separator = if matches!(node.kind, Kind::Row) {
+        "\t"
+    } else {
+        "\n"
+    };
+    let parts: Vec<String> = node
+        .children
+        .iter()
+        .map(|child| node_text(child, vm))
+        .filter(|text| !text.is_empty())
+        .collect();
+    parts.join(separator)
+}
+
 /// A `ui.list` (kept out of `build`, which recurses: its locals would
 /// weigh on every level of a deep interface's stack).
 #[inline(never)]
@@ -3683,6 +3744,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
         build: builder,
         key,
         measured,
+        row_text,
         follow,
         offset,
         keyboard,
@@ -3735,6 +3797,37 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
         Some(Lit::Num(n)) => n.max(0.) as usize,
         _ => 0,
     };
+    // What a row the list has not mounted copies as, when a selection
+    // spans it: `row_text`'s, or what its row would show.
+    let copy = {
+        let (builder, vm, count, list_key) =
+            (builder.clone(), vm.clone(), count.clone(), list_key.clone());
+        let (explicit, keyed) = (row_text.clone(), key.is_some());
+        let runtime = need(&mut cx).runtime();
+        move |index: usize| -> Option<String> {
+            if index >= count() {
+                return None;
+            }
+            if let Some(text) = &explicit {
+                return Some(match vm.call::<Value>(text, index + 1) {
+                    Ok(Value::Nil) => String::new(),
+                    Ok(value) => value.to_string(),
+                    Err(e) => {
+                        vm.report(e);
+                        String::new()
+                    }
+                });
+            }
+            let node = if keyed {
+                let shown = runtime.signal(Value::Num((index + 1) as f64));
+                let args = (list_key(index).value(), crate::value::State(shown, None));
+                described(&vm, &builder, args)
+            } else {
+                described(&vm, &builder, index + 1)
+            };
+            Some(node.map_or_else(String::new, |node| node_text(&node, &vm)))
+        }
+    };
     if *measured {
         let cx = need(&mut cx);
         // `height` is the estimate of a row not yet mounted.
@@ -3761,7 +3854,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
                 measured_rows(offset, rows, *overscan, keys, estimate, row)
             }
         };
-        return list.keyboard_navigation(keyboard);
+        return list.keyboard_navigation(keyboard).row_text(copy);
     }
     if let Some(heights) = heights {
         let cx = need(&mut cx);
@@ -3787,7 +3880,8 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             let _ = r.replace(values);
         }));
         let list = variable_virtual_list(offset.clone(), rows.clone(), *overscan, list_key, row)
-            .keyboard_navigation(keyboard);
+            .keyboard_navigation(keyboard)
+            .row_text(copy);
         match sticky {
             None => list,
             Some(sticky) => sticky_list(
@@ -3809,6 +3903,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             row,
         )
         .keyboard_navigation(keyboard)
+        .row_text(copy)
     }
 }
 

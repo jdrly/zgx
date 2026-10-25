@@ -16,6 +16,7 @@ ui.list(props: ListProps) -> Node
 | --- | --- | --- | --- |
 | children | `Child` | none | |
 | `offset` | `State<number>` | its own | the scroll position in points, both ways: scrolling writes it, setting it scrolls (clamped) |
+| `row_text` | `(index: number) -> string` | the row's own texts | the plain text of row `index`: in a selectable region, copying a selection that spans rows the list has not mounted (select-all over a long transcript) takes theirs from it. Without it, the list builds the row's description (not mounted) and takes its texts, a `row`'s children joined by tabs and others by line breaks, as a copy of the row on screen does; give it for rows drawn or built in ways that don't say their text |
 | `follow` | `boolean` | `false` | stays at the end while the content grows, until scrolled away from it (a transcript, a log) |
 | `scrollbar` | `boolean` | `false` | an interactive scrollbar over the trailing edge: drag it, click its track to page; overlay style (hidden until scrolling) where the system has overlay scrollbars |
 | `w`, `h` | `Length` | `320` by `240` when nothing else sizes it | a stretching parent, `grow`, `w`/`h` or `w_full` size it instead |
@@ -151,6 +152,7 @@ return ui.row {
 
 - Every list row is `height` points: a taller row overlaps the next and a shorter one leaves a gap. For rows of different heights give `heights` (each row's own, still never measured), or `measured = true` for rows whose height depends on their text (`zgx lint` flags wrapped text in rows of fixed height).
 - A list row is built once for its index, when it comes into view. Reading state in `row` (`items:get()[i]`) takes the value at that moment; to follow a change, read it in a function property or text inside the row (`ui.text(function() return items:get()[i].name end)`), or change `count`. Rows are keyed by index, so a row's own state stays with its position, not its data.
+- In a `selectable` region, a selection runs through a list as through any text: dragging past its edge scrolls it, the selection outlives the rows scrolled away (each end keeps its place in its row), and copying takes the rows between, mounted or not (see `row_text`).
 - List rows do not stretch across the list: give a row's root `w_full = true`.
 - A `scroll` with no size and nothing sizing it is 320 by 240 along its scrolling axis; across it, a column or row stretches it (the default `items`), and inside one with `items = "start"` it keeps 320. Use `w_full = true`, `grow = 1` or a stretching parent.
 - All of a `scroll`'s children stay mounted however far away they are; past a few thousand rows, use `list`.

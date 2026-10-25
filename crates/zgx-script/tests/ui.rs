@@ -2594,3 +2594,56 @@ fn a_following_measured_list_stays_at_its_end() {
         list.y + list.height
     );
 }
+
+#[test]
+fn copying_a_selection_over_a_list_takes_the_rows_it_has_not_mounted() {
+    let mut h = Harness::inline(
+        r##"local people = ui.state("people", (function()
+            local list = {}
+            for i = 1, 300 do list[i] = { id = i, name = `Person {i}`, city = if i % 2 == 0 then "Oslo" else "Lima" } end
+            return list
+        end)())
+        return ui.column {
+            selectable = true,
+            ui.text { "People", id = "title" },
+            -- Rows by position, each a row of two texts: copied as shown.
+            ui.list {
+                id = "plain", count = 300, height = 20, w = 300, h = 100,
+                row = function(i)
+                    local p = people:peek()[i]
+                    return ui.row { ui.text(p.name), ui.text { function() return p.city end } }
+                end,
+            },
+            -- Keyed and measured, the row reading its item by key.
+            ui.list {
+                id = "keyed", count = function() return people:len() end, height = 20,
+                measured = true, w = 300, h = 100,
+                key = function(i) return people:at(i).id end,
+                row = function(id, index)
+                    return ui.text { function() return `{index:get()}. {people:at(id).name}` end, wrap = true }
+                end,
+            },
+            -- A row of its own make: its text given.
+            ui.list {
+                id = "given", count = 300, height = 20, w = 300, h = 100,
+                row_text = function(i) return `Item {i}` end,
+                row = function(i) return ui.canvas { w_full = true, h = 20, draw = function() end } end,
+            },
+        }"##,
+    );
+    assert_eq!(h.host.error().get(), None);
+    h.ui.prepare_frame();
+    let title = h.find("title").unwrap();
+    assert!(h.ui.select_all_text(title));
+    let text = h.ui.selected_text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "People");
+    assert_eq!(lines[1], "Person 1\tLima");
+    assert_eq!(lines[300], "Person 300\tOslo");
+    assert_eq!(lines[301], "1. Person 1");
+    assert_eq!(lines[600], "300. Person 300");
+    assert_eq!(lines[601], "Item 1");
+    assert_eq!(lines[900], "Item 300");
+    assert_eq!(lines.len(), 901, "{text}");
+    assert_eq!(h.host.error().get(), None);
+}
