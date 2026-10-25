@@ -347,15 +347,28 @@ mod win {
     /// windows have none, and Windows drew a blank page. An executable
     /// without one keeps that. Sized for the window's DPI.
     fn icon(hwnd: HWND) {
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        // SAFETY: this executable's own module.
+        if let Ok(module) = unsafe { GetModuleHandleW(None) } {
+            set_icons(hwnd, module);
+        }
+    }
+
+    /// `module`'s first icon group as `hwnd`'s big and small icons, sized for
+    /// its DPI. Windows destroys neither the icons a window was given
+    /// (`WM_SETICON`) nor those a later one replaces: one replaced is
+    /// destroyed here, and the window's last at `release_icons`.
+    fn set_icons(hwnd: HWND, module: windows::Win32::Foundation::HMODULE) {
         use windows::{
             Win32::{
                 Foundation::{HMODULE, LPARAM, WPARAM},
-                System::LibraryLoader::{EnumResourceNamesW, GetModuleHandleW},
+                System::LibraryLoader::EnumResourceNamesW,
                 UI::{
                     HiDpi::GetSystemMetricsForDpi,
                     WindowsAndMessaging::{
-                        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW,
-                        RT_GROUP_ICON, SM_CXICON, SM_CXSMICON, SendMessageW, WM_SETICON,
+                        DestroyIcon, HICON, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_DEFAULTCOLOR,
+                        LoadImageW, RT_GROUP_ICON, SM_CXICON, SM_CXSMICON, SendMessageW,
+                        WM_SETICON,
                     },
                 },
             },
@@ -386,13 +399,11 @@ mod win {
             }
             false.into()
         }
-        // SAFETY: this executable's resources; the callback writes `found`
-        // only while the enumeration runs, and `name` borrows `found`'s
-        // string (or is an integer ID) for the loads after it.
+        // SAFETY: `module`'s resources; the callback writes `found` only
+        // while the enumeration runs, and `name` borrows `found`'s string (or
+        // is an integer ID) for the loads after it. An icon the window gives
+        // back for a new one is ours, and no longer shown.
         unsafe {
-            let Ok(module) = GetModuleHandleW(None) else {
-                return;
-            };
             let mut found: Option<Name> = None;
             let _ = EnumResourceNamesW(
                 Some(module),
@@ -416,12 +427,36 @@ mod win {
                     side,
                     LR_DEFAULTCOLOR,
                 ) {
-                    SendMessageW(
+                    let replaced = SendMessageW(
                         hwnd,
                         WM_SETICON,
                         Some(WPARAM(which as usize)),
                         Some(LPARAM(icon.0 as isize)),
                     );
+                    if replaced.0 != 0 {
+                        let _ = DestroyIcon(HICON(replaced.0 as *mut _));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Take `hwnd`'s icons (`set_icons`) back and destroy them, as it goes:
+    /// each held its bitmaps, GDI objects, for the life of the process.
+    fn release_icons(hwnd: HWND) {
+        use windows::Win32::{
+            Foundation::WPARAM,
+            UI::WindowsAndMessaging::{
+                DestroyIcon, HICON, ICON_BIG, ICON_SMALL, SendMessageW, WM_SETICON,
+            },
+        };
+        for which in [ICON_BIG, ICON_SMALL] {
+            // SAFETY: our own window, which gives back the icon it had: ours,
+            // shown nowhere else.
+            unsafe {
+                let old = SendMessageW(hwnd, WM_SETICON, Some(WPARAM(which as usize)), None);
+                if old.0 != 0 {
+                    let _ = DestroyIcon(HICON(old.0 as *mut _));
                 }
             }
         }
@@ -853,6 +888,7 @@ mod win {
                 }
             }
             WM_NCDESTROY => {
+                release_icons(hwnd);
                 // SAFETY: removes this subclass and takes back its reference.
                 unsafe {
                     let _ = RemoveWindowSubclass(hwnd, Some(subclass), SUBCLASS_ID);
@@ -1026,6 +1062,77 @@ mod win {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// Windows given icons (twice, as on a DPI change) and destroyed
+        /// leave no GDI objects behind; without `release_icons` each left its
+        /// icons' bitmaps. user32.dll's icon groups stand in for an
+        /// executable's.
+        #[test]
+        fn windows_given_icons_leave_no_gdi_objects_behind() {
+            use windows::Win32::{
+                System::{
+                    LibraryLoader::{
+                        LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE, LoadLibraryExW,
+                    },
+                    Threading::{GR_GDIOBJECTS, GetCurrentProcess, GetGuiResources},
+                },
+                UI::WindowsAndMessaging::{
+                    CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+                },
+            };
+            // SAFETY: a system library mapped for its resources; plain
+            // windows of a system class, made and destroyed here; reads this
+            // process's GDI object count.
+            unsafe {
+                let module = LoadLibraryExW(
+                    windows::core::w!("user32.dll"),
+                    None,
+                    LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+                )
+                .unwrap();
+                let gdi = || GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+                let window = || {
+                    CreateWindowExW(
+                        WINDOW_EX_STYLE(0),
+                        windows::core::w!("STATIC"),
+                        None,
+                        WS_POPUP,
+                        0,
+                        0,
+                        10,
+                        10,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap()
+                };
+                // Whatever the system keeps once per process, made first.
+                let first = window();
+                set_icons(first, module);
+                release_icons(first);
+                let _ = DestroyWindow(first);
+                let before = gdi();
+                for _ in 0..50 {
+                    let hwnd = window();
+                    set_icons(hwnd, module);
+                    set_icons(hwnd, module);
+                    release_icons(hwnd);
+                    let _ = DestroyWindow(hwnd);
+                }
+                let after = gdi();
+                assert!(after <= before + 2, "{before} GDI objects, then {after}");
+                // The count sees the leak: icons left on destroyed windows.
+                for _ in 0..10 {
+                    let hwnd = window();
+                    set_icons(hwnd, module);
+                    let _ = DestroyWindow(hwnd);
+                }
+                let leaked = gdi();
+                assert!(leaked >= after + 20, "{after}, then {leaked}");
+            }
+        }
 
         #[test]
         fn a_frameless_windows_edges_resize_and_its_corner_buttons_answer() {
