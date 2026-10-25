@@ -948,6 +948,12 @@ pub(crate) fn to_lua(value: &Value, lua: &Lua, frozen: bool) -> mlua::Result<mlu
             table.set_readonly(frozen);
             Ok(mlua::Value::Table(table))
         }
+        Value::Map(fields) if !fields.is_empty() && fields.iter().all(|(_, v)| is_plain(v)) => {
+            count_items(fields.len());
+            let table = plain_map(lua, fields)?;
+            table.set_readonly(frozen);
+            Ok(mlua::Value::Table(table))
+        }
         Value::Map(fields) => {
             let table = lua.create_table_with_capacity(0, fields.len())?;
             for (key, value) in fields.iter() {
@@ -1041,6 +1047,36 @@ fn plain_table(lua: &Lua, items: &[Value]) -> mlua::Result<Table> {
                     _ => ffi::lua_pushnil(state),
                 }
                 ffi::lua_rawseti_(state, -2, i as std::ffi::c_int + 1);
+            }
+        })
+    }
+}
+/// A table of fields that are numbers, booleans and strings (a row), made
+/// through Luau's C API in one protected call: through mlua each key and
+/// string value is made in a protected call of its own (a closure pushed
+/// and called for each), most of a row's conversion.
+fn plain_map(lua: &Lua, fields: &[(Rc<str>, Value)]) -> mlua::Result<Table> {
+    use mlua::ffi;
+    let n = std::ffi::c_int::try_from(fields.len())
+        .map_err(|_| mlua::Error::runtime("a table with too many fields"))?;
+    // SAFETY: as `plain_table`'s: a table made and filled, a key and a value
+    // above it at a time, left as `exec_raw`'s result; an allocation failing
+    // raises a Luau error that unwinds this closure (holding nothing to
+    // drop: `fields` is borrowed) to `exec_raw`'s protected call.
+    unsafe {
+        lua.exec_raw::<Table>((), |state| {
+            ffi::lua_createtable(state, 0, n);
+            for (key, value) in fields {
+                ffi::lua_pushlstring(state, key.as_ptr().cast(), key.len());
+                match value {
+                    Value::Num(n) => ffi::lua_pushnumber(state, *n),
+                    Value::Bool(b) => ffi::lua_pushboolean(state, std::ffi::c_int::from(*b)),
+                    Value::Str(s) => {
+                        ffi::lua_pushlstring(state, s.as_ptr().cast(), s.len());
+                    }
+                    _ => ffi::lua_pushnil(state),
+                }
+                ffi::lua_rawset(state, -3);
             }
         })
     }
