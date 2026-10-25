@@ -2363,11 +2363,17 @@ impl Host {
         self.context
             .ui
             .set_popup_previews(self.x11 && crate::popup_window::enabled());
-        let adapter = accesskit_winit::Adapter::with_event_loop_proxy(
-            event_loop,
-            &window,
-            self.proxy.clone(),
-        );
+        // ZGX_ACCESSIBILITY=0: no provider at all, to size what assistive
+        // clients cost (a measurement's diagnostic: users get one).
+        let adapter = zgx::env::var_os("ZGX_ACCESSIBILITY")
+            .is_none_or(|value| value != "0")
+            .then(|| {
+                accesskit_winit::Adapter::with_event_loop_proxy(
+                    event_loop,
+                    &window,
+                    self.proxy.clone(),
+                )
+            });
         zgx::profile::mark("window created");
         let mut renderer = self.make_renderer(&window)?;
         zgx::profile::mark("renderer made");
@@ -2410,7 +2416,7 @@ impl Host {
         self.context.ui.refresh_text_geometry();
         zgx::profile::mark("text installed");
         self.renderer = Some(renderer);
-        self.adapter = Some(adapter);
+        self.adapter = adapter;
         window.set_maximized(self.state.maximized);
         // Not shown yet, an X11 window's state is its own to set.
         #[cfg(target_os = "linux")]

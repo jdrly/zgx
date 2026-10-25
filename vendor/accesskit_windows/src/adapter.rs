@@ -53,7 +53,7 @@ impl<'a> AdapterChangeHandler<'a> {
 
 impl AdapterChangeHandler<'_> {
     fn insert_text_change_if_needed_parent(&mut self, node: Node) {
-        if !node.supports_text_ranges() {
+        if !node.supports_text_ranges() || !self.context.wanted(UIA_Text_TextChangedEventId, None) {
             return;
         }
         let id = node.id();
@@ -485,6 +485,13 @@ impl Adapter {
                 let mut tree = context.tree.write().unwrap();
                 tree.update_and_process_changes(update_factory(), &mut handler);
                 handler.enqueue_selection_changes(&tree);
+                // zgx patch: only what a client listens for (`Context::wanted`).
+                handler.queue.retain(|event| match event {
+                    QueuedEvent::Simple { event_id, .. } => context.wanted(*event_id, None),
+                    QueuedEvent::PropertyChanged { property_id, .. } => {
+                        context.wanted(UIA_AutomationPropertyChangedEventId, Some(*property_id))
+                    }
+                });
                 Some(QueuedEvents(handler.queue))
             }
         }
