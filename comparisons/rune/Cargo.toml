@@ -10,6 +10,8 @@ exclude = ["rune-src"]
 # Tx::wheel applied (MIT; see README.md).
 rune = { path = "rune-src/crates/rune" }
 zgx-workload = { path = "../workload" }
+# The micro benchmark settles the GPU between batches (the version Rune uses).
+wgpu = { version = "30", default-features = false }
 
 # Rune's own benchmark profile (its bench scripts refuse other builds), as
 # its workspace defines it.

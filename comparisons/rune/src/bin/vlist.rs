@@ -18,15 +18,10 @@
 use std::borrow::Cow;
 
 use rune::text::TextSystem;
-use rune::tok::TextStyle;
-use rune::{AppSpec, Cx, El, Env, GrowthSpec, Runtime, ScrollSpec, Tx, col, el, row, text};
-use zgx_compare_rune::{Ticks, always, rgb};
+use rune::{AppSpec, Cx, El, Env, GrowthSpec, Runtime, ScrollSpec, Tx, col};
+use zgx_compare_rune::{ESTIMATE, Ticks, always, chat_row, rgb};
 use zgx_workload::vlist::{self, Mode};
 
-/// The estimate of a row not yet measured: three lines and no image, as the
-/// zgx adapter starts its rows.
-const ESTIMATE: f32 =
-    2.0 * vlist::PAD.1 + vlist::LINE_HEIGHT + vlist::GAP + 3.0 * vlist::LINE_HEIGHT;
 /// Where the wheel points: the list's middle.
 const WHEEL_AT: (f32, f32) = (vlist::WIDTH / 2.0, vlist::HEIGHT / 2.0);
 
@@ -37,44 +32,6 @@ struct Chat {
 
 fn key(i: usize) -> String {
     format!("r{i}")
-}
-
-fn style() -> TextStyle {
-    TextStyle::new(vlist::FONT_SIZE, 400.0).lh(vlist::LINE_HEIGHT)
-}
-
-fn chat_row(i: usize) -> El {
-    let mut body = col()
-        .w_full()
-        .px(vlist::PAD.0)
-        .py(vlist::PAD.1)
-        .gap(vlist::GAP)
-        .fill(rgb(vlist::ROW_COLORS[i % 2]))
-        .child(
-            row()
-                .gap(8.0)
-                .h(vlist::LINE_HEIGHT)
-                .child(
-                    text(vlist::author(i))
-                        .font(style())
-                        .color(rgb(vlist::AUTHOR)),
-                )
-                .child(text(vlist::time(i)).font(style()).color(rgb(vlist::MUTED))),
-        )
-        .child(
-            text(vlist::text(i))
-                .font(style())
-                .color(rgb(vlist::TEXT))
-                .wrap()
-                .w(vlist::TEXT_WIDTH),
-        );
-    if vlist::has_image(i) {
-        body = body.child(
-            el().size(vlist::IMAGE.0, vlist::IMAGE.1)
-                .fill(rgb(vlist::IMAGE_COLOR)),
-        );
-    }
-    body
 }
 
 fn view(_: &Chat, _: &mut Cx<Chat>) -> El {

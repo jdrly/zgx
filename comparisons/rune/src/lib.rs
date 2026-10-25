@@ -3,8 +3,10 @@
 //! same way (comparisons/README.md).
 use std::time::{Duration, Instant};
 
-use rune::{App, AppHandle, AppSpec, Chrome, Color, Tx, WindowOptions};
+use rune::tok::TextStyle;
+use rune::{App, AppHandle, AppSpec, Chrome, Color, El, Tx, WindowOptions, col, el, row, text};
 pub use zgx_workload::PERIOD;
+use zgx_workload::vlist;
 
 /// A 0xrrggbb colour (Rune's colours are linear light).
 pub fn rgb(c: u32) -> Color {
@@ -137,4 +139,49 @@ impl<S: 'static> Ticks<S> {
 /// Always: a scene with no turns to take.
 pub fn always() -> bool {
     true
+}
+
+/// The estimate of a row not yet measured: three lines and no image, as the
+/// zgx adapter starts its rows.
+pub const ESTIMATE: f32 =
+    2.0 * vlist::PAD.1 + vlist::LINE_HEIGHT + vlist::GAP + 3.0 * vlist::LINE_HEIGHT;
+
+/// A vlist row: its author and time over its wrapped text, and an image
+/// placeholder under one in four.
+fn style() -> TextStyle {
+    TextStyle::new(vlist::FONT_SIZE, 400.0).lh(vlist::LINE_HEIGHT)
+}
+
+pub fn chat_row(i: usize) -> El {
+    let mut body = col()
+        .w_full()
+        .px(vlist::PAD.0)
+        .py(vlist::PAD.1)
+        .gap(vlist::GAP)
+        .fill(rgb(vlist::ROW_COLORS[i % 2]))
+        .child(
+            row()
+                .gap(8.0)
+                .h(vlist::LINE_HEIGHT)
+                .child(
+                    text(vlist::author(i))
+                        .font(style())
+                        .color(rgb(vlist::AUTHOR)),
+                )
+                .child(text(vlist::time(i)).font(style()).color(rgb(vlist::MUTED))),
+        )
+        .child(
+            text(vlist::text(i))
+                .font(style())
+                .color(rgb(vlist::TEXT))
+                .wrap()
+                .w(vlist::TEXT_WIDTH),
+        );
+    if vlist::has_image(i) {
+        body = body.child(
+            el().size(vlist::IMAGE.0, vlist::IMAGE.1)
+                .fill(rgb(vlist::IMAGE_COLOR)),
+        );
+    }
+    body
 }
