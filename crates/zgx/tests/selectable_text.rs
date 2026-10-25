@@ -869,6 +869,14 @@ fn a_list_without_row_text_copies_the_text_its_rows_show() {
     assert_eq!(lines.len(), 501, "{copied}");
     assert_eq!(lines[1], "000\tRow 0");
     assert_eq!(lines[500], "499\tRow 499");
+    // A press on a row collapses the selection there: nothing to copy, the
+    // row it is in included.
+    press(&mut ui, 4., 50., false);
+    release(&mut ui, 4., 50.);
+    assert_eq!(ui.selected_text(), "");
+    // Ending at the start of a row takes none of it.
+    drag(&mut ui, (6., 30.), (0., 70.));
+    assert_eq!(ui.selected_text(), "00\tRow 0\n001\tRow 1");
 }
 
 #[cfg(target_os = "macos")]

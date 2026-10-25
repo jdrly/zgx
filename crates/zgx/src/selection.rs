@@ -1508,6 +1508,13 @@ impl Ui {
                     (lo, hi)
                 }
             };
+            // Rows the list has mounted copy as they show (selected or not:
+            // an end at a row's start shows none of it), from the scene.
+            let on_screen: std::collections::HashSet<usize> = scene
+                .children(*content)
+                .iter()
+                .filter_map(|row| rows.get(row).map(|index| index.with_untracked(|i| *i)))
+                .collect();
             // The rows shown here (mounted), by index.
             let mounted: Vec<(usize, usize)> = shown
                 .iter()
@@ -1532,7 +1539,7 @@ impl Ui {
             };
             let mut index = lo;
             while index <= hi {
-                if !mounted.iter().any(|(_, m)| *m == index) {
+                if !on_screen.contains(&index) {
                     let row = match (cut(&start, index), cut(&end, index)) {
                         (Some((row, from)), Some((_, to))) if from <= to && to <= row.len() => {
                             row[from..to].to_owned()
