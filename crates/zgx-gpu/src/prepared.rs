@@ -551,6 +551,8 @@ struct Entry {
     /// Inline: an entry is made for every new text, and keeps `SIZES`.
     sizes: smallvec::SmallVec<[SizeAt; SIZES]>,
     used: u64,
+    /// The `trim` that last found it drawn.
+    drawn: u64,
 }
 impl Entry {
     fn shaped_bytes(&self) -> usize {
@@ -757,6 +759,8 @@ pub struct TextCache {
     compact_bytes: usize,
     /// Shaped bytes drawn at the last `trim`.
     drawn_bytes: usize,
+    /// `trim`s so far: drawn entries are marked with the latest.
+    trims: u64,
     /// Texts shaped, and requests served without shaping, for tests and stats.
     pub shaped: u64,
     /// Requests served without shaping.
@@ -1028,16 +1032,24 @@ impl TextCache {
     /// the screen goes, keeping memory to what is shown. Measurements of
     /// text that is not drawn (`measure_detached`) are kept apart.
     pub fn trim(&mut self, drawn: impl IntoIterator<Item = u64>) {
-        let drawn: rustc_hash::FxHashSet<u64> = drawn.into_iter().collect();
-        self.drawn_bytes = drawn
-            .iter()
-            .filter_map(|hash| self.entries.get(hash))
-            .map(Entry::shaped_bytes)
-            .sum();
+        // Each drawn entry marked where it is, once (two nodes may draw
+        // one text), rather than a set of them looked up for every entry.
+        self.trims += 1;
+        let mark = self.trims;
+        let mut drawn_bytes = 0;
+        for hash in drawn {
+            if let Some(entry) = self.entries.get_mut(&hash)
+                && entry.drawn != mark
+            {
+                entry.drawn = mark;
+                drawn_bytes += entry.shaped_bytes();
+            }
+        }
+        self.drawn_bytes = drawn_bytes;
         let mut undrawn: Vec<(u64, u64)> = self
             .entries
             .iter()
-            .filter(|(hash, entry)| entry.lines.is_some() && !drawn.contains(hash))
+            .filter(|(_, entry)| entry.lines.is_some() && entry.drawn != mark)
             .map(|(hash, entry)| (entry.used, *hash))
             .collect();
         // Newest first; keep those within the budget.
@@ -1126,6 +1138,7 @@ impl TextCache {
                 laid: None,
                 sizes: smallvec::SmallVec::new(),
                 used: self.clock,
+                drawn: 0,
             };
             self.shaped_bytes += entry.shaped_bytes();
             self.compact_bytes += entry.compact_bytes();
