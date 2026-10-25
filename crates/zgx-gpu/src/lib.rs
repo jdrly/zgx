@@ -4062,10 +4062,21 @@ impl GpuRenderer {
         // What the surface lacks: changes since it was last shown that this
         // frame doesn't repaint, and scrolled content; both drawn from the
         // shown surface at the start of the frame's first pass, as instances
-        // after the frame's quads.
+        // after the frame's quads. Through a stencil, the frame repaints only
+        // the stamped rectangles, not the regions around them: the rest of
+        // each region must catch up too.
+        #[cfg(target_os = "macos")]
+        let repainted: Vec<(Rect, Scissor)> = match stamp {
+            Some(rects) => rects
+                .iter()
+                .filter_map(|r| scissor(*r, self.scale, self.width, self.height).map(|s| (*r, s)))
+                .collect(),
+            None => Vec::new(),
+        };
         #[cfg(target_os = "macos")]
         let mut catch_up = shown.and_then(|shown| {
-            let (bind, draws) = self.catch_up_draws(shown, &copies, &regions)?;
+            let cuts = if stamp.is_some() { &repainted } else { &regions };
+            let (bind, draws) = self.catch_up_draws(shown, &copies, cuts)?;
             stats.scroll_copies += copies.len();
             let start = quads.len() as u32;
             quads.extend(draws.into_iter().map(|((x, y, w, h), (dx, dy))| Quad {
