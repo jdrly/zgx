@@ -545,7 +545,8 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   synthesized on/off key.
 - `windows_platform_smoke.py`: selected display text copied as text and HTML
   and read by another process, text from another process pasted into an
-  editor, the file picker and the message box (each owned by its window, the
+  editor, the file picker, the save dialog (a name typed into it reaches the
+  app as the path) and the message box (each owned by its window, the
   window disabled while it shows), and a file dragged in from another process
   through OLE drag and drop, as from Explorer.
 - `windows_text_smoke.py` (`text_selection`): a double click within the

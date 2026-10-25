@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Native services on Windows, through other processes and the system's own
 dialogs: the clipboard (selected display text copied as text and as HTML,
-text from another process pasted in), the file picker and the message box
-(each owned by its window), and a file dragged in from another process.
+text from another process pasted in), the file picker, the save dialog and
+the message box (each owned by its window), and a file dragged in from another process.
 
     cargo build -p zgx-desktop --example selectable_text --example gallery --example platform_services --example drag_drop
     python scripts/windows_platform_smoke.py target/debug/examples
@@ -185,6 +185,39 @@ def check_dialogs(examples):
     return f"{opened.strip()}, {prompt.strip()}"
 
 
+def check_save_dialog(examples):
+    """The save dialog, owned by its window: a name typed into it reaches the
+    app as the path to save to."""
+    with tempfile.TemporaryDirectory(prefix="zgx-save-") as directory:
+        target = pathlib.Path(directory, "saved-by-smoke.txt")
+        proc, lines = launch(examples / "platform_services.exe", "--smoke",
+                             env={"ZGX_DIALOG_DIRECTORY": directory, "ZGX_DIALOG_ACTION": "save"})
+        try:
+            window = win.wait_window(proc)
+            dialog = wait_for(lambda: dialog_of(proc.pid, [window]), "the save dialog")
+            owned(dialog, window)
+            time.sleep(2)
+            win.activate(dialog)
+            # Its name box starts with the suggested name, selected.
+            win.key("ctrl+a")
+            win.type_text(str(target))
+            saved = lambda: next((l for l in lines if l.startswith("DIALOG save")), None)
+            for _ in range(3):
+                if saved() or not win.is_foreground(dialog):
+                    break
+                win.key("enter")
+                time.sleep(1.5)
+            result = wait_for(saved, "the save dialog's path")
+            if "saved-by-smoke.txt" not in result:
+                raise AssertionError(f"the save dialog returned {result!r}")
+            win.activate(window)
+            win.close(window)
+            proc.wait(timeout=10)
+        finally:
+            stop(proc)
+    return result.strip()
+
+
 DRAG_SOURCE = r"""
 Add-Type -AssemblyName System.Windows.Forms
 $form = New-Object Windows.Forms.Form
@@ -252,7 +285,11 @@ def main():
     clip = check_clipboard(examples)
     dialogs = check_dialogs(examples)
     drop = check_file_drop(examples)
-    print(f"PASS: clipboard ({clip}); dialogs ({dialogs}); drag and drop from another process ({drop})")
+    # Last: run before it, the next drag from another process was often
+    # not taken.
+    save = check_save_dialog(examples)
+    print(f"PASS: clipboard ({clip}); dialogs ({dialogs}); save ({save}); "
+          f"drag and drop from another process ({drop})")
 
 
 if __name__ == "__main__":
