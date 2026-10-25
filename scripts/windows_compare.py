@@ -55,8 +55,27 @@ def units(text):
     return None
 
 
+# Processes that read other apps' windows through UI Automation without being
+# screen readers: present, one may have attached to a run's window.
+UIA_CLIENTS = ("TextInputHost", "VoiceAccess", "Magnify", "Narrator", "nvda", "jfw", "Inspect",
+               "AccessibilityInsights", "WinAppDriver", "PowerToys", "LiveCaptions")
+
+
+def accessibility_state():
+    """Whether a screen reader runs (SPI_GETSCREENREADER), and which known
+    UIA client processes run, as this machine is during a run."""
+    import ctypes
+    flag = ctypes.c_int(0)
+    ctypes.windll.user32.SystemParametersInfoW(0x0046, 0, ctypes.byref(flag), 0)
+    out = subprocess.run(["tasklist", "/fo", "csv", "/nh"], capture_output=True, text=True).stdout
+    running = {line.split('","')[0].strip('"').removesuffix(".exe") for line in out.splitlines() if line}
+    return bool(flag.value), sorted(name for name in running if name in UIA_CLIENTS)
+
+
 def run(path, mode, seconds, warmup, log_path):
-    env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds), ZGX_INITIAL_TICKS="0")
+    # ZGUI_*: adapters built before the rename read those alone.
+    env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds), ZGX_INITIAL_TICKS="0",
+               ZGUI_MODE=mode, ZGUI_SECONDS=str(seconds), ZGUI_INITIAL_TICKS="0", ZGX_ACCESSIBILITY_LOG="1")
     started = time.perf_counter()
     samples = []
     with open(log_path, "w") as log:
@@ -97,6 +116,9 @@ def run(path, mode, seconds, warmup, log_path):
         "working_set_mib": statistics.mean(s[3] for s in samples) / 2**20,
         "peak_working_set_mib": max(s[3] for s in samples) / 2**20,
         "private_mib": statistics.mean(s[4] for s in samples) / 2**20,
+        # zgx says when a UI Automation client read its window (GPUI has no
+        # provider, so nothing to read).
+        "uia_client_attached": "accessibility: a client asked for the tree" in text,
     }
 
 
@@ -111,6 +133,8 @@ def main():
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("target/windows-compare"))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    screen_reader, uia_clients = accessibility_state()
+    print(f"screen reader running: {screen_reader}; UI Automation clients running: {', '.join(uia_clients) or 'none known'}")
     results = {}
     binaries = {}
     for scene in args.scenes.split(","):
@@ -127,15 +151,17 @@ def main():
                     print(f"{scene:7} {mode:6} {name:4} CPU {row['cpu_percent']:6.2f}%  "
                           f"{row['mcycles_per_second']:8.1f} Mcyc/s  "
                           f"{(row['mcycles_per_unit'] or 0):7.2f} Mcyc/unit  units {row['units']:5}  "
-                          f"WS {row['working_set_mib']:6.1f} MiB  private {row['private_mib']:6.1f} MiB", flush=True)
+                          f"WS {row['working_set_mib']:6.1f} MiB  private {row['private_mib']:6.1f} MiB"
+                          f"{'  UIA client attached' if row['uia_client_attached'] else ''}", flush=True)
     summary = []
     for (scene, mode, name), rows in results.items():
         median = {key: statistics.median(r[key] for r in rows if r[key] is not None)
-                  for key in rows[0] if any(r[key] is not None for r in rows)}
+                  for key in rows[0]
+                  if not isinstance(rows[0][key], bool) and any(r[key] is not None for r in rows)}
         spread = {key: [min(r[key] for r in rows), max(r[key] for r in rows)]
                   for key in ("mcycles_per_second", "working_set_mib")}
         summary.append({"scene": scene, "mode": mode, "framework": name, "median": median, "range": spread,
-                        "runs": rows})
+                        "uia_client_attached_runs": sum(r["uia_client_attached"] for r in rows), "runs": rows})
     sizes = {key: os.path.getsize(path) for key, path in binaries.items()}
     metadata = {
         "platform": platform.platform(),
@@ -143,6 +169,8 @@ def main():
         "seconds": args.seconds,
         "warmup": args.warmup,
         "repeats": args.repeats,
+        "screen_reader_running": screen_reader,
+        "uia_client_processes_running": uia_clients,
         "binary_bytes": sizes,
         "binary_sha256": {key: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
                           for key, path in binaries.items()},

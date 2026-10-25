@@ -163,6 +163,8 @@ Startup and keystroke latency are measured apart:
 - **`scripts/windows_startup_probe.py`** times a launch to its first content as macOS's probe does: spawn, the window, then its header strip until the header's text has drawn. It reports medians of wall time, CPU time and cycles over alternating launches.
 - **`scripts/windows_latency_probe.py --press`** times a key press to the composed screen. Use `key_workload` (zgx-desktop's example) against GPUI's `keys`: each redraws a counter at every key.
 
+Each run also records whether a UI Automation client read zgx's window (zgx prints `accessibility: a client asked for the tree` when `ZGX_ACCESSIBILITY_LOG` is set, which the harness sets), and the summary says whether a screen reader ran (`SPI_GETSCREENREADER`) and which known UIA client processes did (the shell's touch keyboard host, Voice Access, Magnifier, test tools). Real desktops have such clients, so runs measure the machine as it is; zgx's accessibility work for them is part of its cost, and GPUI has no UI Automation provider. Compare only runs whose clients match.
+
 Keep the windows uncovered, the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI): see `vendor/wgpu-hal/ZGX_PATCH.md` and [windows.md](windows.md).
 
 ## Selecting and validating the zgx renderer

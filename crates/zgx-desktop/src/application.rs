@@ -3579,6 +3579,11 @@ impl Host {
                 self.accessibility_action(request)
             }
             accesskit_winit::WindowEvent::InitialTreeRequested => {
+                // Benchmarks and diagnostics say whether a client (a screen
+                // reader, the shell's, a test tool) read the window.
+                if std::env::var_os("ZGX_ACCESSIBILITY_LOG").is_some() {
+                    eprintln!("accessibility: a client asked for the tree");
+                }
                 // Names and values made from state, worked out from the
                 // state as it is (their effects run as this is set), before
                 // the tree is first given.
@@ -3588,6 +3593,9 @@ impl Host {
                 self.sync_accessibility();
             }
             accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                if std::env::var_os("ZGX_ACCESSIBILITY_LOG").is_some() {
+                    eprintln!("accessibility: the clients went");
+                }
                 self.context.ui.set_assistive_technology(false);
             }
         }
