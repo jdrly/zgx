@@ -138,6 +138,21 @@ SCENES = {
 # The suite's frameworks: zgx, the stronger GPUI, and MyGo.
 SUITE_FRAMEWORKS = ['zgx', 'gpui-fast', 'mygo']
 SAMPLER, PACER, BLANK = Path('/tmp/zgx-macsample'), Path('/tmp/zgx-framepace'), Path('/tmp/zgx-blankprobe')
+# The one font file every adapter loads (comparisons/fonts), and how each
+# reports the bytes it loaded (zgx_workload::fnv64).
+FONT = ROOT / 'comparisons/fonts/DejaVuSans.ttf'
+
+
+def fnv64(data):
+    h = 0xcbf29ce484222325
+    for byte in data:
+        h = ((h ^ byte) * 0x100000001b3) & 0xffffffffffffffff
+    return f'{h:016x}'
+
+
+FONT_FNV64 = fnv64(FONT.read_bytes()) if FONT.exists() else None
+# vlist: every framework's measured heights of the probe rows agree to this.
+PROBE_TOLERANCE = 2.0
 # What the binaries are built from, including vendored patches.
 SOURCES = ['crates', 'comparisons', 'scripts', 'vendor', 'Cargo.toml', 'Cargo.lock']
 METRICS = ['cpu_percent_one_core', 'cpu_watts', 'instructions', 'cycles', 'gpu_percent',
@@ -146,7 +161,7 @@ METRICS = ['cpu_percent_one_core', 'cpu_watts', 'instructions', 'cycles', 'gpu_p
            'mean_footprint_bytes', 'peak_footprint_bytes', 'mean_rss_bytes', 'peak_rss_bytes',
            'workload_ticks', 'wall_seconds']
 POWER = ['package_mw', 'cpu_mw', 'gpu_mw']
-FIELDS = ['framework', 'mode', 'repeat', 'ran_seconds', 'requested_seconds', 'wall_seconds', 'cpu_seconds', 'cpu_percent_one_core', 'cpu_energy_joules',
+FIELDS = ['framework', 'mode', 'repeat', 'ran_seconds', 'requested_seconds', 'font_fnv64', 'wall_seconds', 'cpu_seconds', 'cpu_percent_one_core', 'cpu_energy_joules',
           'cpu_watts', 'instructions', 'cycles', 'gpu_seconds', 'gpu_percent', 'gpu_mcycles_per_second',
           'gpu_active_mhz', 'gpu_system_watts', 'windowserver_cpu_percent',
           'windowserver_gpu_percent', 'gpu_utilization_percent', 'mean_footprint_bytes', 'peak_footprint_bytes',
@@ -209,6 +224,9 @@ def launch(binary, mode, seconds, log):
     # length against the sampler's window (each trial checks the length).
     env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds),
                ZGUI_MODE=mode, ZGUI_SECONDS=str(seconds))  # rename-to-zgx: keep
+    if FONT.exists():
+        # Staged beside the apps: nothing they read is under ~/Documents.
+        env['ZGX_FONT_FILE'] = str(stage(FONT))
     with log.open('w') as handle:
         # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
         process = subprocess.Popen([str(stage(binary))], stdout=handle, stderr=subprocess.STDOUT, env=env, cwd=CWD)
@@ -282,12 +300,14 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
     text = log.read_text() if log.exists() else ''
     ticks = re.search(r'"ticks":(\d+)|workload_ticks=(\d+)|animation_frames=(\d+)', text)
     fps = re.search(r'fps=([0-9.]+)', text)
+    font = re.search(r'font_file_fnv64=([0-9a-f]{16})', text)
     row = {'framework': framework, 'mode': mode, 'repeat': repeat, **sample,
            'workload_ticks': int(next(g for g in ticks.groups() if g)) if ticks else (0 if framework == 'desktop' else -1),
            'reported_fps': float(fps.group(1)) if fps else '',
            **(power_of(meter) if meter else dict.fromkeys(POWER, '')),
            'exit_code': exit_code, 'terminated_after_report': terminated,
-           'ran_seconds': round(ran, 2), 'requested_seconds': requested}
+           'ran_seconds': round(ran, 2), 'requested_seconds': requested,
+           'font_fnv64': font.group(1) if font else ''}
     (out / f'{framework}.{mode}.{repeat}.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
 
@@ -301,6 +321,9 @@ def valid(row, scene):
     if not row['exit_code'] == 0 and not row['terminated_after_report']:
         return False
     if abs(row['ran_seconds'] - row['requested_seconds']) > 3:
+        return False
+    # The suite's font: the bundled file, as the app reported loading it.
+    if FONT_FNV64 and 'font_fnv64' in row and row['font_fnv64'] != FONT_FNV64:
         return False
     ticks, seconds = row['workload_ticks'], row['requested_seconds']
     if scene == 'animate':
@@ -343,6 +366,38 @@ def blank(scene, framework, mode, repeat, out):
     row = {'framework': framework, 'mode': mode, 'repeat': repeat, **result}
     (out / f'{framework}.{mode}.{repeat}.blank.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
+
+
+def probe(scene, frameworks, out):
+    """vlist, before any trial counts: every framework's measured heights of
+    the probe rows (ZGX_MODE=probe), which must agree within PROBE_TOLERANCE
+    points: the same rows wrapped the same way, in the same font. Stops the
+    run with the table when they do not."""
+    found = {}
+    for framework in frameworks:
+        log = out / f'{framework}.probe.log'
+        process = launch(SCENES[scene]['binaries'][framework], 'probe', 30, log)
+        finish(process, 30)
+        text = log.read_text() if log.exists() else ''
+        heights = re.search(r'row_heights=(\S+)', text)
+        widths = dict(re.findall(r'(list_width|text_width)=([0-9.]+)', text))
+        font = re.search(r'font_file_fnv64=([0-9a-f]{16})', text)
+        found[framework] = {
+            'heights': {int(r): float(h) for r, h in (pair.split(':') for pair in heights.group(1).split(','))} if heights else {},
+            **{k: float(v) for k, v in widths.items()}, 'font_fnv64': font.group(1) if font else ''}
+    rows = sorted(set().union(*(f['heights'] for f in found.values())))
+    disagree = [r for r in rows if len({f['heights'].get(r) for f in found.values()}) and
+                (None in {f['heights'].get(r) for f in found.values()} or
+                 max(f['heights'][r] for f in found.values()) - min(f['heights'][r] for f in found.values()) > PROBE_TOLERANCE)]
+    fonts = [f for f, v in found.items() if FONT_FNV64 and v['font_fnv64'] != FONT_FNV64]
+    report = {'tolerance_points': PROBE_TOLERANCE, 'frameworks': found, 'disagreeing_rows': disagree, 'wrong_font': fonts}
+    (out / 'probe.json').write_text(json.dumps(report, indent=1) + '\n')
+    print('probe: row ' + ' '.join(f'{f:>9}' for f in found), flush=True)
+    for r in rows:
+        print(f'probe: {r:5d} ' + ' '.join(f"{found[f]['heights'].get(r, float('nan')):9.1f}" for f in found)
+              + ('  DISAGREE' if r in disagree else ''), flush=True)
+    if disagree or fonts or not rows:
+        raise SystemExit(f'probe: frameworks disagree on rows {disagree} or fonts {fonts}: not measuring vlist')
 
 
 def spread_of(rows, framework, mode, key):
@@ -479,6 +534,8 @@ def measure(args, frameworks, modes, repeats, commit, found):
             for path in out.glob(f'*.{mode}.*'):
                 if '.pacing.' not in path.name:
                     path.rename(legacy / path.name)
+    if args.scene == 'vlist' and not args.into:
+        probe(args.scene, frameworks, out)
     for repeat in range(max(repeats, idle_repeats) if 'idle' in modes else repeats):
         order = frameworks[repeat % len(frameworks):] + frameworks[:repeat % len(frameworks)]
         chosen = [m for m in modes if repeat < (idle_repeats if m == 'idle' else repeats)]
