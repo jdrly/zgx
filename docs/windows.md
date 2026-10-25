@@ -596,8 +596,10 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
 - `windows_settings_smoke.py`: the window menu (Alt+Space) is dark in dark
   mode and light in light mode, and a scrollbar hides at rest, shows while
   the user scrolls and hides after with "Always show scrollbars" off, and
-  shows at rest with it on. `--both` runs each setting both ways (the user's
-  own restored after).
+  shows at rest with it on. `--both` runs each setting both ways, and
+  switches the app mode both ways while a window runs (`primary_selection`,
+  whose theme follows the system's): its title bar and content must follow
+  within seconds. The user's own settings are restored after.
 - `windows_popup_smoke.py` (`popup_probe`): no popup window before the first
   popup; a menu opens past its window's bottom edge within milliseconds of
   the click and shows on screen; hovering and clicking, or pressing the
