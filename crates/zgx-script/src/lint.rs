@@ -764,7 +764,8 @@ impl Linter<'_> {
                 "computed-sort",
                 "this computed sorts its whole list each time what it reads changes (a row \
                  written, a tick): `ui.sorted(list, { by = …, filter = … })` keeps a list \
-                 state's order as it changes, re-placing only the rows written."
+                 state's order as it changes, re-placing only the rows written (a `filter` \
+                 of fields' tests, `{ sector = \"Tech\" }`, is read in Rust)."
                     .into(),
             );
         }

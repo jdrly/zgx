@@ -11,11 +11,15 @@ local view: State<{ data.Row }> = ui.sorted(state.rows, function()
 	local sort = state.sort:get()
 	local query = string.upper(state.query:get())
 	local sector = state.sector:get()
-	local filter: ((row: data.Row) -> boolean)? = nil
+	-- Fields' tests, read in Rust: no script call a row.
+	local filter: { [string]: any }? = nil
 	if query ~= "" or sector ~= "All" then
-		filter = function(row: data.Row): boolean
-			return (sector == "All" or row.sector == sector)
-				and (query == "" or string.find(row.symbol, query, 1, true) ~= nil)
+		filter = {}
+		if sector ~= "All" then
+			filter.sector = sector
+		end
+		if query ~= "" then
+			filter.symbol = { contains = query }
 		end
 	end
 	return { by = sort.key, descending = sort.descending, filter = filter }

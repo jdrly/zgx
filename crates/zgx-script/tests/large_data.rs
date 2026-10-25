@@ -405,3 +405,73 @@ fn ui_sorted_sorts_numbers_and_strings_as_ui_sort_does() {
     assert_eq!(h.error(), None);
     assert_eq!(h.text("checks"), "done");
 }
+
+/// A table `filter` keeps what the same tests as a function keep: fields
+/// equal to a string, a number or a boolean, holding a text (case folded or
+/// not), rows written into and out of it, both ways round.
+#[test]
+fn ui_sorted_table_filters_keep_what_the_same_function_keeps() {
+    let mut h = Harness::inline(
+        r#"
+        local seed = 3
+        local function random(n)
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            return seed % n
+        end
+        local names = { "Alpha", "beta", "GAMMA", "alphabet", "Delta" }
+        local rows = {}
+        for i = 1, 2000 do
+            rows[i] = { id = i, name = names[random(#names) + 1] .. random(10), group = random(4), live = random(2) == 0, v = random(300) }
+        end
+        local list = ui.state("rows", rows)
+        local spec = ui.state("spec", 1)
+        local descending = ui.state("descending", false)
+        local specs = {
+            { table = { group = 2 }, fn = function(r) return r.group == 2 end },
+            { table = { live = true, name = { contains = "alpha" } }, fn = function(r) return r.live and string.find(r.name, "alpha", 1, true) ~= nil end },
+            { table = { name = { contains = "ALPHA", case = false } }, fn = function(r) return string.find(string.lower(r.name), "alpha", 1, true) ~= nil end },
+            { table = { name = "beta3", group = 1 }, fn = function(r) return r.name == "beta3" and r.group == 1 end },
+        }
+        local by_table = ui.sorted(list, function()
+            return { by = "v", descending = descending:get(), filter = specs[spec:get()].table }
+        end)
+        local by_fn = ui.sorted(list, function()
+            return { by = "v", descending = descending:get(), filter = specs[spec:get()].fn }
+        end)
+        local function ids(rows)
+            local out = table.create(#rows)
+            for i, r in rows do out[i] = r.id end
+            return table.concat(out, ",")
+        end
+        local checks = ui.state("checks", "")
+        local function check(label)
+            local same = ids(by_table:get()) == ids(by_fn:get())
+            checks:set(checks:peek() .. (if same then "" else `{label} differs; `))
+        end
+        ui.command { id = "run", run = function()
+            for k = 1, #specs do
+                for _, down in { false, true } do
+                    spec:set(k)
+                    descending:set(down)
+                    check(`spec {k} {down}`)
+                end
+                -- Rows written into and out of what it keeps.
+                ui.batch(function()
+                    for _ = 1, 20 do
+                        local i = random(2000) + 1
+                        list:set_key({ i, "group" }, random(4))
+                        list:set_key({ i, "live" }, random(2) == 0)
+                    end
+                end)
+                check(`spec {k} written`)
+            end
+            checks:set(checks:peek() .. "done")
+        end }
+        return ui.text { id = "checks", "{checks}" }
+        "#,
+    );
+    assert_eq!(h.error(), None);
+    run(&mut h, "run");
+    assert_eq!(h.error(), None);
+    assert_eq!(h.text("checks"), "done");
+}

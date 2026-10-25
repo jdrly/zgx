@@ -448,10 +448,15 @@ export type State<T> = {
 }
 -- How `ui.sorted` orders a list: by a field's name or a function of an
 -- item, nil keys last; equal keys keep the list's order.
+-- A field's test in a table `filter`: equal to a value, or (a string)
+-- holding a text, `case = false` folding ASCII letters' case.
+export type FieldTest = string | number | boolean | { contains: string, case: boolean? }
 export type SortedSpec<T> = {
 	by: (string | ((item: T) -> any))?,
 	descending: boolean?,
-	filter: ((item: T) -> boolean)?,
+	-- A function keeping the items it is true for, or fields' tests read in
+	-- Rust: `{ sector = "Tech", symbol = { contains = "AB" } }`.
+	filter: ((item: T) -> boolean) | { [string]: FieldTest } | nil,
 }
 -- What a property bound to state reads: any state whose value is a `T`.
 export type Readable<T> = { read get: (self: never) -> T }

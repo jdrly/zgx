@@ -5,8 +5,10 @@
 //! not touch is the same value, found at a pointer's glance). `spec` is
 //! `{ by, descending, filter }`, or a function returning one (tracked: a
 //! new spec sorts it all again). `by` is a field's name, read in Rust, or a
-//! function of an item; `filter` keeps the items it is true for. Both are
-//! called only for the items that changed, untracked.
+//! function of an item; `filter` keeps the items a function is true for,
+//! or whose fields pass a table's tests, read in Rust (`{ sector = "Tech",
+//! symbol = { contains = "AB" } }`). Functions are called only for the
+//! items that changed, untracked.
 use crate::{
     Vm,
     value::{State, Value},
@@ -97,14 +99,108 @@ enum By {
     /// What a function of it returns.
     Function(Function),
 }
+/// What a table `filter` asks of a field: to equal a value, or (a string)
+/// to hold a text, `case = false` folding ASCII letters' case.
+#[derive(Clone, PartialEq)]
+enum Test {
+    Equals(Value),
+    Contains { text: Rc<str>, case: bool },
+}
+impl Test {
+    fn passes(&self, value: Option<&Value>) -> bool {
+        match self {
+            Test::Equals(want) => value == Some(want),
+            Test::Contains { text, case } => {
+                let held = match value {
+                    Some(Value::Str(s)) => std::borrow::Cow::Borrowed(&**s),
+                    Some(Value::Text(t)) => t.to_cow(),
+                    _ => return false,
+                };
+                if *case {
+                    held.contains(&**text)
+                } else {
+                    let (held, text) = (held.as_bytes(), text.as_bytes());
+                    text.is_empty()
+                        || held
+                            .windows(text.len())
+                            .any(|w| w.eq_ignore_ascii_case(text))
+                }
+            }
+        }
+    }
+}
+/// Which items a spec keeps.
+#[derive(Clone)]
+enum Filter {
+    /// Those a function of the item is true for.
+    Function(Function),
+    /// Those whose fields pass their tests (`{ sector = "Tech", symbol =
+    /// { contains = "AB" } }`), read in Rust: no script call an item. By
+    /// field name.
+    Fields(Rc<[(Rc<str>, Test)]>),
+}
+impl Filter {
+    fn from_lua(lua: &Lua, value: mlua::Value) -> mlua::Result<Option<Filter>> {
+        Ok(match value {
+            mlua::Value::Nil => None,
+            mlua::Value::Function(f) => Some(Filter::Function(f)),
+            mlua::Value::Table(fields) => {
+                let mut tests = Vec::new();
+                for pair in fields.pairs::<String, mlua::Value>() {
+                    let (name, value) = pair?;
+                    let test = match value {
+                        mlua::Value::Table(t) if t.contains_key("contains")? => {
+                            let case = t.get::<Option<bool>>("case")?.unwrap_or(true);
+                            let text: String = t.get("contains")?;
+                            let text = if case {
+                                text
+                            } else {
+                                text.to_ascii_lowercase()
+                            };
+                            Test::Contains {
+                                text: text.into(),
+                                case,
+                            }
+                        }
+                        value => Test::Equals(<Value as mlua::FromLua>::from_lua(value, lua)?),
+                    };
+                    tests.push((Rc::<str>::from(name), test));
+                }
+                tests.sort_by(|(a, _), (b, _)| a.cmp(b));
+                Some(Filter::Fields(tests.into()))
+            }
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "ui.sorted's `filter` is a function or a table of fields' tests, not {}",
+                    other.type_name()
+                )));
+            }
+        })
+    }
+    fn same(&self, other: &Filter) -> bool {
+        match (self, other) {
+            (Filter::Function(a), Filter::Function(b)) => a.to_pointer() == b.to_pointer(),
+            (Filter::Fields(a), Filter::Fields(b)) => a == b,
+            _ => false,
+        }
+    }
+    /// Whether `item` passes the fields' tests (`hints`: where each field
+    /// was in the item before).
+    fn fields_pass(tests: &[(Rc<str>, Test)], item: &Value, hints: &mut [usize]) -> bool {
+        tests
+            .iter()
+            .zip(hints.iter_mut())
+            .all(|((name, test), hint)| test.passes(Kept::field(item, name, hint)))
+    }
+}
 #[derive(Clone)]
 struct Spec {
     by: By,
     descending: bool,
-    filter: Option<Function>,
+    filter: Option<Filter>,
 }
 impl Spec {
-    fn from_table(table: &Table) -> mlua::Result<Spec> {
+    fn from_table(lua: &Lua, table: &Table) -> mlua::Result<Spec> {
         let by = match table.get::<mlua::Value>("by")? {
             mlua::Value::Nil => By::Item,
             mlua::Value::String(s) => By::Field(s.to_str()?.as_ref().into()),
@@ -119,7 +215,7 @@ impl Spec {
         Ok(Spec {
             by,
             descending: table.get::<Option<bool>>("descending")?.unwrap_or(false),
-            filter: table.get::<Option<Function>>("filter")?,
+            filter: Filter::from_lua(lua, table.get("filter")?)?,
         })
     }
     /// The same order: the same field or the same function, way and filter.
@@ -132,7 +228,7 @@ impl Spec {
         };
         let filter = match (&self.filter, &other.filter) {
             (None, None) => true,
-            (Some(a), Some(b)) => a.to_pointer() == b.to_pointer(),
+            (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
         by && filter && self.descending == other.descending
@@ -169,7 +265,18 @@ impl Kept {
     fn judge(vm: &Vm, spec: &Spec, item: &Value) -> mlua::Result<(Key, bool)> {
         let kept = match &spec.filter {
             None => true,
-            Some(filter) => {
+            Some(Filter::Fields(tests)) => {
+                // Where its fields are, from the start (a few on the stack).
+                let (mut stack, mut heap) = ([0; 8], Vec::new());
+                let hints = if tests.len() <= stack.len() {
+                    &mut stack[..tests.len()]
+                } else {
+                    heap.resize(tests.len(), 0);
+                    &mut heap[..]
+                };
+                Filter::fields_pass(tests, item, hints)
+            }
+            Some(Filter::Function(filter)) => {
                 let item = crate::value::shared_lua(item, &vm.lua)?;
                 !matches!(
                     vm.call::<mlua::Value>(filter, item)?,
@@ -200,8 +307,20 @@ impl Kept {
         self.keys.clear();
         self.kept.clear();
         let by_script = matches!(spec.by, By::Function(_));
-        if spec.filter.is_some() || by_script {
+        let tests = match &spec.filter {
+            Some(Filter::Fields(tests)) => Some(tests.clone()),
+            _ => None,
+        };
+        if matches!(spec.filter, Some(Filter::Function(_))) || by_script {
             self.judge_all(vm, spec, items)?;
+        } else if let (By::Field(name), Some(tests)) = (&spec.by, &tests) {
+            let (mut hint, mut hints) = (0, vec![0; tests.len()]);
+            for item in items.iter() {
+                let kept = Filter::fields_pass(tests, item, &mut hints);
+                let key = kept.then(|| Self::field(item, name, &mut hint)).flatten();
+                self.keys.push(key.map_or(Key::Nil, Key::of_value));
+                self.kept.push(kept);
+            }
         } else if let By::Field(name) = &spec.by {
             let mut hint = 0;
             for item in items.iter() {
@@ -327,8 +446,12 @@ impl Kept {
             By::Function(f) => Some(f.clone()),
             _ => None,
         };
+        let filter = match &spec.filter {
+            Some(Filter::Function(f)) => Some(f.clone()),
+            _ => None,
+        };
         let (keep, keys): (mlua::Value, mlua::Value) =
-            vm.call(&judge, (list, spec.filter.clone(), by.clone()))?;
+            vm.call(&judge, (list, filter, by.clone()))?;
         let n = items.len();
         let mut kept = vec![true; n];
         let mut script_keys: Vec<Key> = Vec::new();
@@ -370,6 +493,13 @@ impl Kept {
                     }
                 }
             })?;
+        }
+        // Fields' tests, in Rust, beside the function's keys.
+        if let Some(Filter::Fields(tests)) = &spec.filter {
+            let mut hints = vec![0; tests.len()];
+            for (i, item) in items.iter().enumerate() {
+                kept[i] = kept[i] && Filter::fields_pass(tests, item, &mut hints);
+            }
         }
         let mut hint = 0;
         for (i, item) in items.iter().enumerate() {
@@ -498,7 +628,7 @@ fn change(was: Option<&Rc<[Value]>>, now: &Rc<[Value]>) -> Change {
 pub(crate) fn sorted(lua: &Lua, (list, spec): (mlua::Value, mlua::Value)) -> mlua::Result<State> {
     let source = crate::node::expect_state(&list, "ui.sorted's list")?;
     let spec = match spec {
-        mlua::Value::Table(t) => Ok(Spec::from_table(&t)?),
+        mlua::Value::Table(t) => Ok(Spec::from_table(lua, &t)?),
         mlua::Value::Function(f) => Err(f),
         other => {
             return Err(mlua::Error::runtime(format!(
@@ -524,7 +654,10 @@ pub(crate) fn sorted(lua: &Lua, (list, spec): (mlua::Value, mlua::Value)) -> mlu
                 let Some(vm) = vm.upgrade() else {
                     return;
                 };
-                match vm.call::<Table>(&f, ()).and_then(|t| Spec::from_table(&t)) {
+                match vm
+                    .call::<Table>(&f, ())
+                    .and_then(|t| Spec::from_table(&vm.lua, &t))
+                {
                     Ok(spec) => {
                         *current.borrow_mut() = Some(spec);
                         version.update(|v| *v += 1);
