@@ -8,7 +8,8 @@
   size; left maximized, it reopens maximized; at a saved frame no monitor
   shows, it opens on a monitor instead;
 - a window opened `under_pointer` has that point of its content under the
-  pointer;
+  pointer (the probe puts the pointer in the work area's middle first, so
+  this holds wherever earlier input left it);
 - nothing is left in the registry (the probe removes the frame it saved).
 
     cargo build -p zgx-desktop --example window_probe

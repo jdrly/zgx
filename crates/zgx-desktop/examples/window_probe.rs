@@ -137,8 +137,9 @@ mod win32 {
             UI::HiDpi::GetDpiForWindow,
             UI::WindowsAndMessaging::{
                 EnumThreadWindows, GetCursorPos, GetWindowRect, GetWindowTextW, IsWindowVisible,
-                IsZoomed, SW_MAXIMIZE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
-                ShowWindow,
+                IsZoomed, SPI_GETWORKAREA, SW_MAXIMIZE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetCursorPos, SetWindowPos, ShowWindow,
+                SystemParametersInfoW,
             },
         },
         core::{BOOL, w},
@@ -286,7 +287,22 @@ mod win32 {
         sleep(500).await;
         forget();
 
-        // A torn-off tab's window opens with its point under the pointer.
+        // A torn-off tab's window opens with its point under the pointer:
+        // the pointer in the middle of the work area first, wherever earlier
+        // input left it, where the window opens whole (at an edge Windows
+        // keeps it on the screen instead).
+        let mut area = RECT::default();
+        // SAFETY: reads the primary work area into a local, then moves the
+        // pointer (no input reaches any window).
+        unsafe {
+            let _ = SystemParametersInfoW(
+                SPI_GETWORKAREA,
+                0,
+                Some((&raw mut area).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            );
+            let _ = SetCursorPos((area.left + area.right) / 2, (area.top + area.bottom) / 2);
+        }
         let under = WindowOptions {
             under_pointer: Some((20., 10.)),
             ..options("Under")
