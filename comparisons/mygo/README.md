@@ -46,7 +46,11 @@ records the Go version, the flags, and MyGo's version, commit and license.
   scrolls too. It asks for DejaVu Sans as the others do.
 - `animate`: the view asks for every display frame (`AnimationFrame`),
   its clock at the frame's time (`Context.Now`). It counts frames by
-  their time, since one frame can build the view more than once.
+  their time, since one frame can build the view more than once. The
+  shimmer is one `ui.RichText` with a span for each character, where the
+  zgx and GPUI adapters make a text node for each character in a row. In
+  MyGo a text of a lone space has no width (as CSS drops a white-space
+  flex item), so per-character texts run the words together.
 - `vlist`: MyGo's own virtualized list, `ui.List` with a `ListState`.
   Scrolls (all three modes; jump scrolls between its jumps) set its offset
   through a `ScrollState` (`TrackScroll`), as an app scrolling a list by
