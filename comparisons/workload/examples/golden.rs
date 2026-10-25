@@ -100,6 +100,11 @@ fn main() {
             vlist::text(row)
         );
     }
+    println!(
+        "probe {:?} {}",
+        vlist::probe_rows(),
+        zgx_workload::fnv64(b"zgx")
+    );
     for tick in 0..200 {
         println!(
             "vtick {tick} {} {} {} {:?}",

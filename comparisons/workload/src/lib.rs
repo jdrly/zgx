@@ -7,6 +7,25 @@ pub const ROW_COUNT: usize = 100_000;
 pub const VIEWPORT_HEIGHT: f32 = 400.0;
 pub const PERIOD: Duration = Duration::from_nanos(16_666_667);
 pub const TOKEN: &str = "The quick brown fox streams a token. ";
+/// Every scene's font: the one file in comparisons/fonts, which each adapter
+/// loads itself (`font_file`), so every framework shapes the same glyphs.
+pub const FONT: &str = "DejaVu Sans";
+
+/// FNV-1a, 64-bit: how an adapter names the font file it loaded.
+pub fn fnv64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+/// The font file the runner staged (`ZGX_FONT_FILE`), read, and reported as
+/// the runner checks it (`font_family=… font_file_fnv64=…`, on stderr).
+pub fn font_file() -> Option<Vec<u8>> {
+    let path = var("ZGX_FONT_FILE").ok()?;
+    let bytes = std::fs::read(&path).ok()?;
+    eprintln!("font_family={FONT} font_file_fnv64={:016x}", fnv64(&bytes));
+    Some(bytes)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Idle,
@@ -235,8 +254,8 @@ pub mod heavy {
     use std::{collections::VecDeque, fmt::Write, ops::Range};
     pub const WIDTH: f32 = 1280.;
     pub const HEIGHT: f32 = 800.;
-    /// Installed on every Mac, so no adapter falls back to another face.
-    pub const FONT: &str = "Arial";
+    /// Every scene's font (the bundled file, see `font_file`).
+    pub const FONT: &str = super::FONT;
     pub const BACKGROUND: u32 = 0x0e1218;
     pub const PANEL: u32 = 0x161c26;
     pub const HEADER: u32 = 0x1c2430;
@@ -525,7 +544,7 @@ pub mod vlist {
     pub const WIDTH: f32 = 720.;
     pub const HEIGHT: f32 = 800.;
     pub const ROWS: usize = 100_000;
-    pub const FONT: &str = "Arial";
+    pub const FONT: &str = super::FONT;
     pub const FONT_SIZE: f32 = 14.;
     pub const LINE_HEIGHT: f32 = 20.;
     /// A row's padding around its content, and the gap between its parts.
@@ -602,16 +621,51 @@ pub mod vlist {
         Scroll,
         Fling,
         Jump,
+        /// Before any trial counts: show each of `probe_rows()` at the top in
+        /// turn, let it lay out, and report the heights the list measured
+        /// (`row_heights=<row>:<points>,…` with `list_width=` and
+        /// `text_width=`), then exit. The runner checks every framework's
+        /// heights agree (within 2 points): the same rows wrap the same way.
+        Probe,
     }
     impl Mode {
-        /// ZGX_MODE: `scroll` (the default), `fling` or `jump`.
+        /// ZGX_MODE: `scroll` (the default), `fling`, `jump` or `probe`.
         pub fn from_env() -> Self {
             match super::var("ZGX_MODE").as_deref() {
                 Ok("fling") => Self::Fling,
                 Ok("jump") => Self::Jump,
+                Ok("probe") => Self::Probe,
                 _ => Self::Scroll,
             }
         }
+    }
+
+    /// The rows the probe measures: for every line count, the first row with
+    /// it and no image; for 1, 4 and 8 lines the first with an image; and two
+    /// far rows.
+    pub fn probe_rows() -> Vec<usize> {
+        let first = |lines_wanted: usize, image: bool| {
+            (0..ROWS)
+                .find(|&r| lines(r) == lines_wanted && has_image(r) == image)
+                .unwrap()
+        };
+        let mut rows: Vec<usize> = (1..=8)
+            .map(|n| first(n, false))
+            .chain([1, 4, 8].map(|n| first(n, true)))
+            .collect();
+        rows.extend([54_321, 99_999]);
+        rows
+    }
+    /// How a probe reports: `row_heights=…`, the list's and the text's widths.
+    pub fn probe_report(heights: &[(usize, f32)], list_width: f32) -> String {
+        let rows: Vec<String> = heights
+            .iter()
+            .map(|(row, h)| format!("{row}:{h:.1}"))
+            .collect();
+        format!(
+            "row_heights={} list_width={list_width:.1} text_width={TEXT_WIDTH:.1}",
+            rows.join(",")
+        )
     }
 
     /// splitmix64: a row's (or a jump's) deterministic randomness.
@@ -654,6 +708,7 @@ pub mod vlist {
         match mode {
             Mode::Scroll => SCROLL_STEP,
             Mode::Fling => FLING.0 * FLING.1.powi((tick % FLING.2) as i32),
+            Mode::Probe => 0.,
             // Jump scrolls between its jumps, so frames keep coming and their
             // times show what each jump costs.
             Mode::Jump => SCROLL_STEP,

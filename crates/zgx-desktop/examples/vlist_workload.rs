@@ -80,6 +80,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .font_family(vlist::FONT)
                     .text_size(vlist::FONT_SIZE)
                     .line_height(vlist::LINE_HEIGHT)
+                    // zgx's text wraps only when asked (inherited by the rows).
+                    .text_wrap(true)
                     .text_color(rgb(vlist::TEXT))
                     .child(list),
             );
