@@ -231,8 +231,8 @@ def load_micro(path):
     for row in rows:
         if row['figure'] != 'frame' or row.get('note'):
             continue
-        if row['framework'] == 'zgx':
-            column = 'zgx' if row.get('render') else 'zgx-noencode'
+        if row['framework'] in ('zgx', 'zgx-luau'):
+            column = row['framework'] + ('' if row.get('render') else '-noencode')
         elif row['framework'] == 'mygo':
             column = 'mygo' if row.get('raster') == '0.05x' else 'mygo-1x'
         else:
@@ -245,8 +245,8 @@ def micro_section(frames, e):
     """Per scene, two like-for-like groups: frames without the GPU's encode
     (zgx's RENDER=0, GPUI Fast's headless frame) and with it (zgx, Rune, and
     MyGo, whose frame also rasterizes on the CPU)."""
-    groups = [('Without the GPU encode', [('zgx-noencode', 'zgx'), ('gpui-fast', 'GPUI Fast')]),
-              ('With the GPU encode', [('zgx', 'zgx'), ('rune', 'Rune'), ('mygo', 'MyGo')])]
+    groups = [('Without the GPU encode', [('zgx-noencode', 'zgx'), ('zgx-luau-noencode', 'zgx (Luau)'), ('gpui-fast', 'GPUI Fast')]),
+              ('With the GPU encode', [('zgx', 'zgx'), ('zgx-luau', 'zgx (Luau)'), ('rune', 'Rune'), ('mygo', 'MyGo')])]
     charts = []
     for scene, (title, note) in MICRO_SCENES.items():
         cells = frames.get(scene, {})
@@ -263,7 +263,7 @@ def micro_section(frames, e):
             top = max(row['median_ns'] for _, _, row in present) or 1
             out.append('<tbody>')
             for i, (key, name, row) in enumerate(present):
-                fw = 'zgx' if key.startswith('zgx') else key
+                fw = 'zgx-luau' if key.startswith('zgx-luau') else 'zgx' if key.startswith('zgx') else key
                 head = f'<th scope="rowgroup" rowspan="{len(present)}" class="mode">{e(label)}</th>' if i == 0 else ''
                 us = lambda ns: fmt(ns / 1000, 1 if row['median_ns'] < 100_000 else 0)
                 out.append(f'<tr class="fw-{fw}">{head}<th scope="row">{e(name)}</th>'
@@ -291,7 +291,7 @@ def micro_section(frames, e):
         '<li><strong>Most of a frame with the GPU encode is what any Metal frame costs:</strong> a bare Metal frame (a command buffer, one empty render pass, '
         'commit) takes 44–94 µs of process CPU back to back on this Mac, most of it in Metal\'s own threads; zgx\'s work over it is the few microseconds '
         'of its frame without the encode and about 33,000 instructions of drawing and presenting.</li>'
-        '<li><strong>Not yet measured:</strong> zgx through Luau.</li>'
+        + ('' if any('zgx-luau' in cells for cells in frames.values()) else '<li><strong>Not yet measured:</strong> zgx through Luau.</li>') +
         '</ul></section>')
 
 
