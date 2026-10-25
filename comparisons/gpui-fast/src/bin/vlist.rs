@@ -3,11 +3,16 @@
 //! which lays rows out to measure them as they come into view, moved by the
 //! scene's scroll, fling or jump each tick.
 use gpui::{prelude::*, *};
-use std::time::Instant;
+use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Instant};
 use zgx_workload::{PERIOD, vlist};
+
+/// Each row's laid-out height (probe mode), from its wrapper's prepaint.
+type Heights = Rc<RefCell<HashMap<usize, f32>>>;
 
 struct Chat {
     list: ListState,
+    /// Probe mode only: rows are wrapped to read their heights (no cost otherwise).
+    heights: Option<Heights>,
 }
 impl Render for Chat {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -19,8 +24,22 @@ impl Render for Chat {
             .line_height(px(vlist::LINE_HEIGHT))
             .text_color(rgb(vlist::TEXT))
             .child(
-                list(self.list.clone(), |index, _, _| {
-                    row(index).into_any_element()
+                list(self.list.clone(), {
+                    let heights = self.heights.clone();
+                    move |index, _, _| {
+                        let Some(heights) = heights.clone() else {
+                            return row(index).into_any_element();
+                        };
+                        div()
+                            .w_full()
+                            .on_children_prepainted(move |bounds, _, _| {
+                                if let Some(b) = bounds.first() {
+                                    heights.borrow_mut().insert(index, f32::from(b.size.height));
+                                }
+                            })
+                            .child(row(index))
+                            .into_any_element()
+                    }
                 })
                 .size_full(),
             )
@@ -71,6 +90,12 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30.);
     gpui_platform::application().run(move |cx: &mut App| {
+        // The comparisons' one font file (comparisons/fonts), as every framework loads it.
+        if let Some(bytes) = zgx_workload::font_file() {
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Owned(bytes)])
+                .unwrap();
+        }
         let bounds = Bounds::centered(None, size(px(vlist::WIDTH), px(vlist::HEIGHT)), cx);
         cx.open_window(
             WindowOptions {
@@ -81,7 +106,35 @@ fn main() {
             |_, cx| {
                 cx.new(|cx: &mut Context<Chat>| {
                     let list = ListState::new(vlist::ROWS, ListAlignment::Top, px(200.));
+                    let heights: Heights = Rc::default();
                     let state = list.clone();
+                    let _ = &heights;
+                    if mode == vlist::Mode::Probe {
+                        // Each probe row at the top in turn, measured after a few frames.
+                        let measured_heights = heights.clone();
+                        cx.spawn(async move |chat, cx| {
+                            let mut measured = Vec::new();
+                            for row in vlist::probe_rows() {
+                                state.scroll_to(ListOffset {
+                                    item_ix: row,
+                                    offset_in_item: px(0.),
+                                });
+                                let _ = chat.update(cx, |_, cx| cx.notify());
+                                cx.background_executor().timer(PERIOD * 12).await;
+                                measured.push((
+                                    row,
+                                    measured_heights.borrow().get(&row).copied().unwrap_or(0.),
+                                ));
+                            }
+                            eprintln!("{}", vlist::probe_report(&measured, vlist::WIDTH));
+                            let _ = cx.update(|cx| cx.quit());
+                        })
+                        .detach();
+                        return Chat {
+                            list,
+                            heights: Some(heights),
+                        };
+                    }
                     cx.spawn(async move |chat, cx| {
                         let start = Instant::now();
                         let mut deadline = start + PERIOD;
@@ -115,7 +168,8 @@ fn main() {
                             }
                             // A frame only when the list moved, as zgx and MyGo draw.
                             let after = state.logical_scroll_top();
-                            let moved = (before.item_ix, before.offset_in_item) != (after.item_ix, after.offset_in_item);
+                            let moved = (before.item_ix, before.offset_in_item)
+                                != (after.item_ix, after.offset_in_item);
                             if moved && chat.update(cx, |_, cx| cx.notify()).is_err() {
                                 break;
                             }
@@ -126,7 +180,10 @@ fn main() {
                         }
                     })
                     .detach();
-                    Chat { list }
+                    Chat {
+                        list,
+                        heights: None,
+                    }
                 })
             },
         )

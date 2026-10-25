@@ -9,11 +9,14 @@ use std::{
     time::{Duration, Instant},
 };
 use zgx::compose::prelude::*;
-use zgx_desktop::{Application, WindowOptions};
+use zgx_desktop::WindowOptions;
 use zgx_workload::{
     PERIOD,
     vlist::{self, Mode},
 };
+
+#[path = "support/bench_font.rs"]
+mod bench_font;
 
 fn chat_row(index: usize) -> View {
     let mut body = column()
@@ -46,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(30.);
-    Application::new()
+    bench_font::application()?
         .window(WindowOptions {
             title: "zgx vlist".into(),
             width: vlist::WIDTH as f64,
@@ -90,6 +93,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 move || eprintln!("workload_ticks={}", ticks.get())
             });
             let window = cx.window.clone();
+            if mode == Mode::Probe {
+                // Each probe row at the top in turn, measured after a few frames.
+                cx.tasks.spawn(async move {
+                    let mut measured = Vec::new();
+                    for row in vlist::probe_rows() {
+                        offset.set(heights.row_offset(row));
+                        zgx::timer::sleep(PERIOD * 6).await;
+                        // Placed from the estimates above it, measured once laid out.
+                        offset.set(heights.row_offset(row));
+                        zgx::timer::sleep(PERIOD * 6).await;
+                        measured.push((row, heights.row_height(row).unwrap_or(0.)));
+                    }
+                    eprintln!("{}", vlist::probe_report(&measured, vlist::WIDTH));
+                    window.close();
+                });
+                return;
+            }
             cx.tasks.spawn(async move {
                 let start = Instant::now();
                 let end = (seconds > 0.).then(|| start + Duration::from_secs_f64(seconds));

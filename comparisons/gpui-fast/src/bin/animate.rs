@@ -1,7 +1,7 @@
 //! Display-rate animation workload (see zgx_workload::animation).
 use gpui::{prelude::*, *};
 use std::time::Instant;
-use zgx_workload::{animation::*, Workload};
+use zgx_workload::{Workload, animation::*};
 struct Scene {
     start: Instant,
     frames: u64,
@@ -11,7 +11,12 @@ impl Render for Scene {
         self.frames += 1;
         window.request_animation_frame();
         let t = self.start.elapsed().as_secs_f32();
-        let mut root = div().size_full().relative().bg(rgb(BACKGROUND)).text_size(px(18.));
+        let mut root = div()
+            .size_full()
+            .relative()
+            .bg(rgb(BACKGROUND))
+            .font_family(zgx_workload::FONT)
+            .text_size(px(18.));
         for i in 0..COLUMNS * ROWS {
             let (x, y) = dot_position(i);
             root = root.child(
@@ -45,6 +50,12 @@ impl Render for Scene {
 }
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
+        // The comparisons' one font file (comparisons/fonts), as every framework loads it.
+        if let Some(bytes) = zgx_workload::font_file() {
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Owned(bytes)])
+                .unwrap();
+        }
         let seconds = Workload::from_env().seconds;
         let bounds = Bounds::centered(None, size(px(960.), px(720.)), cx);
         let window = cx

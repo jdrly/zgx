@@ -3,15 +3,18 @@
 //! reactive styles read a clock advanced once per display refresh.
 use std::time::{Duration, Instant};
 use zgx::timer::sleep;
-use zgx_desktop::{Application, WindowOptions};
+use zgx_desktop::WindowOptions;
 use zgx_workload::Workload;
+
+#[path = "support/bench_font.rs"]
+mod bench_font;
 
 #[path = "support/animation_view.rs"]
 mod view;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seconds = Workload::from_env().seconds;
-    Application::new()
+    bench_font::application()?
         .window(WindowOptions {
             title: "zgx animation".into(),
             width: 960.,
