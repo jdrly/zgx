@@ -60,6 +60,10 @@ SCENES = {
     "busy": (("busy",), {"zgx": "busy_workload.exe", "gpui": "busy.exe"}),
 }
 TICKS_PER_SECOND = 60
+# The one font file every adapter loads (`comparisons/fonts`), staged as the
+# macOS runner stages it.
+FONT = pathlib.Path(__file__).resolve().parent.parent / "comparisons" / "fonts" / "DejaVuSans.ttf"
+font_file = None
 
 
 def units(text):
@@ -95,7 +99,8 @@ def run(path, mode, seconds, warmup, log_path):
     total = warmup + seconds
     # ZGUI_*: adapters built before the rename read those alone.
     env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=f"{total:g}", ZGX_INITIAL_TICKS="0",
-               ZGUI_MODE=mode, ZGUI_SECONDS=f"{total:g}", ZGUI_INITIAL_TICKS="0", ZGX_ACCESSIBILITY_LOG="1")
+               ZGUI_MODE=mode, ZGUI_SECONDS=f"{total:g}", ZGUI_INITIAL_TICKS="0", ZGX_ACCESSIBILITY_LOG="1",
+               **({"ZGX_FONT_FILE": str(font_file), "ZGUI_FONT_FILE": str(font_file)} if font_file else {}))
     started = time.perf_counter()
     samples = []
     with open(log_path, "w") as log:
@@ -165,8 +170,13 @@ def main():
     parser.add_argument("--max-repeats", type=int, default=6)
     parser.add_argument("--spread", type=float, default=0.05,
                         help="another round while (max - min) / median exceeds this")
+    parser.add_argument("--font", type=pathlib.Path, default=FONT, help="the one font file every adapter loads")
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("target/windows-compare"))
     args = parser.parse_args()
+    global font_file
+    font_file = args.font.resolve() if args.font.exists() else None
+    if font_file is None:
+        print(f"no font file at {args.font}: each adapter draws in its own font")
     dirs = {name: getattr(args, name.replace("-", "_")) for name in FRAMEWORKS}
     dirs = {name: d for name, d in dirs.items() if d}
     if len(dirs) < 2:
@@ -242,6 +252,7 @@ def main():
         "screen_reader_running": screen_reader,
         "uia_client_processes_running": uia_clients,
         "invalid_runs": failures,
+        "font_file": str(font_file) if font_file else None,
         "binary_bytes": {key: os.path.getsize(path) for key, path in binaries.items()},
         "binary_sha256": {key: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
                           for key, path in binaries.items()},
