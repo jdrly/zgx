@@ -17,15 +17,15 @@ use accesskit::{
 use accesskit_consumer::{FilterResult, Node, NodeId, Tree, TreeState};
 use std::{
     fmt::Write,
-    sync::{Arc, Weak, atomic::Ordering},
+    sync::{atomic::Ordering, Arc, Weak},
 };
 use windows::{
+    core::*,
     Win32::{
         Foundation::*,
         System::{Com::*, Variant::*},
         UI::Accessibility::*,
     },
-    core::*,
 };
 
 use crate::{
@@ -403,6 +403,19 @@ impl NodeWrapper<'_> {
 
     pub(crate) fn name(&mut self) -> Option<WideString<'_>> {
         let mut result = WideString::new(self.string_buffer);
+        // zgx patch: a table's cell or header with no label of its own (or
+        // an empty one) is named by its contents, as ARIA names cells and
+        // headers (and Chromium does): Narrator reads a cell by its name,
+        // and a cell whose text is a child had none.
+        if matches!(
+            self.node.role(),
+            Role::Cell | Role::GridCell | Role::ColumnHeader | Role::RowHeader
+        ) && self.node.label().is_none_or(|label| label.is_empty())
+        {
+            return write_contents(&self.node, &mut result, &mut false)
+                .unwrap()
+                .then_some(result);
+        }
         if self.node.label_comes_from_value() {
             self.node.write_value(&mut result)
         } else {
@@ -1040,7 +1053,7 @@ impl IRawElementProviderSimple_Impl for PlatformNode_Impl {
                             result = window_title(context.hwnd, &mut buffer).into();
                         }
                         UIA_NativeWindowHandlePropertyId => {
-                            result = (context.hwnd.0.0 as i32).into();
+                            result = (context.hwnd.0 .0 as i32).into();
                         }
                         _ => (),
                     }
@@ -1549,4 +1562,32 @@ patterns! {
 fn platform_node_impl_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<PlatformNode>();
+}
+
+/// zgx patch: `node`'s visible descendants' text, space-separated: a child
+/// with a label (or a label's value) gives that, else its own descendants'.
+/// Whether it wrote any.
+fn write_contents(
+    node: &Node,
+    writer: &mut impl Write,
+    wrote: &mut bool,
+) -> std::result::Result<bool, std::fmt::Error> {
+    for child in node.children().filter(|child| !child.is_hidden()) {
+        let mut text = String::new();
+        let has = if child.label_comes_from_value() {
+            child.write_value(&mut text)?
+        } else {
+            child.write_label(&mut text)?
+        };
+        if has && !text.is_empty() {
+            if *wrote {
+                writer.write_char(' ')?;
+            }
+            writer.write_str(&text)?;
+            *wrote = true;
+        } else {
+            write_contents(&child, writer, wrote)?;
+        }
+    }
+    Ok(*wrote)
 }

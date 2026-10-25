@@ -481,4 +481,10 @@ python scripts/windows_window_smoke.py target/debug/examples
 
 `scripts/windows_uia_dump.ps1 -Hwnd <window>` prints a window's UI Automation
 tree as Narrator reads it: control types, names, values, toggle and range
-states, and text selections.
+states, and text selections. Read that way (2026-10-24), the component
+catalog and the dashboard example (`zgx-run crates/zgx-script/examples/...`)
+give, on the first read, the names and values made from state that wait for
+a screen reader (`accessible_label_when`): tabs, the select's value, the date
+picker's days, the dashboard's instruments with their trends and its charts
+named by what they show. A grid's cells are named by their text
+(`vendor/accesskit_windows/ZGX_PATCH.md`).

@@ -7,7 +7,7 @@ published crate ships no license files) and applied through
 
 ## Why
 
-AccessKit gives a heading's level to UI Automation only as the generic
+Two gaps Narrator meets in zgx's windows. AccessKit gives a heading's level to UI Automation only as the generic
 `Level` property and the ARIA `level`, never as `HeadingLevel` (UIA
 property 30173). Narrator's heading navigation (scan mode H, the headings
 list) and Windows' other screen readers go by `HeadingLevel`, so zgx's
@@ -21,6 +21,13 @@ WebView2 set it. 0.35.1 and upstream main still leave it out.
    `UIA_HeadingLevelPropertyId`. Other nodes keep UIA's default,
    `HeadingLevel_None`.
 2. A test, `src/tests/heading.rs`, reading it through the UIA client.
+3. `name` in `src/node.rs`: a table's cell or header (`Cell`, `GridCell`,
+   `ColumnHeader`, `RowHeader`) with no label, or an empty one, is named by
+   its visible descendants' text, as ARIA names cells and headers and as
+   Chromium does. AccessKit derives a name from contents only for buttons,
+   check boxes, links, menu items and radio buttons, so a zgx grid's cells,
+   whose text is a child, had no UIA Name: Narrator's table navigation read
+   them as blank. Tested by `src/tests/cell_name.rs`.
 
 Run the crate's tests on Windows with
 `cargo test --manifest-path vendor/accesskit_windows/Cargo.toml --locked`.
