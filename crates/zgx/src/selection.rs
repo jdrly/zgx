@@ -258,6 +258,10 @@ impl Drop for RowTextGuard {
 /// The virtual list at `root` copies the rows a selection spans and it has
 /// not mounted from `text` (`View::row_text`).
 pub(crate) fn mount_row_text(ui: &mut Ui, root: NodeId, text: RowText) {
+    // Only a selection copies it.
+    if !ui.scene.borrow().is_selectable(root) {
+        return;
+    }
     // Its rows' parent: the list's content, in its viewport.
     let content = {
         let scene = ui.scene.borrow();

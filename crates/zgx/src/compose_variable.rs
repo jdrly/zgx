@@ -307,12 +307,19 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
     offset: Signal<f32>,
     heights: VariableHeights,
     overscan: usize,
-    mut key: impl FnMut(usize) -> K + 'static,
-    mut build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
+    key: impl FnMut(usize) -> K + 'static,
+    build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
     measured: bool,
 ) -> View {
+    let rows = RowSource::new(key, build);
+    let text = rows.text({
+        let heights = heights.clone();
+        move || heights.index.try_borrow().map_or(0, |index| index.count())
+    });
+    let (mut key, mut build, mounted_in) = (rows.key(), rows.build(), rows.mounted_in.clone());
     View::new(Kind::VirtualList(Box::new(
         move |ui, root, environment, scrollbar, keyboard_navigation| {
+            *mounted_in.borrow_mut() = Some((ui.runtime.clone(), environment.clone()));
             if measured {
                 let changed = heights.index.borrow_mut().enforce_minimum(1.);
                 if changed {
@@ -697,4 +704,5 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
             });
         },
     )))
+    .row_text(text)
 }

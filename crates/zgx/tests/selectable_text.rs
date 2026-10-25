@@ -834,6 +834,43 @@ fn highlights_out_of_view_are_laid_out_as_they_scroll_in() {
     assert_eq!(rects[0].height, 20.);
 }
 
+#[test]
+fn a_list_without_row_text_copies_the_text_its_rows_show() {
+    let mut ui = Ui::new(400., 300.);
+    let offset = ui.signal(0.);
+    ui.mount(
+        column()
+            .w(300.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(text("Header"))
+            .child(
+                virtual_list(
+                    offset,
+                    20.,
+                    1,
+                    || 500,
+                    |index| index,
+                    |_, key, _| {
+                        row()
+                            .child(text(format!("{key:03}")))
+                            .child(text_signal(move || format!("Row {key}")))
+                    },
+                )
+                .w(300.)
+                .h(100.),
+            ),
+    );
+    ui.prepare_frame();
+    assert!(ui.select_all_text(texts(&ui)[0]));
+    let copied = ui.selected_text();
+    let lines: Vec<&str> = copied.lines().collect();
+    assert_eq!(lines.len(), 501, "{copied}");
+    assert_eq!(lines[1], "000\tRow 0");
+    assert_eq!(lines[500], "499\tRow 499");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_control_click_on_macos_opens_the_menu_and_keeps_the_selection() {

@@ -1818,6 +1818,87 @@ pub fn keyed<K: Eq + std::hash::Hash + Clone + 'static>(
         });
     })))
 }
+/// What builds a virtual list's row: its index (a signal following it),
+/// its key and the row's context.
+type RowBuilder<K> = dyn FnMut(Signal<usize>, K, &mut Context) -> View;
+/// A virtual list's key and row builders, shared by the list and the text
+/// a copy takes of rows it has not mounted (`View::row_text`).
+pub(crate) struct RowSource<K> {
+    key: Rc<RefCell<dyn FnMut(usize) -> K>>,
+    build: Rc<RefCell<RowBuilder<K>>>,
+    /// The runtime and environment the list mounted in: rows are built in
+    /// them.
+    pub(crate) mounted_in: Rc<RefCell<Option<(Runtime, Environment)>>>,
+}
+impl<K: 'static> RowSource<K> {
+    pub(crate) fn new(
+        key: impl FnMut(usize) -> K + 'static,
+        build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
+    ) -> Self {
+        Self {
+            key: Rc::new(RefCell::new(key)),
+            build: Rc::new(RefCell::new(build)),
+            mounted_in: Rc::default(),
+        }
+    }
+    pub(crate) fn key(&self) -> impl FnMut(usize) -> K + 'static {
+        let key = self.key.clone();
+        move |index| (key.borrow_mut())(index)
+    }
+    pub(crate) fn build(&self) -> impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static {
+        let build = self.build.clone();
+        move |index, key, cx| (build.borrow_mut())(index, key, cx)
+    }
+    /// Row `index`'s text, of `len()` rows: the row built as the list builds
+    /// it, not mounted (what it makes ends at once), and read (`view_text`).
+    pub(crate) fn text(
+        &self,
+        len: impl Fn() -> usize + 'static,
+    ) -> impl Fn(usize) -> Option<String> + 'static {
+        let (key, build, mounted_in) = (
+            self.key.clone(),
+            self.build.clone(),
+            self.mounted_in.clone(),
+        );
+        move |index| {
+            if index >= len() {
+                return None;
+            }
+            let (runtime, environment) = mounted_in.borrow().clone()?;
+            // Built now (a copy during a row's build): copied as nothing.
+            let row = key.try_borrow_mut().ok().map(|mut key| key(index))?;
+            let mut cx = Context::new(runtime.clone(), environment);
+            let mut view = build
+                .try_borrow_mut()
+                .ok()
+                .map(|mut build| build(runtime.signal(index), row, &mut cx))?;
+            Some(view_text(&mut view))
+        }
+    }
+}
+/// The text `view` shows, as a copy of it takes it: its texts in order, a
+/// tab between a row's children and a line break between others'. What
+/// it builds when mounted (components, regions) is left out.
+pub(crate) fn view_text(view: &mut View) -> String {
+    match &mut view.kind {
+        Kind::Text(text) => return text.clone(),
+        Kind::BoundText(text) => return text(),
+        Kind::RichText(spans) => return spans().iter().map(|span| &*span.text).collect(),
+        _ => {}
+    }
+    let separator = if matches!(view.kind, Kind::Container(Layout::Row)) {
+        "\t"
+    } else {
+        "\n"
+    };
+    let parts: Vec<String> = view
+        .children
+        .iter_mut()
+        .map(view_text)
+        .filter(|text| !text.is_empty())
+        .collect();
+    parts.join(separator)
+}
 /// Fixed-height keyed rows; only the visible range plus overscan is mounted.
 /// `count` and `key` track reactive reads. `build` runs once per mounted key;
 /// its index signal updates when that key moves. Offscreen rows are disposed,
@@ -1827,13 +1908,22 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
     offset: Signal<f32>,
     row_height: f32,
     overscan: usize,
-    mut count: impl FnMut() -> usize + 'static,
-    mut key: impl FnMut(usize) -> K + 'static,
-    mut build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
+    count: impl FnMut() -> usize + 'static,
+    key: impl FnMut(usize) -> K + 'static,
+    build: impl FnMut(Signal<usize>, K, &mut Context) -> View + 'static,
 ) -> View {
     assert!(row_height.is_finite() && row_height > 0.0);
+    let count = Rc::new(RefCell::new(count));
+    let rows = RowSource::new(key, build);
+    let text = rows.text({
+        let count = count.clone();
+        move || count.try_borrow_mut().map_or(0, |mut count| count())
+    });
+    let (mut key, mut build, mounted_in) = (rows.key(), rows.build(), rows.mounted_in.clone());
+    let count = move || (count.borrow_mut())();
     View::new(Kind::VirtualList(Box::new(
         move |ui, root, environment, scrollbar, keyboard_navigation| {
+            *mounted_in.borrow_mut() = Some((ui.runtime.clone(), environment.clone()));
             let size = ui.observe_content_size(root);
             let extent = ui.signal(0.0_f32);
             // Clip rows to the allocated content box, keeping root padding clear.
@@ -2037,6 +2127,7 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
             });
         },
     )))
+    .row_text(text)
 }
 // Roll back newly appended roots if a component constructor or initial binding
 // panics. Existing siblings are never removed by this guard. This is ownership
