@@ -25,6 +25,8 @@ struct Scratch {
     ids: Vec<NodeId>,
     absolute: Vec<NodeId>,
     asked: Vec<Constraints>,
+    /// `asked` as each child's results are kept under it (`relevant`).
+    kept: Vec<Constraints>,
     sizes: Vec<(f32, f32)>,
     allocated: Vec<bool>,
     bases: Vec<f32>,
@@ -4905,14 +4907,25 @@ impl Scene {
     /// `id`'s size under `constraints`, for a probe: a kept size serves,
     /// leaving whichever result `id` holds whole as it was.
     fn measure(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
+        self.measured(id, constraints, false).0
+    }
+    /// `measure`, and `constraints` as `id`'s results are kept under them
+    /// (`relevant`): a parent stores those, so that `arrange` finds the
+    /// child's result without asking again.
+    fn measure_kept(&mut self, id: NodeId, constraints: Constraints) -> ((f32, f32), Constraints) {
         self.measured(id, constraints, false)
     }
     /// `id` laid out under `constraints`, the result it then holds (with its
     /// children's places) for `arrange`.
     fn measure_full(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
-        self.measured(id, constraints, true)
+        self.measured(id, constraints, true).0
     }
-    fn measured(&mut self, id: NodeId, constraints: Constraints, full: bool) -> (f32, f32) {
+    fn measured(
+        &mut self,
+        id: NodeId,
+        constraints: Constraints,
+        full: bool,
+    ) -> ((f32, f32), Constraints) {
         #[cfg(test)]
         {
             self.measure_calls += 1;
@@ -4927,7 +4940,7 @@ impl Scene {
         if let Some(current) = &node.measurement
             && usable(current)
         {
-            return current.size;
+            return (current.size, constraints);
         }
         if let Some(index) = node.alternates.iter().position(usable) {
             // Promote it: `arrange` places children from the current result.
@@ -4938,7 +4951,7 @@ impl Scene {
                 node.alternates.insert(0, previous);
             }
             node.arrange_dirty = true;
-            return size;
+            return (size, constraints);
         }
         if !full
             && let Some(kept) = node
@@ -4946,7 +4959,7 @@ impl Scene {
                 .iter()
                 .find(|m| (clean || m.pass == pass) && m.constraints == constraints)
         {
-            return kept.size;
+            return (kept.size, constraints);
         }
         // Measuring recurses into the children: one level of the tree more.
         self.measure_depth += 1;
@@ -4954,7 +4967,7 @@ impl Scene {
             self.measure_uncached(id, constraints)
         });
         self.measure_depth -= 1;
-        size
+        (size, constraints)
     }
     /// `measured`, when nothing kept serves.
     fn measure_uncached(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
@@ -5050,6 +5063,7 @@ impl Scene {
                     mut ids,
                     mut absolute,
                     mut asked,
+                    mut kept,
                     mut sizes,
                     mut allocated,
                     mut bases,
@@ -5138,9 +5152,11 @@ impl Scene {
                     }
                 }));
                 sizes.clear();
+                kept.clear();
                 for i in 0..ids.len() {
-                    let size = self.measure(ids[i], asked[i]);
+                    let (size, under) = self.measure_kept(ids[i], asked[i]);
                     sizes.push(size);
+                    kept.push(under);
                 }
                 // Children whose main size flex distribution decided.
                 allocated.clear();
@@ -5283,7 +5299,7 @@ impl Scene {
                             }
                             asked[i] = along(asked[i], size);
                             allocated[i] = true;
-                            sizes[i] = self.measure(*child, asked[i]);
+                            (sizes[i], kept[i]) = self.measure_kept(*child, asked[i]);
                         }
                         if !clamped {
                             break;
@@ -5313,7 +5329,7 @@ impl Scene {
                             }
                             asked[i] = along(asked[i], main(sizes[i]));
                             allocated[i] = true;
-                            sizes[i] = self.measure(*child, asked[i]);
+                            (sizes[i], kept[i]) = self.measure_kept(*child, asked[i]);
                         }
                     }
                 }
@@ -5392,7 +5408,7 @@ impl Scene {
                     if !horizontal && layout != Layout::Overlay && allocated[i] {
                         asked[i].force_height = Some(sizes[i].1);
                     }
-                    sizes[i] = self.measure(*child, asked[i]);
+                    (sizes[i], kept[i]) = self.measure_kept(*child, asked[i]);
                 }
                 let (natural_w, natural_h) = extent(&sizes);
                 let (inner_w, inner_h) = inner((natural_w, natural_h));
@@ -5449,7 +5465,7 @@ impl Scene {
                         }
                     };
                     children.push((*child, Rect::new(cx + padding.left, cy + padding.top, w, h)));
-                    child_constraints.push(Some(asked[i]));
+                    child_constraints.push(Some(kept[i]));
                     cursor += main(sizes[i]) + main_margin(s) + style.gap + extra_gap;
                 }
                 for &child in &absolute {
@@ -5461,7 +5477,7 @@ impl Scene {
                         percent_height: Some(inner_h.max(0.0)),
                         ..Constraints::default()
                     };
-                    let (w, h) = self.measure(child, placed);
+                    let ((w, h), placed) = self.measure_kept(child, placed);
                     child_constraints.push(Some(placed));
                     children.push((
                         child,
@@ -5472,6 +5488,7 @@ impl Scene {
                     ids,
                     absolute,
                     asked,
+                    kept,
                     sizes,
                     allocated,
                     bases,
@@ -5790,8 +5807,17 @@ impl Scene {
                 rect.x = bounds.width - rect.x - rect.width;
             }
             // Cached: promotes the matching result; evicted: re-measures.
+            // Kept as its results are (`measure_kept`): its current one is
+            // found here without asking.
             if let Some(constraints) = constraints {
-                self.measure_full(child, constraints);
+                let node = self.node(child);
+                let current = node.measurement.as_ref().is_some_and(|m| {
+                    m.constraints == constraints
+                        && (node.dirty & LAYOUT == 0 || m.pass == self.layout_pass)
+                });
+                if !current {
+                    self.measure_full(child, constraints);
+                }
             }
             crate::deep(level + 1, || {
                 let covered = covered || changed;
@@ -7757,6 +7783,49 @@ mod measure_work_tests {
             scene.flush();
         }
         (scene.measure_calls - before) / frames as u64
+    }
+    #[test]
+    fn arranging_children_asks_again_only_for_those_it_did_not_just_measure() {
+        let mut scene = Scene::new(400., 300.);
+        let card = scene.append(
+            scene.root(),
+            NodeKind::Container(Layout::Overlay),
+            Style {
+                width: Some(300.),
+                height: Some(200.),
+                ..Default::default()
+            },
+        );
+        let bars: Vec<_> = (0..20)
+            .map(|i| {
+                scene.append(
+                    card,
+                    NodeKind::Rect(Color(1, 2, 3, 255)),
+                    Style {
+                        absolute: true,
+                        width: Some(4.),
+                        height: Some(10.),
+                        margin: Insets {
+                            left: i as f32 * 6.,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        scene.flush();
+        let before = scene.measure_calls;
+        let mut style = scene.style(bars[3]);
+        style.height = Some(30.);
+        style.margin.top = 5.;
+        scene.set_style(bars[3], style);
+        scene.flush();
+        // The card and its twenty bars, each once: arranging them finds the
+        // results just made rather than asking for them again.
+        assert_eq!(scene.measure_calls - before, 21);
+        assert_eq!(scene.bounds(bars[3]), Rect::new(18., 5., 4., 30.));
+        assert_eq!(scene.bounds(bars[4]), Rect::new(24., 0., 4., 10.));
     }
     #[test]
     fn nested_animated_margins_measure_their_paths_not_every_probe_combination() {
