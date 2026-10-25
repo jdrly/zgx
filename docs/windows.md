@@ -513,7 +513,7 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgx-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe --example window_probe --example text_selection
+cargo build -p zgx-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe --example window_probe --example text_selection --example clipboard_image
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
@@ -524,6 +524,7 @@ python scripts/windows_popup_smoke.py target/debug/examples
 python scripts/windows_drag_smoke.py target/debug/examples
 python scripts/windows_window_smoke.py target/debug/examples
 python scripts/windows_text_smoke.py target/debug/examples/text_selection.exe
+python scripts/windows_clipboard_image_smoke.py target/debug/examples/clipboard_image.exe
 python scripts/windows_contrast_smoke.py target/debug/examples/text_selection.exe
 python scripts/windows_caret_blink_probe.py target/release/examples/text_selection.exe
 ```
@@ -571,6 +572,14 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   empty patch of the window changes as another test window takes the
   activation (Windows draws a solid colour for an inactive window's acrylic),
   where an opaque fill would not.
+- `windows_clipboard_image_smoke.py` (`clipboard_image`): images other apps
+  copy paste whole, every pixel compared: a 24-bit DIB, a 32-bit DIB whose
+  fourth byte is unused (a GDI bitmap's, as Paint copies: opaque), a DIBV5
+  with an alpha mask (as Firefox copies; arboard's decoder dropped these) and
+  a PNG alone; text alone pastes no image; and an image zgx copies is there
+  as a PNG, a DIBV5 with its alpha and the plain DIB Windows offers older
+  apps. The user's clipboard is saved and restored as in the text smoke, and
+  the copy check is skipped while cloud clipboard sync is on.
 - `windows_vlist_smoke.py` (each framework's `vlist` adapter, `comparisons/README.md`):
   as the macOS runner checks the scene, the probe rows' heights agree within
   2 points in the one font file every adapter loads, and in `scroll`, `fling`

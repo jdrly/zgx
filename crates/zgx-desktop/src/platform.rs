@@ -56,6 +56,15 @@ impl Platform for Desktop {
             .as_mut()
             .is_some_and(|clipboard| clipboard.set_rich_text(text, html).is_ok())
     }
+    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
+        self.clipboard.borrow_mut().as_mut()?.get_image().ok()
+    }
+    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
+        self.clipboard
+            .borrow_mut()
+            .as_mut()
+            .is_some_and(|clipboard| clipboard.set_image(image).is_ok())
+    }
     fn open_files(&self, picker: FilePicker) -> Pending<Result<Vec<PathBuf>, String>> {
         let dialogs = self.dialogs.clone();
         Box::pin(async move {

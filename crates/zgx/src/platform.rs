@@ -1,5 +1,5 @@
-//! What an app reaches on the machine beyond its window: the clipboard and
-//! the file dialogs. A desktop host provides it to the components it renders
+//! What an app reaches on the machine beyond its window: the clipboard (text,
+//! HTML and images) and the file dialogs. A desktop host provides it to the components it renders
 //! (`compose::provide`, as `Context::try_service::<PlatformService>()`);
 //! headless runs have none, and tests provide a fake.
 use std::{future::Future, path::PathBuf, pin::Pin, rc::Rc};
@@ -59,6 +59,17 @@ pub trait Platform {
     fn set_clipboard_rich_text(&self, text: String, html: String) -> bool {
         let _ = html;
         self.set_clipboard_text(text)
+    }
+    /// The clipboard's image, if it holds one: a screenshot, an image
+    /// editor's copy, a browser's Copy Image. None reads none.
+    fn clipboard_image(&self) -> Option<crate::image::ImageData> {
+        None
+    }
+    /// Put `image` on the clipboard in the formats the platform's apps paste
+    /// (its transform left out); whether it took it. None takes none.
+    fn set_clipboard_image(&self, image: &crate::image::ImageData) -> bool {
+        let _ = image;
+        false
     }
     /// The files the user picks to open: none if they cancel.
     fn open_files(&self, picker: FilePicker) -> Pending<Result<Vec<PathBuf>, String>>;

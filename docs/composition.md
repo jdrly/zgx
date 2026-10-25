@@ -176,6 +176,13 @@ settings portal, on X11 the session's XSETTINGS `Gtk/EnablePrimaryPaste`
 ahead of it, as GTK follows them; `Ui::set_primary_paste`): then a middle
 press does nothing in an editor, as in GTK's.
 
+The clipboard takes images too: `Platform::clipboard_image` gives the one
+there as an `ImageData` (straight RGBA, ready for `image`) and
+`set_clipboard_image` puts one there, on macOS, Windows and X11 (not yet on
+Wayland). On Windows an image is copied as a PNG and a DIB with its alpha, and
+pasted from a PNG where one is there, else from the DIB another app copied
+(`clipboard_image` shows both ways).
+
 The highlight is styled as CSS's `::selection` is. Its background is the
 theme's `selection` token (`selection.inactive` while the window is at the
 back). The glyphs inside it repaint in `selection.text` (`selection.text.inactive`),
