@@ -12,10 +12,10 @@ mod editor_accessible_selection;
 mod editor_autoscroll;
 #[path = "../editor_blur_selection.rs"]
 mod editor_blur_selection;
-#[path = "../editor_caret_width.rs"]
-mod editor_caret_width;
 #[path = "../editor_caret_blink.rs"]
 mod editor_caret_blink;
+#[path = "../editor_caret_width.rs"]
+mod editor_caret_width;
 #[path = "../editor_code.rs"]
 mod editor_code;
 #[path = "../editor_context_menu.rs"]
