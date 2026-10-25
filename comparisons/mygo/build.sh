@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 export CGO_ENABLED=0
 LDFLAGS="-s -w"
 mkdir -p bin
-for scene in heavy lab animate vlist; do
+for scene in heavy lab animate vlist micro; do
 	go build -trimpath -ldflags="$LDFLAGS" -o "bin/$scene" "./cmd/$scene"
 done
 
@@ -30,8 +30,8 @@ cat >build.json <<EOF
   "flags": "-trimpath -ldflags=$LDFLAGS",
   "cgo": false,
   "sinf": "workload/sinf.go: macOS libm sinf ported to Go, bit-identical for all 2^32 inputs",
-  "binaries": ["bin/heavy", "bin/lab", "bin/animate", "bin/vlist"],
+  "binaries": ["bin/heavy", "bin/lab", "bin/animate", "bin/vlist", "bin/micro"],
   "built_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
-echo "built bin/{heavy,lab,animate,vlist} with MyGo $mygo_version ($mygo_commit)"
+echo "built bin/{heavy,lab,animate,vlist,micro} with MyGo $mygo_version ($mygo_commit)"

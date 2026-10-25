@@ -91,3 +91,18 @@ func Ticks(win *mygo.Window, seconds float64, active bool, turn func() bool, tic
 		}
 	}()
 }
+
+// ChatRow is a vlist row: its author and time over its wrapped text, and an
+// image placeholder under one in four (cmd/vlist, cmd/micro).
+func ChatRow(c *ui.Context, i int) ui.Element {
+	return ui.Column(c).PaddingX(workload.VPad[0]).PaddingY(workload.VPad[1]).Gap(workload.VGap).Background(RGB(workload.RowColors[i%2])).Children(func() {
+		ui.Row(c).Gap(8).Height(workload.VLineHeight).Children(func() {
+			ui.Text(c, workload.Author(i)).TextColor(RGB(workload.VAuthor))
+			ui.Text(c, workload.Time(i)).TextColor(RGB(workload.VMuted))
+		})
+		ui.Text(c, workload.Text(i)).Width(workload.VTextWidth)
+		if workload.HasImage(i) {
+			ui.Box(c).Size(workload.VImage[0], workload.VImage[1]).Background(RGB(workload.VImageColor))
+		}
+	})
+}
