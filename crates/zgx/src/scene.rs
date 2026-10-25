@@ -5625,6 +5625,22 @@ impl Scene {
         let node = self.node_mut(id);
         node.advanced_layout = None;
         let stale = node.dirty & LAYOUT != 0;
+        // Its last result replaced and nothing else kept (a bar changing
+        // height): `store_measurement`'s result, written over that one.
+        if stale
+            && node.alternates.is_empty()
+            && node.sizes.is_empty()
+            && let Some(last) = &mut node.measurement
+            && last.pass != pass
+        {
+            last.constraints = constraints;
+            last.size = size;
+            last.pass = pass;
+            last.children.clear();
+            last.child_constraints.clear();
+            node.arrange_dirty = true;
+            return Some(size);
+        }
         let (mut children, mut child_constraints) = match &mut node.measurement {
             Some(last) if stale && last.pass != pass => (
                 std::mem::take(&mut last.children),
@@ -5842,21 +5858,24 @@ impl Scene {
             true => self.snap(id, x, y),
             false => (x, y),
         };
-        let cache = self.node(id).measurement.as_ref().unwrap();
+        // What it holds, read at once: laying it out leaves these as they are.
+        let node = self.node(id);
+        let cache = node.measurement.as_ref().unwrap();
         let bounds = Rect::new(x, y, cache.size.0, cache.size.1);
-        if !self.node(id).arrange_dirty && self.node(id).bounds == bounds {
+        let (arrange_dirty, rtl, childless) =
+            (node.arrange_dirty, node.rtl, node.children.is_empty());
+        if !arrange_dirty && node.bounds == bounds {
             return;
         }
         let count = cache.children.len().min(cache.child_constraints.len());
-        let changed = self.node(id).bounds != bounds;
-        if changed || self.node(id).arrange_dirty {
+        let changed = node.bounds != bounds;
+        if changed || arrange_dirty {
             report.layout_nodes += 1;
         }
         let damage = changed && !covered;
         // A leaf, nothing transformed or filtered: what it painted is damaged
         // with what it will paint, once it is placed (see `leaf_damage`).
-        let leaf =
-            damage && self.node(id).children.is_empty() && self.transformed + self.filtered == 0;
+        let leaf = damage && childless && self.transformed + self.filtered == 0;
         let place = match damage && leaf {
             true => self.leaf_place(id, context),
             false => None,
@@ -5884,7 +5903,7 @@ impl Scene {
             let ((child, mut rect), constraints) =
                 (cache.children[at], cache.child_constraints[at]);
             // Right to left: laid out left to right, mirrored in its box.
-            if self.node(id).rtl {
+            if rtl {
                 rect.x = bounds.width - rect.x - rect.width;
             }
             // Cached: promotes the matching result; evicted: re-measures.
@@ -5927,8 +5946,9 @@ impl Scene {
         } else if damage {
             self.damage_subtree_with(id, context);
         }
-        self.node_mut(id).dirty &= !LAYOUT;
-        self.node_mut(id).arrange_dirty = false;
+        let node = self.node_mut(id);
+        node.dirty &= !LAYOUT;
+        node.arrange_dirty = false;
     }
     /// A `snap` node placed at `x`, `y`: its edges on whole points, laid
     /// out again at the size between them if that differs.
@@ -7907,6 +7927,60 @@ mod measure_work_tests {
         assert_eq!(scene.measure_calls - before, 21);
         assert_eq!(scene.bounds(bars[3]), Rect::new(18., 5., 4., 30.));
         assert_eq!(scene.bounds(bars[4]), Rect::new(24., 0., 4., 10.));
+    }
+    #[test]
+    fn a_box_resized_frame_after_frame_lands_where_a_fresh_layout_puts_it() {
+        let build = |height: f32| {
+            let mut scene = Scene::new(200., 200.);
+            let column = scene.append(
+                scene.root(),
+                NodeKind::Container(Layout::Column),
+                Style {
+                    width: Some(100.),
+                    ..Default::default()
+                },
+            );
+            let bar = scene.append(
+                column,
+                NodeKind::Container(Layout::Overlay),
+                Style {
+                    width: Some(10.),
+                    height: Some(height),
+                    margin: Insets {
+                        top: 50. - height,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let below = scene.append(
+                column,
+                NodeKind::Rect(Color(1, 2, 3, 255)),
+                Style {
+                    width: Some(10.),
+                    height: Some(5.),
+                    ..Default::default()
+                },
+            );
+            scene.flush();
+            (scene, column, bar, below)
+        };
+        let (mut scene, column, bar, below) = build(10.);
+        for height in [20., 35., 12., 48.] {
+            let mut style = scene.style(bar);
+            style.height = Some(height);
+            style.margin.top = 50. - height;
+            scene.set_style(bar, style);
+            scene.flush();
+            let (fresh, fresh_column, fresh_bar, fresh_below) = build(height);
+            for (id, fresh_id) in [
+                (column, fresh_column),
+                (bar, fresh_bar),
+                (below, fresh_below),
+            ] {
+                assert_eq!(scene.bounds(id), fresh.bounds(fresh_id), "at {height}");
+            }
+        }
     }
     #[test]
     fn nested_animated_margins_measure_their_paths_not_every_probe_combination() {
