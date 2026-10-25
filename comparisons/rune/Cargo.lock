@@ -3798,6 +3798,7 @@ name = "zgx-compare-rune"
 version = "0.1.0"
 dependencies = [
  "rune",
+ "wgpu",
  "zgx-workload",
 ]
 

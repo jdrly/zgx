@@ -66,6 +66,19 @@ From `crates/rune/src/virtual_list.rs` and `virtual_rows.rs` at the pinned rev:
   place, and the bottom exact. If estimates leave a gap, the measurement pass
   widens the window before drawing.
 
+## The microbenchmarks
+
+`SCENE=state|vscroll-fixed|vscroll-variable bin/micro` times
+`zgx_workload::micro`'s operations in Rune's headless runtime, as
+`micro_bench` does zgx's: process CPU time per operation, batched, for the
+write alone and through to a frame ready to present. A write is
+`Runtime::update` (state) or a 12 pt `Runtime::wheel_xy` step (the path a
+wheel event takes). A frame is what Rune's own headless runner does for one:
+`Runtime::frame` (commit, layout, the scene's instances), then the renderer's
+prepare, draw and submit to an offscreen target at scale 2. The GPU settles
+between batches, untimed. Its blending is Rune's default (the scenes are
+opaque).
+
 ## The vlist probe
 
 `ZGX_MODE=probe bin/vlist` runs in Rune's headless runtime

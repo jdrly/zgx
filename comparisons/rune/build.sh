@@ -22,7 +22,7 @@ git -C rune-src apply ../rune-wheel.patch
 target=${CARGO_TARGET_DIR:-target}
 cargo build --profile perf --locked --bins
 mkdir -p bin
-for scene in heavy lab animate vlist; do
+for scene in heavy lab animate vlist micro; do
 	cp "$target/perf/$scene" "bin/$scene"
 done
 
@@ -35,8 +35,8 @@ cat >build.json <<JSON
   "rune_patch": "PATCH.md: Tx::wheel, Rune's own wheel path (Runtime::wheel_xy) for the app (sha256 $(shasum -a 256 rune-wheel.patch | cut -c1-64))",
   "rustc": "$(rustc --version)",
   "profile": "perf (Rune's: release, opt-level 3, codegen-units 16, no LTO, no debug, not incremental)",
-  "binaries": ["bin/heavy", "bin/lab", "bin/animate", "bin/vlist"],
+  "binaries": ["bin/heavy", "bin/lab", "bin/animate", "bin/vlist", "bin/micro"],
   "built_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 JSON
-echo "built bin/{heavy,lab,animate,vlist} with Rune $RUNE_REV (patched, PATCH.md)"
+echo "built bin/{heavy,lab,animate,vlist,micro} with Rune $RUNE_REV (patched, PATCH.md)"
