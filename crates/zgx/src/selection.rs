@@ -1477,14 +1477,22 @@ impl Ui {
                         .map(|(at, _)| *at)
                         .or_else(|| mounted.last().map(|(at, _)| at + 1))
                         .unwrap_or(after_list);
-                    provided.push((before, row));
+                    provided.push((before, *content, row));
                 }
                 index += 1;
             }
         }
-        // Stable: rows of one list keep their order.
-        provided.sort_by_key(|(before, _)| *before);
+        // Where they go, then lists in document order (two lists with no
+        // text shown between them take one place); stable, so rows of one
+        // list keep theirs.
+        provided.sort_by(|(a, list_a, _), (b, list_b, _)| {
+            a.cmp(b)
+                .then_with(|| scene.document_order(*list_a, *list_b))
+        });
         provided
+            .into_iter()
+            .map(|(before, _, row)| (before, row))
+            .collect()
     }
     /// The selected text as HTML, for pasting into rich text: paragraphs,
     /// headings (`<h1>`…) and line breaks where `selected_text` has them;

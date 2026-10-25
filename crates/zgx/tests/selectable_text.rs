@@ -740,6 +740,45 @@ fn copied_html_keeps_headings_links_and_rows_a_list_has_not_mounted() {
     assert_eq!(ui.selected_text().matches("Row ").count(), 100);
 }
 
+#[test]
+fn rows_of_lists_next_to_each_other_copy_in_document_order() {
+    let mut ui = Ui::new(400., 300.);
+    let list = |ui: &Ui, name: &'static str| {
+        virtual_list(
+            ui.signal(0.),
+            20.,
+            0,
+            || 50,
+            |index| index,
+            move |_, key, _| text(format!("{name} {key}")),
+        )
+        .row_text(move |index| (index < 50).then(|| format!("{name} {index}")))
+        .w(300.)
+        .h(40.)
+    };
+    let (a, b, c) = (list(&ui, "A"), list(&ui, "B"), list(&ui, "C"));
+    ui.mount(
+        column()
+            .w(300.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(text("Start"))
+            .children(vec![a, b, c]),
+    );
+    ui.prepare_frame();
+    assert!(ui.select_all_text(texts(&ui)[0]));
+    let copied = ui.selected_text();
+    let expected: Vec<String> = std::iter::once("Start".to_owned())
+        .chain(
+            ["A", "B", "C"]
+                .iter()
+                .flat_map(|name| (0..50).map(move |i| format!("{name} {i}"))),
+        )
+        .collect();
+    assert_eq!(copied.lines().collect::<Vec<_>>(), expected);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_control_click_on_macos_opens_the_menu_and_keeps_the_selection() {
@@ -1125,4 +1164,66 @@ fn copying_takes_rows_a_virtual_list_has_not_mounted_from_its_row_text() {
     offset.set(10_000.);
     ui.prepare_frame();
     assert_eq!(ui.selected_text(), within);
+}
+
+/// Select-all and copy over a long document, as a page of 20,000 paragraphs:
+/// `cargo test --release -p zgx --test text long_document -- --ignored --nocapture`.
+#[test]
+#[ignore = "a timing probe"]
+fn long_document_select_all_and_copy_timings() {
+    use std::time::Instant;
+    let mut ui = Ui::new(800., 600.);
+    let offset = ui.signal(0.);
+    let paragraphs = 20_000;
+    ui.mount(
+        column()
+            .w(800.)
+            .h(600.)
+            .text_size(14.)
+            .line_height(20.)
+            .selectable(true)
+            .child(
+                scroll(offset.clone())
+                    .w(800.)
+                    .h(600.)
+                    .child(column().gap(10.).children((0..paragraphs).map(|i| {
+                        text(format!(
+                            "Paragraph {i}: the quick brown fox jumps over the lazy dog, \
+                         and keeps running past the edge of the field until it wraps."
+                        ))
+                        .w_full()
+                        .text_wrap(true)
+                    }))),
+            ),
+    );
+    let start = Instant::now();
+    ui.prepare_frame();
+    eprintln!("mount and first frame: {:?}", start.elapsed());
+    let first = texts(&ui)[0];
+    let start = Instant::now();
+    assert!(ui.select_all_text(first));
+    eprintln!("select all: {:?}", start.elapsed());
+    let start = Instant::now();
+    ui.prepare_frame();
+    eprintln!("frame after select all: {:?}", start.elapsed());
+    let start = Instant::now();
+    let text = ui.selected_text();
+    eprintln!("copy as text: {:?} ({} bytes)", start.elapsed(), text.len());
+    let start = Instant::now();
+    let html = ui.selected_html();
+    eprintln!("copy as HTML: {:?} ({} bytes)", start.elapsed(), html.len());
+    assert_eq!(text.lines().filter(|l| !l.is_empty()).count(), paragraphs);
+    let start = Instant::now();
+    for step in 1..=10 {
+        offset.set(step as f32 * 300.);
+        ui.prepare_frame();
+    }
+    eprintln!("scroll frame, all selected: {:?}", start.elapsed() / 10);
+    ui.clear_text_selection();
+    let start = Instant::now();
+    for step in 1..=10 {
+        offset.set(3000. + step as f32 * 300.);
+        ui.prepare_frame();
+    }
+    eprintln!("scroll frame, nothing selected: {:?}", start.elapsed() / 10);
 }
