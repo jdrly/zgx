@@ -914,6 +914,8 @@ struct UiStorage {
     overlay_scrollbars: Signal<bool>,
     /// Editors' caret width in points (`Ui::set_caret_width`).
     caret_width: Rc<Cell<f32>>,
+    /// The focused editor's caret blinking (`Ui::set_caret_blink`).
+    caret_blink: Rc<crate::caret_blink::Blink>,
     /// Assistive technology reads the semantics (`Ui::set_assistive_technology`).
     assistive: Signal<bool>,
     /// Overlay scrollbars shown, to fade once their view stops scrolling.
@@ -1071,6 +1073,7 @@ impl Ui {
             presented: runtime.signal(true),
             overlay_scrollbars: runtime.signal(false),
             caret_width: Rc::new(Cell::new(1.)),
+            caret_blink: Rc::default(),
             assistive: runtime.signal(true),
             popup_screens: runtime.signal(Vec::new()),
             popup_limits: runtime.signal(Vec::new()),
@@ -2035,6 +2038,15 @@ impl Ui {
     pub(crate) fn observe_presentation(&self) -> Signal<bool> {
         self.storage.presented.clone()
     }
+    /// Whether the window can present now (`Ui::set_presented`), untracked.
+    pub(crate) fn is_presented(&self) -> bool {
+        self.storage
+            .presented
+            .with_untracked(|presented| *presented)
+    }
+    pub(crate) fn caret_blink(&self) -> &crate::caret_blink::Blink {
+        &self.storage.caret_blink
+    }
     /// Let anchored popups (popovers, menus, submenus, context menus,
     /// tooltips) show past the window, within `screens`: the visible part of
     /// each screen, in window coordinates. Each flips and clamps to the
@@ -2522,6 +2534,7 @@ impl Ui {
             self.next_selection_deadline(),
             crate::compose_scrollbar::next_fade(self),
             crate::elastic::next_step(self),
+            crate::caret_blink::next(self),
         ]
         .into_iter()
         .flatten()
@@ -2573,6 +2586,13 @@ impl Ui {
         };
         // Overlay scrollbars fading out.
         let keys = if crate::compose_scrollbar::advance_fades(self, now) {
+            self.try_prepare_frame()?;
+            true
+        } else {
+            keys
+        };
+        // The focused editor's caret blinking.
+        let keys = if crate::caret_blink::advance(self, now) {
             self.try_prepare_frame()?;
             true
         } else {
@@ -3046,6 +3066,7 @@ impl Ui {
         let edit = editor.clone();
         let focus = focused.clone();
         let draw_caret_width = self.storage.caret_width.clone();
+        let draw_blink = self.storage.caret_blink.clone();
         let scroll_for_draw = scroll.clone();
         let reveal_caret = Rc::new(Cell::new(true));
         let draw_reveal_caret = reveal_caret.clone();
@@ -3487,15 +3508,17 @@ impl Ui {
             );
             let mut effects = s.effects(caret);
             // Read-only text shows a selection but no caret.
-            effects.opacity = if *focus.borrow()
+            let caret_shown = *focus.borrow()
                 && !draw_read_only.get()
-                && e.preedit().is_none_or(|preedit| preedit.cursor.is_some())
-            {
-                1.
-            } else {
-                0.
-            };
+                && e.preedit().is_none_or(|preedit| preedit.cursor.is_some());
+            effects.opacity = if caret_shown { 1. } else { 0. };
             s.set_effects(caret, effects);
+            // Drawn again (typed, selected, moved): solid, then blinking.
+            if caret_shown {
+                draw_blink.restart(caret, color, Instant::now());
+            } else {
+                draw_blink.release(caret);
+            }
             // An editable field shows its selection only while it has the focus (or its
             // window merely went to the back), as AppKit's do: the selection is kept, and
             // shows again when the focus comes back. Read-only text gives its up on blur.

@@ -292,6 +292,13 @@ window whatever its title bar:
   changed live. macOS and GTK have no such setting to follow. Windows' text
   cursor indicator does not find zgx's caret yet: it reads a system caret or
   UI Automation's `GetCaretRange`, and zgx gives neither.
+- The text cursor's blink rate (Accessibility, Text cursor): the focused
+  editor's caret blinks at it (`GetCaretBlinkTime` each way), solid while
+  the user types or moves it, and stops after the caret timeout
+  (`SPI_GETCARETTIMEOUT`, 5 s), as Windows' own carets do; "none" keeps it
+  solid. Each blink is one small frame: about 3 M cycles on an RTX 4090, and
+  a focused field at rest after the timeout costs what an unfocused window
+  does (`windows_caret_blink_probe.py`).
 - The wheel's lines and characters to scroll at a time (Bluetooth & devices,
   Mouse): a notch scrolls each line or character at 100/3 pixels, 100 for
   the default 3, as Chromium does; "one screen at a time" scrolls by the
@@ -499,6 +506,7 @@ python scripts/windows_drag_smoke.py target/debug/examples
 python scripts/windows_window_smoke.py target/debug/examples
 python scripts/windows_text_smoke.py target/debug/examples/text_selection.exe
 python scripts/windows_contrast_smoke.py target/debug/examples/text_selection.exe
+python scripts/windows_caret_blink_probe.py target/release/examples/text_selection.exe
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -536,6 +544,11 @@ python scripts/windows_contrast_smoke.py target/debug/examples/text_selection.ex
   clipboard and restores it after, keeps what it puts there out of clipboard
   history, and skips the copy and paste checks while cloud clipboard sync is
   on.
+- `windows_caret_blink_probe.py` (`text_selection`, a release build): the
+  caret blinks one frame a phase at the system's blink rate (counted with
+  `ZGX_PRESENT_LOG`), the process's cycles a blink, and with the field still
+  focused past the caret timeout, no frame in 10 s and the same cycles a
+  second as the window at rest with nothing focused.
 - `windows_contrast_smoke.py` (`text_selection`): a contrast theme switched on
   while the window runs, as the Left Alt+Left Shift+Print Screen shortcut does,
   turns its background into the theme's window colour, its text the theme's

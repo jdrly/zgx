@@ -28,6 +28,7 @@ pub mod env;
 pub mod frame;
 pub mod profile;
 
+pub mod caret_blink;
 pub(crate) mod editor_lines;
 pub(crate) mod editor_menu;
 pub(crate) mod editor_spell;

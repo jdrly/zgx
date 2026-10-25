@@ -435,7 +435,10 @@ pub(crate) fn sync(ui: &zgx::widgets::Ui) {
             ui.input.set_double_click_area(width, height);
         }
         ui.set_caret_width(windows_caret_width());
+        ui.set_caret_blink(windows_caret_blink());
     }
+    #[cfg(target_os = "macos")]
+    ui.set_caret_blink(macos_caret_blink());
     // On X11 the session's XSETTINGS come first, as GTK takes them there.
     #[cfg(target_os = "linux")]
     {
@@ -453,6 +456,13 @@ pub(crate) fn sync(ui: &zgx::widgets::Ui) {
                 .or(crate::linux_appearance::current().primary_paste)
                 .unwrap_or(true),
         );
+        let desktop = crate::linux_appearance::current();
+        ui.set_caret_blink(linux_caret_blink(
+            x11.cursor_blink.or(desktop.cursor_blink),
+            x11.cursor_blink_time.or(desktop.cursor_blink_time),
+            x11.cursor_blink_timeout.or(desktop.cursor_blink_timeout),
+            desktop.kde_cursor_blink_rate,
+        ));
     }
     #[cfg(windows)]
     ui.theme().set_system_text_scale(windows_text_scale());
@@ -561,6 +571,125 @@ fn windows_caret_width() -> f32 {
     }
 }
 
+/// Windows' text caret blink: `GetCaretBlinkTime` each way (Settings,
+/// Accessibility, Text cursor, "blink rate"), never with `INFINITE`, and
+/// stopping, solid, after the caret timeout (`SPI_GETCARETTIMEOUT`, 5 s by
+/// default), as Windows' own carets do.
+#[cfg(windows)]
+fn windows_caret_blink() -> Option<zgx::caret_blink::CaretBlink> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCaretBlinkTime, SPI_GETCARETTIMEOUT, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SystemParametersInfoW,
+    };
+    // SAFETY: reads one system setting.
+    let phase = unsafe { GetCaretBlinkTime() };
+    let mut timeout = 0u32;
+    // SAFETY: fills one DWORD.
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCARETTIMEOUT,
+            0,
+            Some(&mut timeout as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    windows_blink(phase, read.is_ok().then_some(timeout))
+}
+
+/// A blink from Windows' blink time and caret timeout, in milliseconds.
+#[cfg(any(windows, test))]
+fn windows_blink(phase: u32, timeout: Option<u32>) -> Option<zgx::caret_blink::CaretBlink> {
+    // `INFINITE` (and 0): a caret that never blinks.
+    if phase == 0 || phase == u32::MAX {
+        return None;
+    }
+    let phase = std::time::Duration::from_millis(phase.into());
+    Some(zgx::caret_blink::CaretBlink {
+        on: phase,
+        off: phase,
+        timeout: timeout
+            .filter(|&ms| ms > 0 && ms != u32::MAX)
+            .map(|ms| std::time::Duration::from_millis(ms.into())),
+    })
+}
+
+/// GTK's and Qt's caret blink. GTK's `cursor-blink-time` is a whole cycle,
+/// shown two thirds of it and hidden one (GTK's own split), and it stops
+/// after `cursor-blink-timeout` seconds without typing (10 by default); on
+/// KDE, Qt's flash time, half each way, without a timeout. GTK's defaults
+/// where the desktop gives none.
+#[cfg(any(target_os = "linux", test))]
+fn linux_caret_blink(
+    blink: Option<bool>,
+    time: Option<u32>,
+    timeout: Option<u32>,
+    kde_rate: Option<u32>,
+) -> Option<zgx::caret_blink::CaretBlink> {
+    use std::time::Duration;
+    if let Some(rate) = kde_rate {
+        let half = Duration::from_millis(u64::from(rate) / 2);
+        return (rate > 0).then_some(zgx::caret_blink::CaretBlink {
+            on: half,
+            off: half,
+            timeout: None,
+        });
+    }
+    if blink == Some(false) {
+        return None;
+    }
+    let cycle = u64::from(time.unwrap_or(1200));
+    if cycle == 0 {
+        return None;
+    }
+    // GTK's "never": the largest timeout the setting takes.
+    let timeout = timeout.unwrap_or(10);
+    Some(zgx::caret_blink::CaretBlink {
+        on: Duration::from_millis(cycle * 2 / 3),
+        off: Duration::from_millis(cycle / 3),
+        timeout: (timeout > 0 && timeout < i32::MAX as u32)
+            .then(|| Duration::from_secs(timeout.into())),
+    })
+}
+
+/// macOS's text caret blink: `NSTextInsertionPointBlinkPeriodOn` and `Off`
+/// in the user's defaults, in milliseconds, which AppKit honours exactly;
+/// where they are unset, AppKit's own 650 ms shown and 350 ms hidden (a
+/// macOS 26 NSTextView measured); no timeout, as AppKit's caret blinks as
+/// long as its field has the focus.
+#[cfg(target_os = "macos")]
+fn macos_caret_blink() -> Option<zgx::caret_blink::CaretBlink> {
+    use objc2::{msg_send, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    // SAFETY: NSUserDefaults' `standardUserDefaults` (unretained, the
+    // process keeps it) and `integerForKey:` (0 where unset).
+    let (on, off) = unsafe {
+        let defaults: *mut AnyObject =
+            msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+        let defaults = defaults.as_ref()?;
+        let read = |key: &str| -> isize {
+            let key = NSString::from_str(key);
+            msg_send![defaults, integerForKey: &*key]
+        };
+        (
+            read("NSTextInsertionPointBlinkPeriodOn"),
+            read("NSTextInsertionPointBlinkPeriodOff"),
+        )
+    };
+    let period = |ms: isize, default: u64| {
+        std::time::Duration::from_millis(
+            u64::try_from(ms)
+                .ok()
+                .filter(|&ms| ms > 0)
+                .unwrap_or(default),
+        )
+    };
+    Some(zgx::caret_blink::CaretBlink {
+        on: period(on, 650),
+        off: period(off, 350),
+        timeout: None,
+    })
+}
+
 /// Windows' "Text size" (Settings, Accessibility): 1 to 2.25, scaling text
 /// alone, as WinUI's text follows it.
 #[cfg(windows)]
@@ -632,6 +761,15 @@ mod tests {
         assert_eq!(ui.caret_width(), system);
     }
 
+    /// A window's caret blinks as Windows' own do: the system's blink time
+    /// each way, stopping after the caret timeout.
+    #[test]
+    fn the_caret_blinks_at_the_systems_rate() {
+        let ui = zgx::widgets::Ui::new(100., 100.);
+        super::sync(&ui);
+        assert_eq!(ui.caret_blink_settings(), super::windows_caret_blink());
+    }
+
     /// A window's double-click box is Windows' own (`SM_CXDOUBLECLK` by
     /// `SM_CYDOUBLECLK`), in points.
     #[test]
@@ -641,5 +779,72 @@ mod tests {
         let system = super::windows_double_click_area().expect("a double-click box");
         assert!(system.0 >= 1. && system.1 >= 1., "{system:?}");
         assert_eq!(ui.input.double_click_area(), Some(system));
+    }
+}
+
+#[cfg(test)]
+mod blink_tests {
+    use std::time::Duration;
+    use zgx::caret_blink::CaretBlink;
+
+    #[test]
+    fn windows_blink_time_and_timeout() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            super::windows_blink(530, Some(5000)),
+            Some(CaretBlink {
+                on: ms(530),
+                off: ms(530),
+                timeout: Some(ms(5000))
+            })
+        );
+        assert_eq!(
+            super::windows_blink(u32::MAX, Some(5000)),
+            None,
+            "INFINITE: solid"
+        );
+        assert_eq!(
+            super::windows_blink(200, Some(u32::MAX)),
+            Some(CaretBlink {
+                on: ms(200),
+                off: ms(200),
+                timeout: None
+            })
+        );
+    }
+
+    #[test]
+    fn gtk_and_kde_blinks() {
+        let ms = Duration::from_millis;
+        // GTK's defaults: 1200 ms, two thirds shown, stopping after 10 s.
+        assert_eq!(
+            super::linux_caret_blink(None, None, None, None),
+            Some(CaretBlink {
+                on: ms(800),
+                off: ms(400),
+                timeout: Some(Duration::from_secs(10))
+            })
+        );
+        assert_eq!(
+            super::linux_caret_blink(Some(false), Some(1200), None, None),
+            None
+        );
+        assert_eq!(
+            super::linux_caret_blink(Some(true), Some(900), Some(i32::MAX as u32), None),
+            Some(CaretBlink {
+                on: ms(600),
+                off: ms(300),
+                timeout: None
+            })
+        );
+        assert_eq!(
+            super::linux_caret_blink(None, None, None, Some(1000)),
+            Some(CaretBlink {
+                on: ms(500),
+                off: ms(500),
+                timeout: None
+            })
+        );
+        assert_eq!(super::linux_caret_blink(None, None, None, Some(0)), None);
     }
 }

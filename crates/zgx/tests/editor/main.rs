@@ -14,6 +14,8 @@ mod editor_autoscroll;
 mod editor_blur_selection;
 #[path = "../editor_caret_width.rs"]
 mod editor_caret_width;
+#[path = "../editor_caret_blink.rs"]
+mod editor_caret_blink;
 #[path = "../editor_code.rs"]
 mod editor_code;
 #[path = "../editor_context_menu.rs"]

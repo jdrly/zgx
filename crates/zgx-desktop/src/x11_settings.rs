@@ -44,6 +44,12 @@ pub(crate) struct Settings {
     pub font: Option<String>,
     /// `Gtk/TitlebarDoubleClick`: what a double click on a title bar does.
     pub titlebar_double_click: Option<crate::window_chrome::TitlebarAction>,
+    /// `Net/CursorBlink`: whether the text caret blinks.
+    pub cursor_blink: Option<bool>,
+    /// `Net/CursorBlinkTime`: a blink's whole cycle, in milliseconds.
+    pub cursor_blink_time: Option<u32>,
+    /// `Gtk/CursorBlinkTimeout`: seconds without typing after which it stops.
+    pub cursor_blink_timeout: Option<u32>,
 }
 
 /// The settings the session's manager publishes now: none off X11, or with
@@ -150,6 +156,9 @@ fn parse(data: &[u8]) -> Settings {
                     b"Net/DndDragThreshold" => settings.drag_threshold = positive,
                     b"Gtk/OverlayScrolling" => settings.overlay_scrolling = Some(value != 0),
                     b"Gtk/EnablePrimaryPaste" => settings.primary_paste = Some(value != 0),
+                    b"Net/CursorBlink" => settings.cursor_blink = Some(value != 0),
+                    b"Net/CursorBlinkTime" => settings.cursor_blink_time = positive,
+                    b"Gtk/CursorBlinkTimeout" => settings.cursor_blink_timeout = positive,
                     _ => {}
                 }
             }

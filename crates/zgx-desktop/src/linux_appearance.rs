@@ -69,6 +69,16 @@ pub(crate) struct Appearance {
     /// What a double click on a title bar does (GNOME's
     /// `action-double-click-titlebar`).
     pub titlebar_double_click: Option<crate::window_chrome::TitlebarAction>,
+    /// Whether the text caret blinks (GNOME's `cursor-blink`).
+    pub cursor_blink: Option<bool>,
+    /// A blink's whole cycle in milliseconds (GNOME's `cursor-blink-time`).
+    pub cursor_blink_time: Option<u32>,
+    /// Seconds without typing after which it stops (GNOME's
+    /// `cursor-blink-timeout`).
+    pub cursor_blink_timeout: Option<u32>,
+    /// KDE's `CursorBlinkRate`: Qt's flash time, a whole cycle in
+    /// milliseconds, 0 for a caret that never blinks.
+    pub kde_cursor_blink_rate: Option<u32>,
 }
 
 static CURRENT: Mutex<Appearance> = Mutex::new(Appearance {
@@ -181,6 +191,10 @@ fn read(connection: &Connection, budget: Duration) -> (Appearance, bool) {
         (GNOME, "overlay-scrolling"),
         (GNOME, "gtk-enable-primary-paste"),
         (GNOME_WM, "action-double-click-titlebar"),
+        (GNOME, "cursor-blink"),
+        (GNOME, "cursor-blink-time"),
+        (GNOME, "cursor-blink-timeout"),
+        (KDE, "CursorBlinkRate"),
     ] {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -234,6 +248,21 @@ fn apply(appearance: &mut Appearance, namespace: &str, key: &str, value: &dyn Re
         }
         (GNOME, "gtk-enable-primary-paste") => {
             appearance.primary_paste = value.as_i64().map(|on| on != 0)
+        }
+        (GNOME, "cursor-blink") => appearance.cursor_blink = value.as_i64().map(|on| on != 0),
+        (GNOME, "cursor-blink-time") => {
+            appearance.cursor_blink_time = value.as_i64().and_then(|ms| u32::try_from(ms).ok())
+        }
+        (GNOME, "cursor-blink-timeout") => {
+            appearance.cursor_blink_timeout = value
+                .as_i64()
+                .and_then(|seconds| u32::try_from(seconds).ok())
+        }
+        (KDE, "CursorBlinkRate") => {
+            appearance.kde_cursor_blink_rate = value
+                .as_i64()
+                .or_else(|| value.as_str()?.trim().parse().ok())
+                .and_then(|ms| u32::try_from(ms).ok())
         }
         (GNOME, "text-scaling-factor") => appearance.text_scale = value.as_f64().map(|s| s as f32),
         // KDE's portal gives kdeglobals' entries as their text.
