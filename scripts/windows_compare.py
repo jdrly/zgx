@@ -35,10 +35,14 @@ subtract.
     (cd comparisons/mygo && ./build.sh)
     python scripts/windows_compare.py --zgx target/dist/examples --gpui-fast comparisons/gpui-fast/target/dist --mygo comparisons/mygo/bin --output target/windows-compare
 
-Keep the windows uncovered, the machine otherwise idle, and on mains power.
+Each run's window is brought to the front (a window opened from a process in
+the background stays behind the foreground one), and a run whose window
+stays covered is invalid. Keep the machine otherwise idle, and on mains
+power.
 """
 import argparse
 import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 import os
@@ -102,6 +106,72 @@ class Invalid(Exception):
     pass
 
 
+def uncovered(hwnd):
+    """Whether `hwnd` is the window on top at its client area's centre and
+    near each corner: what is drawn there is what shows."""
+    user32 = ctypes.windll.user32
+    user32.WindowFromPoint.restype = ctypes.c_void_p
+    user32.WindowFromPoint.argtypes = [ctypes.wintypes.POINT]
+    user32.GetAncestor.restype = ctypes.c_void_p
+    user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    width, height = win.client_size(hwnd)
+    for fx, fy in ((0.5, 0.5), (0.05, 0.05), (0.95, 0.05), (0.05, 0.95), (0.95, 0.95)):
+        x, y = win.to_screen(hwnd, int(width * fx), int(height * fy))
+        top = user32.GetAncestor(user32.WindowFromPoint(ctypes.wintypes.POINT(x, y)), 2)  # GA_ROOT
+        if top != win._handle(hwnd):
+            return False
+    return True
+
+
+def windows_titled(title):
+    """Visible top-level windows whose title is `title`."""
+    found = []
+    user32 = ctypes.windll.user32
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def each(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and win.title(hwnd) == title:
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(each, None)
+    return found
+
+
+class Minimized:
+    """Windows titled any of `titles` minimized for the measurement and
+    restored after, as the macOS suite hides Zeron: a translucent, animated
+    window over or beside the runs adds the compositor's work to theirs."""
+
+    def __init__(self, titles):
+        self.titles, self.hwnds = titles, []
+
+    def __enter__(self):
+        for title in self.titles:
+            for hwnd in windows_titled(title):
+                ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), 6)  # SW_MINIMIZE
+                self.hwnds.append(hwnd)
+        return self
+
+    def __exit__(self, *_):
+        for hwnd in self.hwnds:
+            ctypes.windll.user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+
+
+def bring_forward(proc):
+    """The run's window, brought to the front: a window opened from a
+    process in the background stays behind the foreground one, where the
+    compositor draws it covered (blurred under a translucent window, or not
+    at all), and what it shows can't be read."""
+    try:
+        hwnd = win.wait_window(proc)
+        win.activate(hwnd)
+    except (RuntimeError, OSError):
+        return None
+    time.sleep(0.2)
+    return hwnd if uncovered(hwnd) else None
+
+
 def desktop(seconds, warmup):
     """The compositor with no app running, sampled as `run` samples one."""
     dwm = windows_pdh.pid_of("dwm.exe")
@@ -129,6 +199,8 @@ def run(path, mode, seconds, warmup, log_path):
                                          windows_pdh.gpu_time(proc.pid)])
         compositor = []
         try:
+            front = bring_forward(proc)
+            still_front = None
             while proc.poll() is None:
                 elapsed = time.perf_counter() - started
                 if elapsed > total + 30:
@@ -141,6 +213,9 @@ def run(path, mode, seconds, warmup, log_path):
                         compositor.append(counters.sample())
                     except OSError:
                         pass
+                    # Still uncovered as sampling ends.
+                    if front and elapsed >= total - 0.5 and still_front is None:
+                        still_front = uncovered(front)
                 time.sleep(0.1)
         finally:
             counters.close()
@@ -153,6 +228,10 @@ def run(path, mode, seconds, warmup, log_path):
     # The last sample can be of a process already releasing its memory.
     kept = [i for i, s in enumerate(samples) if s[3] > 0][:-1]
     samples, compositor = [samples[i] for i in kept], [compositor[i] for i in kept]
+    if not front:
+        raise Invalid(f"{path.name} {mode}: its window stayed covered")
+    if still_front is False:
+        raise Invalid(f"{path.name} {mode}: its window was covered while sampled")
     if code or len(samples) < 10 or done is None:
         raise Invalid(f"{path.name} {mode}: exit {code}, {len(samples)} samples, work {done}; see {log_path}")
     wall = samples[-1][0] - samples[0][0]
@@ -187,6 +266,8 @@ def run(path, mode, seconds, warmup, log_path):
         # zgx says when a UI Automation client read its window (the others
         # have no provider, so nothing to read).
         "uia_client_attached": "accessibility: a client asked for the tree" in text,
+        # Brought to the front, and found uncovered as sampling began and ended.
+        "window_uncovered": True,
     }
 
 
@@ -208,6 +289,8 @@ def main():
     parser.add_argument("--max-repeats", type=int, default=6)
     parser.add_argument("--spread", type=float, default=0.05,
                         help="another round while (max - min) / median exceeds this")
+    parser.add_argument("--keep", action="append", default=[],
+                        help="leave this window title showing (Zeron's are minimized during the runs)")
     parser.add_argument("--desktop", action="store_true",
                         help="add a run of nothing to each round: the compositor's cost at rest")
     parser.add_argument("--font", type=pathlib.Path, default=FONT, help="the one font file every adapter loads")
@@ -256,29 +339,31 @@ def main():
                   f"GPU {row['gpu_ms_per_second']:6.2f} ms/s"
                   f"{'  UIA client attached' if row['uia_client_attached'] else ''}", flush=True)
 
-    for scene in args.scenes.split(","):
-        modes, names = SCENES[scene]
-        frameworks = [n for n in FRAMEWORKS if n in dirs and n in names and (dirs[n] / names[n]).exists()]
-        for name in frameworks:
-            binaries[f"{scene}/{name}"] = dirs[name] / names[name]
-        if len(frameworks) < 2:
-            print(f"{scene}: fewer than two frameworks have its binary; skipped")
-            continue
-        for mode in modes:
-            for index in range(args.repeats):
-                round_of(scene, mode, frameworks, index)
-            index = args.repeats
-            while index < args.max_repeats:
-                spreads = []
-                for name in frameworks:
-                    values = key_metric(results.get((scene, mode, name), []))
-                    if len(values) >= 2:
-                        spreads.append((max(values) - min(values)) / statistics.median(values))
-                if not spreads or max(spreads) <= args.spread:
-                    break
-                print(f"{scene} {mode}: spread {max(spreads):.1%}, another round", flush=True)
-                round_of(scene, mode, frameworks, index)
-                index += 1
+    # Zeron, translucent and animated, minimized while the runs go (restored after).
+    with Minimized([t for t in ("Zeron",) if t not in args.keep]) as hidden:
+        for scene in args.scenes.split(","):
+            modes, names = SCENES[scene]
+            frameworks = [n for n in FRAMEWORKS if n in dirs and n in names and (dirs[n] / names[n]).exists()]
+            for name in frameworks:
+                binaries[f"{scene}/{name}"] = dirs[name] / names[name]
+            if len(frameworks) < 2:
+                print(f"{scene}: fewer than two frameworks have its binary; skipped")
+                continue
+            for mode in modes:
+                for index in range(args.repeats):
+                    round_of(scene, mode, frameworks, index)
+                index = args.repeats
+                while index < args.max_repeats:
+                    spreads = []
+                    for name in frameworks:
+                        values = key_metric(results.get((scene, mode, name), []))
+                        if len(values) >= 2:
+                            spreads.append((max(values) - min(values)) / statistics.median(values))
+                    if not spreads or max(spreads) <= args.spread:
+                        break
+                    print(f"{scene} {mode}: spread {max(spreads):.1%}, another round", flush=True)
+                    round_of(scene, mode, frameworks, index)
+                    index += 1
     summary = []
     for (scene, mode, name), rows in results.items():
         median = {key: statistics.median(r[key] for r in rows if r[key] is not None)
@@ -288,6 +373,7 @@ def main():
         summary.append({"scene": scene, "mode": mode, "framework": name, "median": median,
                         "spread": (max(values) - min(values)) / statistics.median(values) if values else None,
                         "uia_client_attached_runs": sum(r.get("uia_client_attached", False) for r in rows),
+                        "window_uncovered_runs": sum(r.get("window_uncovered", False) for r in rows),
                         "runs": rows})
     metadata = {
         "platform": platform.platform(),
@@ -300,6 +386,8 @@ def main():
         "screen_reader_running": screen_reader,
         "uia_client_processes_running": uia_clients,
         "invalid_runs": failures,
+        # Each run's window was brought forward and found uncovered (else invalid).
+        "windows_minimized": [win.title(h) for h in hidden.hwnds],
         "font_file": str(font_file) if font_file else None,
         "binary_bytes": {key: os.path.getsize(path) for key, path in binaries.items()},
         "binary_sha256": {key: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
