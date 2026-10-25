@@ -15,6 +15,45 @@ use zgx::{
 /// once it stops.
 pub(crate) const GEOMETRY_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Whether a change goes to assistive technology at once rather than paced
+/// (`GeometryPacer`): focus moving always; names, values and selection
+/// changing while a screen reader runs (`screen_reader`, asked only then),
+/// as it speaks them. Other clients (the touch keyboard's host, voice
+/// access) read names as they need them.
+pub(crate) fn urgent(focused: bool, semantics: bool, screen_reader: impl FnOnce() -> bool) -> bool {
+    focused || (semantics && screen_reader())
+}
+
+/// Whether a screen reader runs (Narrator, NVDA, JAWS set the system's flag,
+/// `SPI_GETSCREENREADER`): what it speaks goes out at once. Elsewhere,
+/// where no such flag is read, as if one always ran.
+pub(crate) fn screen_reader() -> bool {
+    #[cfg(windows)]
+    {
+        use windows::{
+            Win32::UI::WindowsAndMessaging::{
+                SPI_GETSCREENREADER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+            },
+            core::BOOL,
+        };
+        let mut on = BOOL(0);
+        // SAFETY: reads one system setting into a local.
+        let read = unsafe {
+            SystemParametersInfoW(
+                SPI_GETSCREENREADER,
+                0,
+                Some((&raw mut on).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        read.is_err() || on.as_bool()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// When a window's accessibility tree is updated: at once for a change a
 /// reader hears (`changed`: names, values, selection, focus, the first
 /// tree), and for geometry alone at most every `GEOMETRY_EVERY`, a change
@@ -2152,6 +2191,21 @@ mod pacing_tests {
     /// most every `GEOMETRY_EVERY`, the last held change at its deadline
     /// once the frames stop; a name or focus change goes out at once,
     /// whenever it comes.
+    /// A dashboard's live values rebuild the tree at once for a screen
+    /// reader, paced for other clients; focus goes out at once for both.
+    #[test]
+    fn names_and_values_go_out_at_once_only_while_a_screen_reader_runs() {
+        use super::urgent;
+        assert!(urgent(true, false, || false));
+        assert!(urgent(true, true, || false));
+        assert!(urgent(false, true, || true));
+        assert!(!urgent(false, true, || false));
+        assert!(!urgent(false, false, || true));
+        // The system is asked only when names or values changed.
+        assert!(urgent(true, false, || unreachable!()));
+        assert!(!urgent(false, false, || unreachable!()));
+    }
+
     #[test]
     fn geometry_alone_goes_out_at_most_every_100_ms_and_changes_at_once() {
         let start = Instant::now();

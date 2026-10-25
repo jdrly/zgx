@@ -1543,21 +1543,34 @@ impl Host {
             self.context.ui.semantics.borrow().revision(),
             self.context.ui.input.focused(),
         );
-        let changed = self.last_accessibility != Some(state);
+        let focused = self
+            .last_accessibility
+            .is_none_or(|(_, focus)| focus != state.1);
+        let semantics = self
+            .last_accessibility
+            .is_none_or(|(revision, _)| revision != state.0);
         let geometry = self.accessibility_geometry_dirty;
         // Nothing reads the tree (AccessKit then builds none): nothing to
         // pace, no wake for it.
         if !self.context.ui.assistive_technology() {
-            if changed || geometry {
+            if focused || semantics || geometry {
                 self.last_accessibility = Some(state);
                 self.accessibility_geometry_dirty = false;
             }
             return;
         }
-        if !self
-            .accessibility_pacer
-            .update_now(std::time::Instant::now(), changed, geometry)
-        {
+        // Focus, and what a screen reader speaks (names, values, selection)
+        // while one runs, go out at once. Other clients (the touch keyboard's
+        // host, voice access) read names as they need them: for them names
+        // and values are paced as geometry is, and a dashboard's live values
+        // no longer rebuild the tree every frame.
+        let urgent =
+            crate::accessibility::urgent(focused, semantics, crate::accessibility::screen_reader);
+        if !self.accessibility_pacer.update_now(
+            std::time::Instant::now(),
+            urgent,
+            geometry || semantics,
+        ) {
             return;
         }
         self.last_accessibility = Some(state);
