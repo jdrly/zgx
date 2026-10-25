@@ -226,6 +226,12 @@ pub(crate) struct State {
     /// Select-all chose the whole region: its ends follow its first and
     /// last text as virtual lists mount rows, and a copy takes every row.
     all: bool,
+    /// Selected text out of view, its highlight not laid out yet: each is
+    /// when it first shows (a select-all over a long document lays out a
+    /// screenful, not every paragraph), checked as the geometry changes.
+    deferred: Vec<Shown>,
+    /// The scene's geometry when `deferred` was last checked.
+    deferred_at: u64,
 }
 
 /// Rows a copy takes from one list's row text at most.
@@ -981,11 +987,48 @@ impl Ui {
                 scene.set_text_highlight(gone.node, None);
             }
         }
+        let old_deferred = std::mem::take(&mut self.selection_state().borrow_mut().deferred);
         let Some(palette) = colors else {
             return;
         };
-        for part in &shown {
-            if !recolor && before.get(&part.node) == Some(&part) {
+        let was_deferred: std::collections::HashSet<NodeId> =
+            old_deferred.iter().map(|part| part.node).collect();
+        let changed: Vec<Shown> = shown
+            .iter()
+            .filter(|part| {
+                recolor || was_deferred.contains(&part.node) || before.get(&part.node) != Some(part)
+            })
+            .cloned()
+            .collect();
+        let deferred = self.lay_out_highlights(changed, palette, inactive);
+        {
+            let mut state = self.selection_state().borrow_mut();
+            state.deferred = deferred;
+            state.deferred_at = self.scene.borrow().geometry_revision();
+        }
+        let gesture = self.selection_state().borrow().gesture.is_some();
+        if !gesture {
+            self.selection_state().borrow_mut().layouts.clear();
+        }
+    }
+    /// Lay out the highlights of `parts` in view; returns those out of
+    /// view, their highlights cleared until they show.
+    fn lay_out_highlights(
+        &self,
+        parts: Vec<Shown>,
+        palette: Palette,
+        inactive: bool,
+    ) -> Vec<Shown> {
+        let mut deferred = Vec::new();
+        for part in parts {
+            let shows = self
+                .scene
+                .borrow()
+                .visible_bounds(part.node)
+                .is_some_and(|r| r.width > 0. && r.height > 0.);
+            if !shows {
+                self.scene.borrow_mut().set_text_highlight(part.node, None);
+                deferred.push(part);
                 continue;
             }
             let rects = {
@@ -1005,10 +1048,32 @@ impl Ui {
                 .borrow_mut()
                 .set_text_highlight(part.node, Some(palette.highlight(inactive, rects)));
         }
-        let gesture = self.selection_state().borrow().gesture.is_some();
-        if !gesture {
-            self.selection_state().borrow_mut().layouts.clear();
-        }
+        deferred
+    }
+    /// Lay out the highlights of deferred parts that now show.
+    fn reveal_deferred_highlights(&self) {
+        let geometry = self.scene.borrow().geometry_revision();
+        let (parts, palette, inactive) = {
+            let mut state = self.selection_state().borrow_mut();
+            if state.deferred.is_empty() || state.deferred_at == geometry {
+                return;
+            }
+            state.deferred_at = geometry;
+            let palette = state.root.and_then(|root| state.roots.get(&root).copied());
+            let Some(palette) = palette else {
+                return;
+            };
+            (std::mem::take(&mut state.deferred), palette, state.inactive)
+        };
+        let parts: Vec<Shown> = {
+            let scene = self.scene.borrow();
+            parts
+                .into_iter()
+                .filter(|part| scene.contains(part.node))
+                .collect()
+        };
+        let deferred = self.lay_out_highlights(parts, palette, inactive);
+        self.selection_state().borrow_mut().deferred = deferred;
     }
     /// Keep highlights on the text as it is laid out again, and drop a
     /// selection whose text is gone. Frame preparation calls this; it
@@ -1030,6 +1095,7 @@ impl Ui {
             )
         };
         if now == synced {
+            self.reveal_deferred_highlights();
             return;
         }
         // Nothing added or removed: laid out again, the selected text keeps
@@ -1043,6 +1109,9 @@ impl Ui {
                 .all(|part| stamp(&scene, part.node) == Some(part.stamp));
             if same {
                 state.synced = now;
+                drop(state);
+                drop(scene);
+                self.reveal_deferred_highlights();
                 return;
             }
         }

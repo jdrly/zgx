@@ -80,6 +80,18 @@ fn texts(ui: &Ui) -> Vec<zgx::scene::NodeId> {
     }
     found
 }
+/// The text nodes that show (in view, inside every clip).
+fn visible(ui: &Ui) -> Vec<zgx::scene::NodeId> {
+    let scene = ui.scene.borrow();
+    texts(ui)
+        .into_iter()
+        .filter(|id| {
+            scene
+                .visible_bounds(*id)
+                .is_some_and(|r| r.width > 0. && r.height > 0.)
+        })
+        .collect()
+}
 fn highlighted(ui: &Ui) -> Vec<usize> {
     let scene = ui.scene.borrow();
     texts(ui)
@@ -736,7 +748,11 @@ fn copied_html_keeps_headings_links_and_rows_a_list_has_not_mounted() {
     // Rows mounted later show selected too, as all of it is.
     offset.set(1000.);
     ui.prepare_frame();
-    assert_eq!(highlighted(&ui).len(), texts(&ui).len());
+    let shown = visible(&ui);
+    assert!(!shown.is_empty());
+    let scene = ui.scene.borrow();
+    assert!(shown.iter().all(|id| scene.text_highlight(*id).is_some()));
+    drop(scene);
     assert_eq!(ui.selected_text().matches("Row ").count(), 100);
 }
 
@@ -777,6 +793,45 @@ fn rows_of_lists_next_to_each_other_copy_in_document_order() {
         )
         .collect();
     assert_eq!(copied.lines().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn highlights_out_of_view_are_laid_out_as_they_scroll_in() {
+    let mut ui = Ui::new(400., 300.);
+    let offset = ui.signal(0.);
+    ui.mount(
+        column()
+            .w(300.)
+            .text_size(10.)
+            .line_height(20.)
+            .selectable(true)
+            .child(
+                scroll(offset.clone())
+                    .w(300.)
+                    .h(100.)
+                    .child(column().children((0..200).map(|i| text(format!("Line {i}"))))),
+            ),
+    );
+    ui.prepare_frame();
+    assert!(ui.select_all_text(texts(&ui)[0]));
+    ui.prepare_frame();
+    let all = texts(&ui);
+    let lit = |ui: &Ui, id| ui.scene.borrow().text_highlight(id).is_some();
+    // A screenful laid out; the rest wait for view.
+    assert!(lit(&ui, all[0]) && lit(&ui, all[4]));
+    assert!(!lit(&ui, all[150]));
+    assert_eq!(
+        ui.selected_text().lines().count(),
+        200,
+        "all of it is selected"
+    );
+    offset.set(150. * 20.);
+    ui.prepare_frame();
+    assert!(lit(&ui, all[150]) && lit(&ui, all[152]));
+    let scene = ui.scene.borrow();
+    let rects = &scene.text_highlight(all[150]).unwrap().rects;
+    assert_eq!(rects.len(), 1);
+    assert_eq!(rects[0].height, 20.);
 }
 
 #[cfg(target_os = "macos")]

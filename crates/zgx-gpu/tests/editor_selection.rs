@@ -114,3 +114,77 @@ fn the_arrows_go_the_way_right_to_left_text_shows() {
     press(&mut ui, Key::ArrowRight);
     assert_eq!(focus(&editor), 1);
 }
+
+/// Select-all and copy over a page of 20,000 paragraphs, shaped as a window
+/// shapes them: `cargo test --release -p zgx-gpu --test editor_selection
+/// long_document -- --ignored --nocapture`.
+#[test]
+#[ignore = "a timing probe"]
+fn long_document_select_all_with_shaped_text() {
+    use std::time::Instant;
+    let mut ui = Ui::new(800., 600.);
+    let services = zgx_gpu::TextServices::new();
+    services.install(&mut ui.scene.borrow_mut());
+    let offset = ui.signal(0.);
+    ui.mount(
+        column()
+            .w(800.)
+            .h(600.)
+            .text_size(14.)
+            .line_height(20.)
+            .selectable(true)
+            .child(
+                scroll(offset.clone())
+                    .w(800.)
+                    .h(600.)
+                    .child(column().gap(10.).children((0..20_000).map(|i| {
+                        text(format!(
+                            "Paragraph {i}: the quick brown fox jumps over the lazy dog, \
+                             and keeps running past the edge of the field until it wraps."
+                        ))
+                        .w_full()
+                        .text_wrap(true)
+                    }))),
+            ),
+    );
+    let start = Instant::now();
+    ui.prepare_frame();
+    eprintln!("mount and first frame: {:?}", start.elapsed());
+    let first = {
+        let scene = ui.scene.borrow();
+        let mut pending = vec![scene.root()];
+        let mut found = None;
+        while let Some(id) = pending.pop() {
+            if matches!(scene.kind(id), zgx::scene::NodeKind::Text { .. }) {
+                found = Some(id);
+                break;
+            }
+            pending.extend(scene.children(id).iter().rev());
+        }
+        found.unwrap()
+    };
+    for _ in 0..3 {
+        ui.clear_text_selection();
+        let start = Instant::now();
+        assert!(ui.select_all_text(first));
+        eprintln!("select all: {:?}", start.elapsed());
+    }
+    let start = Instant::now();
+    let copied = ui.selected_text();
+    eprintln!("copy: {:?} ({} bytes)", start.elapsed(), copied.len());
+    ui.prepare_frame();
+    let start = Instant::now();
+    for step in 1..=20 {
+        offset.set(step as f32 * 250.);
+        ui.prepare_frame();
+    }
+    eprintln!("scroll frame, all selected: {:?}", start.elapsed() / 20);
+    ui.clear_text_selection();
+    ui.prepare_frame();
+    let start = Instant::now();
+    for step in 1..=20 {
+        offset.set(5000. + step as f32 * 250.);
+        ui.prepare_frame();
+    }
+    eprintln!("scroll frame, nothing selected: {:?}", start.elapsed() / 20);
+}
