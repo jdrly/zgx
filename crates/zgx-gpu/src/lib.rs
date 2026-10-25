@@ -4489,9 +4489,10 @@ impl GpuRenderer {
                     // Plain text's one colour, worked out once for its glyphs.
                     let plain_color = rgba(color, item.effects.opacity);
                     // Its quads from the shape's, placed and coloured.
+                    // (One extend, written straight into the room it makes: a
+                    // push a glyph would check that room each time.)
                     let place = |quads: &mut Vec<Quad>, source: &[Quad]| {
-                        quads.reserve(source.len());
-                        for cached in source {
+                        quads.extend(source.iter().map(|cached| {
                             let mut quad = *cached;
                             quad.rect[0] += x;
                             quad.rect[1] += y;
@@ -4520,8 +4521,8 @@ impl GpuRenderer {
                             };
                             quad.fade = fade;
                             quad.options[0] = item.effects.edge_fade;
-                            quads.push(quad);
-                        }
+                            quad
+                        }));
                     };
                     // Its shape as it was, inside its clip and with the atlas it
                     // was placed in: its quads, borrowed where they are kept.
