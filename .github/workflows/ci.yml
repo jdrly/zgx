@@ -172,12 +172,30 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+      # As the linux job's: last month's .debs, and a stalled mirror fails
+      # fast and retries (one held this step its whole 10 minutes, #491).
+      - id: apt-key
+        run: echo "month=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: apt-cache
+        with:
+          path: ~/apt-archives
+          key: apt-perf-${{ runner.arch }}-${{ steps.apt-key.outputs.month }}
+          restore-keys: apt-perf-${{ runner.arch }}-
       - name: Packages
         timeout-minutes: 10
         run: |
           sudo rm -f /var/lib/man-db/auto-update
-          sudo apt-get update -qq -o Acquire::Retries=3
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends valgrind cmake pkg-config fonts-dejavu-core libdbus-1-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxrandr-dev
+          if [ -d ~/apt-archives ]; then sudo cp ~/apt-archives/*.deb /var/cache/apt/archives/; fi
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+          sudo apt-get update -qq $apt
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $apt valgrind cmake pkg-config fonts-dejavu-core libdbus-1-dev libfontconfig1-dev libwayland-dev libxcb1-dev libxkbcommon-dev libxrandr-dev
+          mkdir -p ~/apt-archives && cp /var/cache/apt/archives/*.deb ~/apt-archives/
+      - uses: actions/cache/save@v4
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       # The gate's target directory sits in the workspace's, so this keeps
       # its release dependencies (not zgx's crates, rebuilt either side):
       # about a minute and a half of each build.
