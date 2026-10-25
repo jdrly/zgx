@@ -76,6 +76,11 @@ func golden() []byte {
 	for _, row := range append(rows, 999, 54_321, 99_999) {
 		p("vlist %d %d %t %s %s %s", row, Lines(row), HasImage(row), Author(row), Time(row), debug(Text(row)))
 	}
+	probe := make([]string, 0, 13)
+	for _, r := range ProbeRows() {
+		probe = append(probe, strconv.Itoa(r))
+	}
+	p("probe [%s] %d", strings.Join(probe, ", "), FNV64([]byte("zgx")))
 	for tick := range uint64(200) {
 		jump := "None"
 		if row, ok := Jump(tick); ok {

@@ -11,38 +11,35 @@ import (
 // The heavy dashboard's geometry and colours (the crate's `heavy`).
 const (
 	HeavyWidth, HeavyHeight = 1280.0, 800.0
-	// Font is installed on every Mac, so no adapter falls back to another
-	// face.
-	Font          = "Arial"
-	Background    = 0x0e1218
-	Panel         = 0x161c26
-	HeaderColor   = 0x1c2430
-	Stripe        = 0x19202b
-	Border        = 0x263041
-	Track         = 0x243042
-	TextColor     = 0xe5edf7
-	Muted         = 0x8b98ab
-	Accent        = 0x5eb1ff
-	Title         = "Fleet overview"
-	Tiles         = 6
-	TileStep      = float32(208)
-	CardColumns   = 6
-	CardRows      = 5
-	Cards         = CardColumns * CardRows
-	Bars          = 26
-	BarX          = float32(8)
-	BarWidth      = float32(3)
-	BarStep       = float32(4)
-	SparkBase     = float32(96)
-	SparkHeight   = float32(42)
-	TableHeader   = float32(28)
-	TableRow      = float32(24)
-	TableRows     = 100_000
-	TableOverscan = 2
-	TableViewport = float32(552) - TableHeader
-	CellTop       = float32(4)
-	LogLines      = 5
-	LogLineHeight = float32(16)
+	Background              = 0x0e1218
+	Panel                   = 0x161c26
+	HeaderColor             = 0x1c2430
+	Stripe                  = 0x19202b
+	Border                  = 0x263041
+	Track                   = 0x243042
+	TextColor               = 0xe5edf7
+	Muted                   = 0x8b98ab
+	Accent                  = 0x5eb1ff
+	Title                   = "Fleet overview"
+	Tiles                   = 6
+	TileStep                = float32(208)
+	CardColumns             = 6
+	CardRows                = 5
+	Cards                   = CardColumns * CardRows
+	Bars                    = 26
+	BarX                    = float32(8)
+	BarWidth                = float32(3)
+	BarStep                 = float32(4)
+	SparkBase               = float32(96)
+	SparkHeight             = float32(42)
+	TableHeader             = float32(28)
+	TableRow                = float32(24)
+	TableRows               = 100_000
+	TableOverscan           = 2
+	TableViewport           = float32(552) - TableHeader
+	CellTop                 = float32(4)
+	LogLines                = 5
+	LogLineHeight           = float32(16)
 )
 
 var (

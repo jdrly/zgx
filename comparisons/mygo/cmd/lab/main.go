@@ -36,7 +36,7 @@ type lab struct {
 
 func (l *lab) view(c *ui.Context) {
 	ui.Box(c).Fill().Background(adapter.RGB(0x10141c)).TextColor(adapter.RGB(0xe5edf7)).
-		Font("DejaVu Sans").FontSize(14).FixedLineHeight(20).Children(func() {
+		Font(w.Font).FontSize(14).FixedLineHeight(20).Children(func() {
 		at(ui.Text(c, "zgx performance lab").FontSize(20).FixedLineHeight(28), 20, 20, 920, 28)
 		for _, b := range []struct {
 			label  string

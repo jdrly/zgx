@@ -28,6 +28,36 @@ const (
 	Token          = "The quick brown fox streams a token. "
 )
 
+// Font is every scene's font: the one file in comparisons/fonts, which each
+// adapter loads itself (FontFile), so every framework shapes the same
+// glyphs.
+const Font = "DejaVu Sans"
+
+// FNV64 is FNV-1a, 64-bit: how an adapter names the font file it loaded.
+func FNV64(b []byte) uint64 {
+	h := uint64(0xcbf2_9ce4_8422_2325)
+	for _, c := range b {
+		h = (h ^ uint64(c)) * 0x100_0000_01b3
+	}
+	return h
+}
+
+// FontFile is the font file the runner staged (ZGX_FONT_FILE), read and
+// reported as the runner checks it (font_family=… font_file_fnv64=…, on
+// stderr), or nil when there is none.
+func FontFile() []byte {
+	path := Env("ZGX_FONT_FILE")
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "font_family=%s font_file_fnv64=%016x\n", Font, FNV64(b))
+	return b
+}
+
 // Mode is what a run advances: nothing, the text, the scroll, or both.
 type Mode int
 

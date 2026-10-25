@@ -16,8 +16,15 @@ import (
 func RGB(c uint32) ui.Color { return ui.RGB(uint8(c>>16), uint8(c>>8), uint8(c)) }
 
 // Window shows view in a window of the scene's size (its content), not
-// resizable, and runs the app until it quits.
+// resizable, and runs the app until it quits. The font file the runner
+// staged (ZGX_FONT_FILE) is registered first as the family workload.Font,
+// which every scene's text names.
 func Window(title string, width, height float64, view func(*ui.Context), ready func(*mygo.Window)) {
+	if font := workload.FontFile(); font != nil {
+		if err := ui.RegisterFont(font, workload.Font); err != nil {
+			log.Fatal(err)
+		}
+	}
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:          title,

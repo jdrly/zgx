@@ -39,7 +39,7 @@ func (s *scene) view(c *ui.Context) {
 	}
 	c.AnimationFrame()
 	t := float32(now.Sub(s.start).Seconds())
-	ui.Box(c).Fill().Background(adapter.RGB(w.AnimBackground)).FontSize(18).Children(func() {
+	ui.Box(c).Fill().Background(adapter.RGB(w.AnimBackground)).Font(w.Font).FontSize(18).Children(func() {
 		for i := range w.AnimColumns * w.AnimRows {
 			x, y := w.DotPosition(i)
 			ui.Box(c).Absolute().Left(x).Top(y).Size(w.Dot, w.Dot).Radius(w.Dot / 2).
