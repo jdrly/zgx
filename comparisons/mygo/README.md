@@ -71,6 +71,21 @@ Every adapter asks for a frame only when a tick changed what it shows
 (`Window.Invalidate`): idle draws nothing after its first frames, and a
 vlist tick that moves nothing draws nothing.
 
+## The microbenchmarks
+
+`SCENE=state|vscroll-fixed|vscroll-variable ZGX_FONT_FILE=… GOMAXPROCS=1
+bin/micro` times the workload's micro scenes (`workload/micro.go`, the
+crate's `micro`) in MyGo's test host, `ui.Tester`, as zgx's `micro_bench`
+does: process CPU time per operation, batched, for the write alone and
+through to a frame. A write is what a windowed app does: a store, plus
+`Window.Invalidate`'s atomic flag (a counter, or the list's `ScrollState`
+12 pt on). A tester frame builds, lays out and paints into its scene, then
+rasterizes what changed on the CPU, which a window does on the GPU, and the
+public API can't stop before the raster. So each frame figure comes twice:
+`"raster":"1x"` and `"raster":"0.05x"` (layout and paint the same, the raster
+almost no pixels: the closer match to zgx's frame). `GOMAXPROCS=1` is MyGo's
+own published method, and the JSON records it.
+
 ### How `ui.List` measures heights
 
 From `ui/list.go` at v0.6.3:

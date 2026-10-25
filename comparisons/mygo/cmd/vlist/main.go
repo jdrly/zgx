@@ -58,7 +58,7 @@ func (s *chat) view(c *ui.Context) {
 	ui.Box(c).Fill().Background(adapter.RGB(w.VBackground)).Font(w.Font).FontSize(w.VFontSize).
 		FixedLineHeight(w.VLineHeight).TextColor(adapter.RGB(w.VText)).Children(func() {
 		list := ui.List(c, &s.list, w.VRows, func(i int) {
-			e := row(c, i)
+			e := adapter.ChatRow(c, i)
 			if p := s.probe; p != nil && p.at < len(p.rows) && i == p.rows[p.at] {
 				p.height = e.LayoutBounds().H
 			}
@@ -89,19 +89,6 @@ func (s *chat) probeStep(c *ui.Context) {
 		}
 	}
 	c.Invalidate()
-}
-
-func row(c *ui.Context, i int) ui.Element {
-	return ui.Column(c).PaddingX(w.VPad[0]).PaddingY(w.VPad[1]).Gap(w.VGap).Background(adapter.RGB(w.RowColors[i%2])).Children(func() {
-		ui.Row(c).Gap(8).Height(w.VLineHeight).Children(func() {
-			ui.Text(c, w.Author(i)).TextColor(adapter.RGB(w.VAuthor))
-			ui.Text(c, w.Time(i)).TextColor(adapter.RGB(w.VMuted))
-		})
-		ui.Text(c, w.Text(i)).Width(w.VTextWidth)
-		if w.HasImage(i) {
-			ui.Box(c).Size(w.VImage[0], w.VImage[1]).Background(adapter.RGB(w.VImageColor))
-		}
-	})
 }
 
 // tick moves the list, reporting whether it moved.
