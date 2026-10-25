@@ -529,6 +529,7 @@ fn map_round(matrix: Option<Affine>, round: RoundRect) -> Option<RoundRect> {
     Some(RoundRect {
         rect: map_rect(matrix, round.rect),
         radii: round.radii.map(|radius| radius * scale),
+        feather: round.feather * scale,
     })
 }
 fn intersect(clip: Option<Rect>, other: Option<Rect>) -> Option<Rect> {
@@ -694,6 +695,7 @@ impl Walk<'_> {
                         RoundRect {
                             rect: item.bounds,
                             radii,
+                            feather: 0.,
                         },
                     )
                 {

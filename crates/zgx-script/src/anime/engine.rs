@@ -80,6 +80,15 @@ pub(crate) struct Track {
     pub overridden: Rc<Cell<bool>>,
     /// A motion path: the tween's 0..1 progress picks a point or angle on it.
     pub path: Option<(Rc<super::svg::Sampler>, super::svg::Axis)>,
+    /// Its first tween's `from` was left out: read when the track takes its
+    /// property, if that is after the clip began (`deferred`).
+    pub implicit_from: bool,
+    /// A `replace` track whose first tween starts after its clip began while
+    /// another animation was still writing its property: it leaves the
+    /// property to that one until its tween starts, then takes it (from
+    /// where it then is, if its `from` was left out), as anime.js v4 trims
+    /// an earlier tween where a later one begins.
+    pub deferred: Cell<bool>,
 }
 impl Track {
     /// The value at clip time `t`: the first tween's start before it, the
@@ -483,9 +492,23 @@ impl Clip {
             self.queue(Event::Loop);
         }
         let vm = self.owner.upgrade();
-        for track in self.tracks.borrow().iter() {
+        for track in self.tracks.borrow_mut().iter_mut() {
             if !engine.writes(self.id, track) {
                 continue;
+            }
+            if track.deferred.get() {
+                if track.segs.first().is_some_and(|s| t < s.start) {
+                    continue;
+                }
+                // Its tween starts: it takes the property, from where the
+                // earlier animation left it if its `from` was left out.
+                track.deferred.set(false);
+                if track.implicit_from
+                    && let Some(first) = track.segs.first_mut()
+                {
+                    first.from = track.target.read(&track.key);
+                }
+                engine.claim(track, self.id);
             }
             if let Some(value) = track.at(t, vm.as_deref()) {
                 engine.write(track, value);
@@ -554,7 +577,15 @@ impl Clip {
                 track.original = Some(track.target.read(&track.key));
             }
             if track.composition == Composition::Replace {
-                engine.claim(track, self.id);
+                // Starting later than its clip, over a property another
+                // animation is still writing: it takes it when it starts.
+                if track.segs.first().is_some_and(|s| s.start > 0.)
+                    && engine.animated_elsewhere(track, self.id)
+                {
+                    track.deferred.set(true);
+                } else {
+                    engine.claim(track, self.id);
+                }
             }
         }
     }
@@ -569,6 +600,13 @@ impl Clip {
         engine.runtime.clone().batch(|| {
             for track in self.tracks.borrow().iter() {
                 if track.composition == Composition::Add {
+                    continue;
+                }
+                // Leaves a property another animation is writing until its
+                // own tween starts (see `Track::deferred`).
+                if track.segs.first().is_some_and(|s| s.start > 0.)
+                    && engine.animated_elsewhere(track, self.id)
+                {
                     continue;
                 }
                 if let Some(value) = track.at(0., vm.as_deref()) {
@@ -1000,6 +1038,8 @@ impl Engine {
                 original: None,
                 overridden: Rc::default(),
                 path: None,
+                implicit_from: false,
+                deferred: Default::default(),
             })
             .collect();
         let clip = Clip::new(
@@ -1120,6 +1160,27 @@ impl Engine {
         self.drain();
     }
 
+    /// Whether a playing clip other than `clip` is writing `track`'s
+    /// property (a `replace` track of it not yet taken over). Asked as a
+    /// clip begins, not per frame.
+    fn animated_elsewhere(&self, track: &Track, clip: u64) -> bool {
+        let addr = track.target.addr();
+        self.clips
+            .borrow()
+            .iter()
+            .filter(|c| c.id != clip && c.is_playing())
+            .any(|c| {
+                c.tracks.try_borrow().is_ok_and(|tracks| {
+                    tracks.iter().any(|t| {
+                        t.composition == Composition::Replace
+                            && !t.overridden.get()
+                            && !t.deferred.get()
+                            && t.key == track.key
+                            && t.target.addr() == addr
+                    })
+                })
+            })
+    }
     /// Whether `track` may write: `replace` tracks write until a later
     /// clip takes their property.
     fn writes(&self, _clip: u64, track: &Track) -> bool {

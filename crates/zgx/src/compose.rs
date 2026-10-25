@@ -601,6 +601,33 @@ impl View {
         };
         self
     }
+    /// Draw the image dithered in dots `dot` points square, as Zeron dithers
+    /// its wallpapers (see `ImageData::dithered`): worked out on the GPU as
+    /// the image draws, following it as it moves, scales and covers. This
+    /// method requires an image view.
+    pub fn dither(mut self, dot: f32) -> Self {
+        self.kind = match self.kind {
+            Kind::Image { label, mut source } => Kind::Image {
+                label,
+                source: Box::new(move || std::sync::Arc::new(source().dithered(dot))),
+            },
+            _ => panic!("dither requires an image view"),
+        };
+        self
+    }
+    /// Draw the image as characters over itself, revealed by its shader
+    /// parameters (see `ImageData::characters`). This method requires an
+    /// image view.
+    pub fn characters(mut self, pixel: f32) -> Self {
+        self.kind = match self.kind {
+            Kind::Image { label, mut source } => Kind::Image {
+                label,
+                source: Box::new(move || std::sync::Arc::new(source().characters(pixel))),
+            },
+            _ => panic!("characters requires an image view"),
+        };
+        self
+    }
     /// Paint the SVG in `color` instead of its own colours. This method
     /// requires an SVG view.
     pub fn svg_tint(mut self, color: crate::scene::Color) -> Self {

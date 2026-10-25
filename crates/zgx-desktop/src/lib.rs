@@ -76,7 +76,9 @@ pub use native_events::{ApplicationEvent, ApplicationEventError};
 pub use native_prompt::{PromptButtons, PromptLevel, PromptOptions, PromptResponse};
 pub use url::{OpenUrlError, open_url};
 pub use window_chrome::{Glass, GlassMaterial, Titlebar};
-pub use window_info::{DisplayInfo, DisplaySelector, WindowBounds, WindowCapabilities, WindowInfo};
+pub use window_info::{
+    DisplayInfo, DisplaySelector, WindowBounds, WindowCapabilities, WindowInfo, WindowLevel,
+};
 mod native_host;
 #[cfg(target_os = "macos")]
 pub use native_host::{BackdropReport, NativeDiagnostics, NativeViewReport};

@@ -44,6 +44,7 @@ fn rounded_overflow_clips_reach_descendants_innermost_first() {
     let card = RoundRect {
         rect: zgx::scene::Rect::new(0., 0., 200., 100.),
         radii: [16.; 4],
+        feather: 0.,
     };
     // The caption is inside the card alone.
     assert_eq!(items_rounded(&ui, "caption", &view), [Some(card), None]);
@@ -52,6 +53,7 @@ fn rounded_overflow_clips_reach_descendants_innermost_first() {
     let thumb = RoundRect {
         rect: zgx::scene::Rect::new(0., 0., 60., 40.),
         radii: [20., 0., 6., 0.],
+        feather: 0.,
     };
     assert_eq!(
         items_rounded(&ui, "photo", &view),
@@ -415,4 +417,35 @@ fn fade_overflow_measures_a_scroll_views_content() {
     assert_eq!(bands(&mut ui), Some([0., 0., 18., 0.]));
     offset.set(5.);
     assert_eq!(bands(&mut ui), Some([5., 0., 18., 0.]));
+}
+
+#[test]
+fn a_feathered_clip_reaches_descendants_and_rounds_its_inset_box() {
+    let mut ui = Ui::new(400., 300.);
+    let view = ui.mount(
+        column().child(
+            div()
+                .w(200.)
+                .h(100.)
+                .overflow_hidden()
+                .rounded(9999.)
+                .clip_feather(24.)
+                .clip_inset(30., 60., 30., 60.)
+                .child(div().id("scene").w(200.).h(100.)),
+        ),
+    );
+    ui.prepare_frame();
+    // The inset box (80 by 40 in the middle) is the clip, a capsule: its
+    // corners held to half its height, not the box's, and the feather kept.
+    assert_eq!(
+        items_rounded(&ui, "scene", &view),
+        [
+            Some(RoundRect {
+                rect: zgx::scene::Rect::new(60., 30., 80., 40.),
+                radii: [20.; 4],
+                feather: 24.,
+            }),
+            None
+        ]
+    );
 }

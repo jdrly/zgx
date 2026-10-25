@@ -191,7 +191,8 @@ struct Region {
     fade_box: [f32; 4],
     fade: [f32; 4],
     /// Colour filters: an affine map of straight RGB, rows R, G, B, on
-    /// where `tint[0]` is 1.
+    /// where `tint[0]` is 1. `tint[1]` and `tint[2]`: the rounded boxes'
+    /// feathers (`RoundRect::feather`), in lanes the record has anyway.
     color: [[f32; 4]; 3],
     tint: [f32; 4],
 }
@@ -226,6 +227,7 @@ impl Region {
             ),
             None => ([0., 0., -1., -1.], [0.; 4]),
         };
+        let feather = |clip: Option<zgx::scene::RoundRect>| clip.map_or(0., |clip| clip.feather);
         let ((round0, radii0), (round1, radii1)) =
             (round(item.rounded()[0]), round(item.rounded()[1]));
         let (fade_box, fade) = item.mask().map_or(([0.; 4], [0.; 4]), |(rect, bands)| {
@@ -242,7 +244,12 @@ impl Region {
             fade_box,
             fade,
             color: item.color().unwrap_or_default(),
-            tint: [if item.color().is_some() { 1. } else { 0. }, 0., 0., 0.],
+            tint: [
+                if item.color().is_some() { 1. } else { 0. },
+                feather(item.rounded()[0]),
+                feather(item.rounded()[1]),
+                0.,
+            ],
         })
     }
 }
@@ -293,7 +300,9 @@ fn shading(quad: &Quad, scale: f32) -> Shading {
     // bit for bit, except for the coverage of a translucent square panel (an
     // extra divide and multiply): those stay full, so either shader draws the
     // same bytes.
+    // An image effect (a texture lane past 2) is the full shader's alone.
     let plain = quad.options[0] == 0.
+        && quad.options[1] <= 2.
         && quad.options[2] < 0.5
         && quad.shape[2] <= 0.
         && (quad.shape[3] <= 0.5 || (square && quad.color[3] >= 1.))
@@ -4479,26 +4488,45 @@ impl GpuRenderer {
                     let transformed = image.transform() != zgx::affine::Affine::IDENTITY;
                     // Images have no procedural border/shape. Reuse those
                     // attribute lanes rather than growing every glyph instance.
+                    // An effect says its size in the texture lane
+                    // (premultiplied, `2 + size`), characters theirs in
+                    // `options.w` (-1) and their reveal (their node's shader
+                    // parameters) in the colour, white for any image, and
+                    // `border.zw`: no lane more for any quad.
+                    let characters =
+                        matches!(image.effect(), zgx::image::ImageEffect::Characters(_));
+                    let reveal = if characters {
+                        scene.shader_uniforms(item.id).params
+                    } else {
+                        [[0.; 4]; 4]
+                    };
+                    let [front, band, ragged, _] = reveal[0];
+                    let [dx, dy, _, _] = reveal[1];
                     quads.push(Quad {
                         rect: fade,
                         uv: [0., 0., 1., 1.],
-                        color: [1., 1., 1., item.effects.opacity],
+                        color: if characters {
+                            [front, band, ragged, item.effects.opacity]
+                        } else {
+                            [1., 1., 1., item.effects.opacity]
+                        },
                         fade,
                         options: [
                             item.effects.edge_fade,
-                            2.,
+                            2. + image.effect().size(),
                             if transformed { 1. } else { 0. },
-                            0.,
+                            // Negative: the lane's positive values are
+                            // per-corner radii (a background image's).
+                            if characters { -1. } else { 0. },
                         ],
                         shape: if transformed {
                             [transform.a, transform.c, transform.b, transform.d]
                         } else {
                             [0.; 4]
                         },
-                        border: if transformed {
-                            [transform.tx, transform.ty, 0., 0.]
-                        } else {
-                            [0.; 4]
+                        border: match transformed {
+                            true => [transform.tx, transform.ty, dx, dy],
+                            false => [0., 0., dx, dy],
                         },
                         mask: NO_MASK,
                     });

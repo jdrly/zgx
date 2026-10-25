@@ -747,3 +747,68 @@ fn a_destination_springs_open_unless_it_declines() {
         button: PointerButton::Primary,
     });
 }
+
+#[test]
+fn an_image_with_dither_is_drawn_in_dots_of_that_size() {
+    let mut h = Harness::inline(
+        r##"local dots = ui.bitmap(4, 4, function() return 1 end)
+        return ui.column {
+            ui.image { id = "plain", src = dots, w = 40, h = 40 },
+            ui.image { id = "dithered", src = dots, w = 40, h = 40, fit = "cover", dither = 2 },
+        }"##,
+    );
+    h.ui.prepare_frame();
+    let dither = |h: &mut Harness, id: &str| {
+        let node = h.find(id).unwrap();
+        let scene = h.ui.scene.borrow();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+                return image.dither();
+            }
+            stack.extend(scene.children(n).iter().copied());
+        }
+        panic!("no image in {id}")
+    };
+    assert_eq!(dither(&mut h, "plain"), 0.);
+    assert_eq!(dither(&mut h, "dithered"), 2.);
+}
+
+#[test]
+fn an_images_shader_params_reach_its_node_and_animate_its_reveal() {
+    let mut h = Harness::inline(
+        r##"local dots = ui.bitmap(4, 4, function() return 1 end)
+        return ui.image { id = "pic", src = dots, w = 40, h = 40, characters = 2,
+            shader_params = { { 0, 0.25, 0.2, 0 }, { 0, 0.1, 0, 0 } },
+            on_mount = function(el)
+                anime.animate(el, { shaderParam0 = 0.5, duration = 100, ease = "linear" })
+            end }"##,
+    );
+    h.ui.prepare_frame();
+    let image = |h: &mut Harness| {
+        let node = h.find("pic").unwrap();
+        let scene = h.ui.scene.borrow();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+                return (n, image.effect());
+            }
+            stack.extend(scene.children(n).iter().copied());
+        }
+        panic!("no image")
+    };
+    let (node, effect) = image(&mut h);
+    assert_eq!(effect, zgx::image::ImageEffect::Characters(2.));
+    let params = h.ui.scene.borrow().shader_uniforms(node).params;
+    assert_eq!(params[0][1..3], [0.25, 0.2], "its band and raggedness");
+    assert_eq!(params[1][1], 0.1, "its centre");
+    for _ in 0..12 {
+        h.frame();
+    }
+    let params = h.ui.scene.borrow().shader_uniforms(node).params;
+    assert!(
+        (params[0][0] - 0.5).abs() < 0.01,
+        "the front moved: {params:?}"
+    );
+    assert_eq!(params[0][1], 0.25, "the band kept");
+}

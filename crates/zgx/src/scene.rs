@@ -1764,6 +1764,9 @@ pub struct RoundRect {
     pub rect: Rect,
     /// Its corner radii.
     pub radii: [f32; 4],
+    /// How far inside its edge what it clips fades out from (see
+    /// `Decoration::clip_feather`); 0 cuts, antialiased over a pixel.
+    pub feather: f32,
 }
 /// The rounded clips around a paint item, innermost first: those of its
 /// nearest ancestors that clip (`overflow: hidden`) with rounded corners
@@ -2495,13 +2498,30 @@ impl Scene {
         }
         self.invalidate(id, COMPOSITE);
     }
-    /// `id`'s shader fill uniforms (see `crate::decoration::FillShader`).
+    /// `id`'s shader uniforms (see `crate::decoration::FillShader`). An
+    /// image with none of its own draws with its view's: the nearest of the
+    /// boxes wrapping it alone (its view's, an element's) that has some, as
+    /// styles and animations set them on those (`ImageData::characters`'
+    /// reveal). Only painting nothing and holding it alone: never another
+    /// node's fill.
     pub fn shader_uniforms(&self, id: NodeId) -> crate::decoration::ShaderUniforms {
-        self.node(id)
-            .shader_uniforms
-            .as_deref()
-            .copied()
-            .unwrap_or_default()
+        let node = self.node(id);
+        if let Some(uniforms) = node.shader_uniforms.as_deref() {
+            return *uniforms;
+        }
+        if matches!(node.kind, NodeKind::Image(_)) {
+            let mut at = node.parent;
+            while let Some(parent) = at.map(|id| self.node(id)) {
+                if !matches!(parent.kind, NodeKind::Container(_)) || parent.children.len() != 1 {
+                    break;
+                }
+                if let Some(uniforms) = parent.shader_uniforms.as_deref() {
+                    return *uniforms;
+                }
+                at = parent.parent;
+            }
+        }
+        Default::default()
     }
     /// Set the uniforms `id`'s shader fill draws with: its time (quantized
     /// to the shader's frame rate, so a capped shader repaints only when
@@ -6949,9 +6969,8 @@ impl Scene {
                 let mut item_rounded = rounded;
                 if let Some(inset) = inset
                     && child_rounded != rounded
-                    && let Some(own) = &mut child_rounded[0]
                 {
-                    own.rect = inset;
+                    child_rounded = round_inset(child_rounded, inset);
                     item_rounded = child_rounded;
                 }
                 let own = Own {
@@ -7124,6 +7143,10 @@ fn rounded_clip(inherited: RoundedClip, node: &Node, bounds: Rect) -> RoundedCli
         .as_ref()
         .and_then(|detail| detail.corners)
         .unwrap_or(crate::decoration::Corners::all(quad.radius));
+    let feather = quad
+        .decoration
+        .as_ref()
+        .map_or(0., |detail| detail.clip_feather);
     let most = bounds.width.min(bounds.height).max(0.) / 2.;
     let radius = |value: f32| {
         if value.is_finite() {
@@ -7138,7 +7161,7 @@ fn rounded_clip(inherited: RoundedClip, node: &Node, bounds: Rect) -> RoundedCli
         radius(corners.bottom_right),
         radius(corners.bottom_left),
     ];
-    if radii.iter().all(|radius| *radius <= 0.) {
+    if radii.iter().all(|radius| *radius <= 0.) && feather <= 0. {
         return inherited;
     }
     // CSS clips overflow at the padding box: inside a border that takes
@@ -7163,7 +7186,26 @@ fn rounded_clip(inherited: RoundedClip, node: &Node, bounds: Rect) -> RoundedCli
         inner(radii[2], border.bottom, border.right),
         inner(radii[3], border.bottom, border.left),
     ];
-    [Some(RoundRect { rect, radii }), inherited[0]]
+    [
+        Some(RoundRect {
+            rect,
+            radii,
+            feather,
+        }),
+        inherited[0],
+    ]
+}
+/// A node's own rounded clip (`clip[0]`, from `rounded_clip`) on its inset
+/// box instead, its corners held to half that box's shorter side as they are
+/// to the box's: a round box stays round as its inset closes in (an oval
+/// reveal opening).
+fn round_inset(mut clip: RoundedClip, inset: Rect) -> RoundedClip {
+    if let Some(own) = &mut clip[0] {
+        let most = inset.width.min(inset.height).max(0.) / 2.;
+        own.rect = inset;
+        own.radii = own.radii.map(|radius| radius.min(most));
+    }
+    clip
 }
 fn clip_axes(style: &Style) -> (bool, bool) {
     let options = style.layout_options.as_deref();
@@ -7248,7 +7290,12 @@ impl<'a> Iterator for PaintIter<'a> {
             },
             _ => clip,
         };
-        let child_rounded = rounded_clip(rounded, node, bounds);
+        let mut child_rounded = rounded_clip(rounded, node, bounds);
+        if let Some(inset) = inset
+            && child_rounded != rounded
+        {
+            child_rounded = round_inset(child_rounded, inset);
+        }
         let color = compose_color(parent_color, node.effects.color_matrix());
         let own = if color == parent_color {
             extras

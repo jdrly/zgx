@@ -1092,7 +1092,25 @@ fn kind_view(
             crate::markdown::view::view(move || render_text(&text, &vm), options.clone())
         }
         Kind::Rich(spans) => lower_rich(spans, vm, low),
-        Kind::Image { .. } => lower_image(&node.kind, vm, low),
+        Kind::Image { .. } => {
+            let view = lower_image(&node.kind, vm, low);
+            let size =
+                |prop: Prop| {
+                    node.props.iter().find(|(p, _)| *p == prop).and_then(
+                        |(_, source)| match resolve(&resolve_owned(source), Ty::Num, None, vm) {
+                            Some(Lit::Num(size)) if size > 0. => Some(size),
+                            _ => None,
+                        },
+                    )
+                };
+            // Dithered in dots, or characters in font pixels, this many
+            // points square (`ImageData::dithered`, `ImageData::characters`).
+            match (size(Prop::Dither), size(Prop::Characters)) {
+                (_, Some(pixel)) => view.characters(pixel),
+                (Some(dot), None) => view.dither(dot),
+                (None, None) => view,
+            }
+        }
         Kind::Svg { label, src } => {
             let (src, vm2, low2) = (resolve_owned(src), vm.clone(), low.clone());
             let theme = cx.as_deref().map(Context::theme);
@@ -1951,7 +1969,15 @@ fn styled(
             node.shader_tokens,
         )
     });
-    if !dynamic.is_empty() || element.is_some() || bg_image.is_some() || shader.is_some() {
+    // Parameters with no fill of their own: an image's (its `characters`
+    // reveal), set on its node all the same.
+    let params_only = node.shader_params.filter(|_| node.shader.is_none());
+    if !dynamic.is_empty()
+        || element.is_some()
+        || bg_image.is_some()
+        || shader.is_some()
+        || params_only.is_some()
+    {
         let vm = vm.clone();
         let element = element.clone();
         view = view.reactive_style(move || {
@@ -1995,7 +2021,15 @@ fn styled(
                     }
                     styles.bg_shader(fill.clone()).shader_uniforms(uniforms)
                 }
-                None => styles,
+                None => match params_only {
+                    Some(params) => styles.shader_uniforms(
+                        element
+                            .as_ref()
+                            .and_then(|e| e.animated.borrow().shader)
+                            .unwrap_or(zgx::decoration::ShaderUniforms { time: 0., params }),
+                    ),
+                    None => styles,
+                },
             }
         });
     }
@@ -4949,6 +4983,8 @@ fn apply<S: Styled>(s: S, prop: Prop, lit: &Lit) -> S {
         (ClipInset, Lit::Corners(c)) => {
             s.clip_inset(c.top_left, c.top_right, c.bottom_right, c.bottom_left)
         }
+        // Points inside its rounded clip that its content fades out over.
+        (ClipFeather, Lit::Num(v)) => s.clip_feather(*v),
         // `{ top, right, bottom, left }`; 0 keeps an edge sharp.
         (FadeSides, Lit::Corners(c)) => {
             s.fade_sides(c.top_left, c.top_right, c.bottom_right, c.bottom_left)

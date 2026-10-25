@@ -15,14 +15,16 @@ struct Out { @builtin(position) position:vec4<f32>, @location(0) uv:vec2<f32>, @
 // pixel is on screen (a transformed quad's `point` is its own).
 // `color0..2` (`tint.x` on): its colour filters as rows of an affine map
 // of straight RGB (brightness, contrast, saturate), applied as the colour
-// is written.
+// is written. `tint.y`, `tint.z`: the rounded boxes' feathers, how far
+// inside their edges their content fades out from (0: cut at the edge).
 struct Region { round0:vec4<f32>, radii0:vec4<f32>, round1:vec4<f32>, radii1:vec4<f32>, fade_box:vec4<f32>, fade:vec4<f32>, color0:vec4<f32>, color1:vec4<f32>, color2:vec4<f32>, tint:vec4<f32> }
 @group(1) @binding(1) var<storage, read> regions:array<Region>;
-fn rounded(b:vec4<f32>, r:vec4<f32>, p:vec2<f32>)->f32 {
+fn rounded(b:vec4<f32>, r:vec4<f32>, feather:f32, p:vec2<f32>)->f32 {
  if b.z<0. {return 1.;}
  let half=b.zw*.5; let q=p-b.xy-half;
  let radius=select(select(r.w,r.z,q.x>0.),select(r.x,r.y,q.x>0.),q.y<0.);
  let d=abs(q)-half+vec2(radius); let sdf=length(max(d,vec2(0.)))+min(max(d.x,d.y),0.)-radius;
+ if feather>0. {let t=clamp(-sdf/feather,0.,1.); return t*t*(3.-2.*t);}
  return clamp(.5-sdf*viewport.z,0.,1.);
 }
 // `premultiplied` through region `index`'s colour filters, if any.
@@ -36,7 +38,7 @@ fn tinted(index:f32, premultiplied:vec4<f32>)->vec4<f32> {
 }
 fn region(index:f32, position:vec2<f32>)->f32 {
  let g=regions[u32(index)-1u]; let p=position/viewport.z;
- var k=rounded(g.round0,g.radii0,p)*rounded(g.round1,g.radii1,p);
+ var k=rounded(g.round0,g.radii0,g.tint.y,p)*rounded(g.round1,g.radii1,g.tint.z,p);
  if g.fade.x>0. {let t=clamp((p.y-g.fade_box.y)/g.fade.x,0.,1.); k*=t*t;}
  if g.fade.y>0. {let t=clamp((g.fade_box.z-p.x)/g.fade.y,0.,1.); k*=t*t;}
  if g.fade.z>0. {let t=clamp((g.fade_box.w-p.y)/g.fade.z,0.,1.); k*=t*t;}
@@ -44,6 +46,26 @@ fn region(index:f32, position:vec2<f32>)->f32 {
  return k;
 }
 @group(0) @binding(2) var tex_sampler:sampler;
+// `ImageData::characters`' font: glyph `i` of ` .-+xXS80#@` (darkest first),
+// 5 by 7 pixels, rows top first, five bits a row (the leftmost highest): rows
+// 0 to 5 in `x`, row 6 in `y`. A switch, not an array a runtime index reads
+// (which Metal spills to memory).
+fn glyph(i:u32)->vec2<u32> {
+ switch i {
+  case 1u: {return vec2(402653184u,12u);} case 2u: {return vec2(1015808u,0u);}
+  case 3u: {return vec2(139432064u,0u);} case 4u: {return vec2(340083712u,17u);}
+  case 5u: {return vec2(581052977u,17u);} case 6u: {return vec2(35078671u,30u);}
+  case 7u: {return vec2(588727854u,14u);} case 8u: {return vec2(597347886u,14u);}
+  case 9u: {return vec2(368409930u,10u);} case 10u: {return vec2(561700398u,15u);}
+  default: {return vec2(0u);}
+ }
+}
+// A cell's own random number, 0 to 1 (a 32-bit integer hash).
+fn cell_hash(c:vec2<u32>)->f32 {
+ var h=c.x*1664525u+c.y*1013904223u+0x9e3779b9u;
+ h^=h>>16u; h*=2246822519u; h^=h>>13u; h*=3266489917u; h^=h>>16u;
+ return f32(h&16777215u)/16777216.;
+}
 @vertex fn vs(v:Vertex,@builtin(vertex_index) i:u32)->Out {
  // A quad is a four-vertex strip, (0,0) (1,0) (0,1) (1,1): its two
  // triangles with two fewer vertex invocations than a list. Corners come
@@ -109,8 +131,71 @@ fn shade(input:Out)->vec4<f32> {
  // premultiplied from here (`basic`'s product), scaled by whatever later
  // scales alpha, rather than divided by it and multiplied back.
  var premultiplied=false; var rgb=vec3(0.); var scale=1.;
- if v.options.y>0.5 {
-   let tex=textureSample(atlas,tex_sampler,v.uv);
+ if v.options.y>0.5 && v.options.w<-.5 {
+   // Characters (`options.w` -1, where positive is per-corner radii;
+   // `options.y` 2 plus a font pixel's size in
+   // points): cells 6 by 8 font pixels on the screen's grid, each a glyph
+   // picked by the brightness at its centre and lit in that colour at full
+   // value, over the image dimmed. Images keep their colour white, so its
+   // lanes carry the reveal (front, band, raggedness) and `border.zw` its
+   // centre's offset.
+   let size=(v.options.y-2.)*viewport.z;
+   let reveal=v.color.rgb; color=vec4(1.,1.,1.,color.a);
+   let cell_size=vec2(6.,8.)*size;
+   let cell=floor(v.position.xy/cell_size);
+   let to_centre=(cell+.5)*cell_size-v.position.xy;
+   let at=textureSampleLevel(atlas,tex_sampler,v.uv+dpdxFine(v.uv)*to_centre.x+dpdyFine(v.uv)*to_centre.y,0.);
+   let own=textureSample(atlas,tex_sampler,v.uv);
+   let c=vec2<u32>(vec2<i32>(cell));
+   // The reveal, from the point it opens at out to a rounded box at 1: the
+   // picture fades in smoothly, pixel by pixel, behind the band (no cells
+   // popping); characters scatter ahead of it, sparse and faint at the
+   // band's outer edge, denser and brighter inward, scrambling until the
+   // picture reaches them.
+   var shown=1.; var glyph_alpha=1.; var scrambling=false; var scramble=0u;
+   if reveal.y>0. {
+     let q=abs(v.position.xy/viewport.z/viewport.xy-.5-v.border.zw)*2.; let q4=q*q*q*q;
+     shown=smoothstep(reveal.y*.35,reveal.y*1.35,reveal.x-sqrt(sqrt(q4.x+q4.y)));
+     let qc=abs((cell+.5)*cell_size/viewport.z/viewport.xy-.5-v.border.zw)*2.; let qc4=qc*qc*qc*qc;
+     let front=reveal.x-sqrt(sqrt(qc4.x+qc4.y))+(cell_hash(c)-.5)*reveal.z;
+     let into=front/reveal.y;
+     glyph_alpha=select(0.,smoothstep(0.,.6,into),cell_hash(c+vec2(77u,13u))<pow(clamp(into,0.,1.),.7));
+     scrambling=into<1.; scramble=u32(max(into,0.)*12.);
+   }
+   let straight=select(vec3(0.),at.rgb/at.a,at.a>0.);
+   // Glyphs for highlights, light ones for midtones, none for shadows.
+   var index=u32(pow(clamp((dot(straight,vec3(.299,.587,.114))*at.a-.3)/.65,0.,1.),1.6)*10.999);
+   if scrambling {index=1u+u32(cell_hash(c+vec2(scramble*7u+1u,scramble))*9.999);}
+   let g=glyph(index);
+   let fp=vec2<u32>(floor((v.position.xy-cell*cell_size)/size));
+   var lit=0.;
+   if fp.x<5u && fp.y<7u {lit=f32((select(g.y,g.x>>(fp.y*5u),fp.y<6u)>>(4u-fp.x))&1u);}
+   let ink=straight/max(max(straight.r,max(straight.g,straight.b)),.25);
+   // The glyph over the picture (dimmed), its strength easing from whole,
+   // alone ahead of the picture, to 0.65 over it.
+   let k=lit*glyph_alpha*mix(1.,.65,shown);
+   let tex=vec4(ink*at.a*k+own.rgb*.88*shown*(1.-k),at.a*k+own.a*shown*(1.-k));
+   premultiplied=true; rgb=tex.rgb*color.a; color.a=color.a*tex.a;
+ } else if v.options.y>0.5 {
+   // Dithered (`options.y` is 2 plus the dot size, in points): one sample
+   // per dot, at its centre on the screen's grid (the uv there through
+   // the quad's own slopes, so moved, scaled and covering images dither
+   // alike), then Zeron's two levels: the colour at full value where its
+   // brightest channel passes the dot's 4x4 Bayer threshold, else 8% of it.
+   let dot=(v.options.y-2.)*viewport.z;
+   var tex:vec4<f32>;
+   if dot>0.5 {
+     let cell=floor(v.position.xy/dot);
+     let centre=(cell+.5)*dot-v.position.xy;
+     tex=textureSampleLevel(atlas,tex_sampler,v.uv+dpdxFine(v.uv)*centre.x+dpdyFine(v.uv)*centre.y,0.);
+     if tex.a>0. {
+       let c=vec2<u32>(vec2<i32>(cell))&vec2(3u);
+       let a=c.x^c.y; let b=c.y;
+       let bayer=f32(((a&1u)<<3u)|((b&1u)<<2u)|(a&2u)|((b&2u)>>1u));
+       let straight=tex.rgb/tex.a; let peak=max(straight.r,max(straight.g,straight.b));
+       tex=vec4(select(straight*.08,straight/max(peak,1e-5),peak>(bayer+.5)/16.)*tex.a,tex.a);
+     }
+   } else {tex=textureSample(atlas,tex_sampler,v.uv);}
    if v.options.y>1.5 {premultiplied=true; rgb=color.rgb*tex.rgb*color.a; color.a=color.a*tex.a;}
    else {color=vec4(color.rgb*tex.rgb,color.a*tex.a);}
  }

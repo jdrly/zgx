@@ -82,6 +82,18 @@ pub struct WindowOptions {
     /// `$XDG_STATE_HOME/zgx/<executable>/frames`, its size and maximized
     /// state alone on Wayland).
     pub frame_autosave: Option<String>,
+    /// Where it stands among windows: over every app's ordinary windows with
+    /// `WindowLevel::AlwaysOnTop` (a floating panel, an intro playing over
+    /// whatever is open).
+    pub level: crate::WindowLevel,
+    /// The platform's shadow around the window (macOS; Windows' frameless
+    /// windows). A transparent window drawing an overlay of its own goes
+    /// without, or the shadow outlines the empty window.
+    pub shadow: bool,
+    /// Placed over its display's whole frame (the selected display, else the
+    /// primary), rather than in a fullscreen space of its own: transparent
+    /// and frameless, a layer over the desktop and the windows on it.
+    pub covers_display: bool,
 }
 impl WindowOptions {
     /// Whether the window is transparent where zgx paints nothing.
@@ -109,6 +121,9 @@ impl Default for WindowOptions {
             tabbing: crate::Tabbing::Automatic,
             tabbing_identifier: None,
             frame_autosave: None,
+            level: crate::WindowLevel::Normal,
+            shadow: true,
+            covers_display: false,
         }
     }
 }
@@ -153,6 +168,8 @@ enum Event {
 enum WindowCommand {
     Bounds(crate::WindowBounds),
     PointerPassthrough(bool),
+    Level(crate::WindowLevel),
+    Shadow(bool),
     Fullscreen(bool),
     Decorations(bool),
     MinSize(Option<(f64, f64)>),
@@ -196,6 +213,8 @@ impl WindowState {
             WindowCommand::Fullscreen(value) => options.fullscreen = *value,
             WindowCommand::Decorations(value) => options.decorations = *value,
             WindowCommand::PointerPassthrough(_) => {}
+            WindowCommand::Level(level) => options.level = *level,
+            WindowCommand::Shadow(value) => options.shadow = *value,
             WindowCommand::MinSize(value) => options.min_size = *value,
             WindowCommand::Drag
             | WindowCommand::RefreshInfo
@@ -289,6 +308,15 @@ impl WindowHandle {
     /// dispatched to it in code still arrives.
     pub fn set_pointer_passthrough(&self, passthrough: bool) {
         self.command(WindowCommand::PointerPassthrough(passthrough));
+    }
+    /// Stand over every app's ordinary windows, or among them again (see
+    /// `WindowOptions::level`).
+    pub fn set_level(&self, level: crate::WindowLevel) {
+        self.command(WindowCommand::Level(level));
+    }
+    /// Show or drop the platform's shadow (see `WindowOptions::shadow`).
+    pub fn set_shadow(&self, shadow: bool) {
+        self.command(WindowCommand::Shadow(shadow));
     }
     /// The smallest logical client size the person can resize to; `None`
     /// removes the limit. A size that isn't finite and positive is ignored.
@@ -2411,6 +2439,20 @@ impl Host {
         zgx::profile::mark("renderer made");
         self.scale_factor = window.scale_factor();
         renderer.set_scale_factor(self.scale_factor as f32);
+        // Its first frame lays out at the size it opened at (a display it
+        // covers, bounds, a saved frame, the platform's choice), not at the
+        // size asked for and again as `Resized` reports it: one layout, and
+        // the app never sees a size the window never had.
+        let size = window.inner_size();
+        if apply_viewport(
+            &mut self.options,
+            &self.context.ui,
+            &self.context.viewport,
+            size,
+            self.scale_factor,
+        ) {
+            renderer.resize(size.width, size.height);
+        }
         let themes = self.context.ui.theme().clone();
         // Glass windows are transparent too (`WindowOptions::is_transparent`).
         if self.options.is_transparent() {
@@ -2597,6 +2639,8 @@ impl Host {
             WindowCommand::PointerPassthrough(value) => {
                 let _ = window.set_cursor_hittest(!value);
             }
+            WindowCommand::Level(level) => window.set_window_level(level.winit()),
+            WindowCommand::Shadow(value) => crate::window_info::set_shadow(window, value),
             WindowCommand::MinSize(value) => {
                 window.set_min_inner_size(value.map(|(w, h)| LogicalSize::new(w, h)))
             }
@@ -5841,10 +5885,15 @@ mod tests {
             WindowCommand::Minimized(true),
             WindowCommand::Maximized(true),
             WindowCommand::Focus,
+            WindowCommand::Level(crate::WindowLevel::AlwaysOnTop),
+            WindowCommand::Shadow(false),
         ] {
             state.apply(&mut options, &command);
         }
         assert_eq!(options.title, "Document — saved");
+        // A window made again keeps its level and shadow.
+        assert_eq!(options.level, crate::WindowLevel::AlwaysOnTop);
+        assert!(!options.shadow);
         assert_eq!((options.width, options.height), (640., 480.));
         assert!(!state.visible);
         assert!(state.minimized && state.maximized && state.focus_requested);
@@ -6187,6 +6236,71 @@ mod tests {
         };
         event_loop.run_app(&mut probe).unwrap();
         assert!(probe.completed);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display and GPU; run alone with --test-threads=1"]
+    fn a_window_lays_out_at_the_size_it_opened_at() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Probe {
+            factory: WindowFactory,
+            viewport: Option<(f32, f32)>,
+            expected: Option<(f32, f32)>,
+        }
+        impl ApplicationHandler<Event> for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                // Asked 960 by 720, opened at bounds of its own.
+                let options = WindowOptions {
+                    bounds: Some(crate::WindowBounds::new(500, 300)),
+                    ..Default::default()
+                };
+                let mut host = Host::new(options, self.factory.allocate(), self.factory.clone());
+                host.create_window(event_loop).unwrap();
+                let window = host.window.as_ref().unwrap();
+                let size = window.inner_size();
+                let scale = window.scale_factor();
+                // Before any `Resized`: the size it opened at, not the one asked.
+                self.viewport = Some(host.context.viewport.get());
+                self.expected = Some((
+                    (size.width as f64 / scale) as f32,
+                    (size.height as f64 / scale) as f32,
+                ));
+                host.suspend();
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Rc::new(Vec::new()),
+            file_routes: Default::default(),
+            application_id: None,
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(target_os = "macos")]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let mut probe = Probe {
+            factory,
+            viewport: None,
+            expected: None,
+        };
+        event_loop.run_app(&mut probe).unwrap();
+        assert!(probe.viewport.is_some());
+        assert_eq!(probe.viewport, probe.expected);
+        assert_ne!(probe.viewport, Some((960., 720.)));
     }
 
     #[cfg(target_os = "linux")]

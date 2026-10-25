@@ -1132,9 +1132,24 @@ export type Styles = {
 	-- Lay its edges on whole points (crisp borders where percentages leave fractions).
 	snap: boolean?,
 	clip_inset: Sides?,
+	-- Where it clips (overflow = "hidden"), its content fades out over this
+	-- many points inside its rounded edge instead of being cut: with a large
+	-- `rounded` and an animated clip inset, a soft oval that opens.
+	clip_feather: number?,
 	layer: boolean?,
 	fit: Fit?,
 	tint: Color?,
+	-- An image drawn dithered as Zeron dithers wallpapers, in dots this many
+	-- points square: each lit to its colour's full value or dimmed to 8% by a
+	-- 4x4 Bayer threshold, on the GPU as it draws (it follows the image as it
+	-- moves and scales).
+	dither: number?,
+	-- An image drawn as characters, as an ASCII art generator draws a photo:
+	-- cells of a 5 by 7 pixel font (each pixel this many points), a glyph each
+	-- by the brightness there, lit in its colour over the image. Its
+	-- `shader_params` reveal it cell by cell from the window's middle (see the
+	-- reference): animate `shaderParam0` (the front) to have it materialise.
+	characters: number?,
 	cursor: Cursor?,
 	-- Text.
 	text_size: Num?,
@@ -1273,9 +1288,12 @@ export type StyleProps = {
 	fade_overflow: Reactive<boolean>?,
 	snap: Reactive<boolean>?,
 	clip_inset: Reactive<Sides>?,
+	clip_feather: Reactive<number>?,
 	layer: Reactive<boolean>?,
 	fit: Reactive<Fit>?,
 	tint: Reactive<Color>?,
+	dither: number?,
+	characters: number?,
 	cursor: Reactive<Cursor>?,
 	-- Text.
 	text_size: Reactive<Num>?,
