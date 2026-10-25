@@ -1,11 +1,7 @@
 -- The message list: virtualized, a row per message of the mailbox shown.
 local state = require("../state")
 local actions = require("../actions")
-local visible = require("@lib/filter")
-
-local shown = ui.computed(function()
-	return visible(state.messages:get(), state.mailbox:get(), state.query:get())
-end)
+local shown = actions.shown
 
 local offset = ui.state("offset", 0)
 

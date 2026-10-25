@@ -4,7 +4,19 @@ local visible = require("@lib/filter")
 
 local M = {}
 
+-- The messages the list shows now: filtered once, for the list and for the
+-- actions that move on to the next of them.
+M.shown = ui.computed(function(): { state.Message }
+	return visible(state.messages:get(), state.mailbox:get(), state.query:get())
+end)
+
 local function index_of(id: number): number?
+	-- A message's id is its place (messages are only ever added at the end):
+	-- one item read, not the list.
+	local at = state.messages:at(id)
+	if at and at.id == id then
+		return id
+	end
 	for i, m in state.messages:peek() do
 		if m.id == id then
 			return i
@@ -33,7 +45,7 @@ function M.open(id: number)
 		state.selected:set(id)
 		local i = index_of(id)
 		if i then
-			set_read(state.messages:peek()[i], true)
+			set_read(state.messages:at(i) :: state.Message, true)
 		end
 	end)
 end
@@ -41,20 +53,19 @@ end
 function M.toggle_star(id: number)
 	local i = index_of(id)
 	if i then
-		state.messages:set_key({ i, "starred" }, not state.messages:peek()[i].starred)
+		state.messages:set_key({ i, "starred" }, not (state.messages:at(i) :: state.Message).starred)
 	end
 end
 
 function M.mark_unread(id: number)
 	local i = index_of(id)
 	if i then
-		set_read(state.messages:peek()[i], false)
+		set_read(state.messages:at(i) :: state.Message, false)
 	end
 end
 
--- The messages the list shows now.
 local function shown(): { state.Message }
-	return visible(state.messages:peek(), state.mailbox:peek(), state.query:peek())
+	return M.shown:peek()
 end
 
 function M.move(id: number, mailbox: string)
@@ -72,7 +83,7 @@ function M.move(id: number, mailbox: string)
 		local focus: number? = nil
 		ui.batch(function()
 			-- Its unread count moves with it.
-			local m = state.messages:peek()[i]
+			local m = state.messages:at(i) :: state.Message
 			local read = state.read:peek()[tostring(m.id)]
 			if if read == nil then m.unread else not read then
 				local counts = state.unread_counts:peek()
@@ -120,7 +131,7 @@ end
 function M.reply(id: number)
 	local i = index_of(id)
 	if i then
-		local m = state.messages:peek()[i]
+		local m = state.messages:at(i) :: state.Message
 		M.compose(m.email, "Re: " .. m.subject)
 	end
 end

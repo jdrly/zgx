@@ -6,6 +6,11 @@ local function find(id: number?): state.Message?
 	if id == nil then
 		return nil
 	end
+	-- A message's id is its place: one item read, not the list.
+	local at = state.messages:at(id)
+	if at and at.id == id then
+		return at
+	end
 	for _, m in state.messages:get() do
 		if m.id == id then
 			return m
