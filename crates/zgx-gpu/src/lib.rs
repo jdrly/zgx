@@ -4167,6 +4167,9 @@ impl GpuRenderer {
                             || s.height != bounds.height
                             || s.scale != self.scale
                     });
+                    // A shape made this frame, held here until placed: into
+                    // the map once, not in and out again to place it.
+                    let mut fresh = None;
                     if stale {
                         // The old shape's glyphs and quads hold the new one's:
                         // a changed value is as many allocations fewer.
@@ -4334,8 +4337,7 @@ impl GpuRenderer {
                             last_used: self.frame,
                             prepared,
                         };
-                        self.shaped_bytes += shaped.bytes();
-                        self.shapes.insert(item.id, shaped);
+                        fresh = Some(shaped);
                         stats.shaped_nodes += 1;
                         if let Some(content) = content {
                             if self.shaped_like.len() >= SHAPED_LIKE {
@@ -4429,14 +4431,30 @@ impl GpuRenderer {
                     let whole =
                         !self.cull_glyphs || (holds(viewport) && item.clip.is_none_or(holds));
                     if whole
+                        && let Some(mut shaped) =
+                            fresh.take_if(|shaped| shaped.atlas_epoch == self.atlas_epoch)
+                    {
+                        // (A twin's, placed in this atlas already.)
+                        place(&mut quads, &shaped.quads);
+                        shaped.last_used = self.frame;
+                        self.shaped_bytes += shaped.bytes();
+                        self.shapes.insert(item.id, shaped);
+                    } else if whole
+                        && fresh.is_none()
                         && let Some(shaped) = self.shapes.get_mut(&item.id)
                         && shaped.atlas_epoch == self.atlas_epoch
                     {
                         place(&mut quads, &shaped.quads);
                         shaped.last_used = self.frame;
                     } else {
-                        let mut shaped = self.shapes.remove(&item.id).unwrap();
-                        self.shaped_bytes -= shaped.bytes();
+                        let mut shaped = match fresh {
+                            Some(shaped) => shaped,
+                            None => {
+                                let shaped = self.shapes.remove(&item.id).unwrap();
+                                self.shaped_bytes -= shaped.bytes();
+                                shaped
+                            }
+                        };
                         let partial = self.cull_glyphs
                             && !(holds(viewport) && item.clip.is_none_or(holds))
                             && self.visible_lines(
