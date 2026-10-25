@@ -55,6 +55,14 @@ SCENES = [
     ('micro-vscroll-fixed', 'zgx-desktop', 'micro_bench', {'SCENE': 'vscroll-fixed', 'OPS': '300', 'WARMUP': '50', 'RENDER': '0'}),
     ('micro-vscroll-variable', 'zgx-desktop', 'micro_bench', {'SCENE': 'vscroll-variable', 'OPS': '300', 'WARMUP': '50',
                                                               'RENDER': '0'}),
+    # The same three written in Luau, through ScriptHost (a binary of its
+    # own: micro_bench links no script engine).
+    ('micro-state-luau', 'zgx-desktop', 'micro_luau_bench', {'SCENE': 'state', 'OPS': '300', 'WARMUP': '50',
+                                                             'RENDER': '0'}),
+    ('micro-vscroll-fixed-luau', 'zgx-desktop', 'micro_luau_bench', {'SCENE': 'vscroll-fixed', 'OPS': '300',
+                                                                     'WARMUP': '50', 'RENDER': '0'}),
+    ('micro-vscroll-variable-luau', 'zgx-desktop', 'micro_luau_bench', {'SCENE': 'vscroll-variable', 'OPS': '300',
+                                                                        'WARMUP': '50', 'RENDER': '0'}),
     ('mount', 'zgx-script', 'mount_bench', {}),
     ('script-update', 'zgx-script', 'update_bench', {'TICKS': '200'}),
     ('anime', 'zgx-script', 'anime_bench', {}),

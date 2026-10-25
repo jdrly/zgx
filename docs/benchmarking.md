@@ -175,6 +175,16 @@ Each reports two figures:
 `RENDER=0` measures text as a renderer would and draws nothing, the frame's
 CPU work without a GPU, as CI's instruction gate counts it (`micro-state`,
 `micro-vscroll-fixed`, `micro-vscroll-variable`, at 300 operations each).
+
+`micro_luau_bench` runs the same scenes written in Luau and loaded through
+`ScriptHost` (`support/micro_luau.rs`), a binary of its own so `micro_bench`
+links no script engine: the counter is a `ui.state` its
+handler (`ui.command`) adds to, the lists are `ui.list` rows built by the
+script, each row's text read from the host with `ui.call_sync`, and a scroll
+step moves the list's `ui.shared` offset as a host would. The JSON says
+`"framework":"zgx-luau"`. What it adds to Rust's figures is the script's own
+cost: running the handler, and building each row that scrolls in from Luau
+(its tables, props and lowering). The gate counts these as `micro-*-luau`.
 Engine changes that move these keep the public API and ship only if they make
 every measured figure faster.
 

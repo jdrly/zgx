@@ -3921,6 +3921,15 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             },
         }
     };
+    // A row of a list with no `key`, keyed by its place: a `usize` the
+    // list hashes inline, not a `ListKey` (a list scrolls by looking up
+    // every row in view).
+    let plain_row = {
+        let (builder, vm, low) = (builder.clone(), vm.clone(), low.clone());
+        move |index: Signal<usize>, _: usize, cx: &mut Context| -> View {
+            build_scoped(&vm, cx, &low, &builder, index.with_untracked(|i| *i) + 1)
+        }
+    };
     let row = {
         let (builder, vm, low, keyed) = (builder.clone(), vm.clone(), low.clone(), key.is_some());
         move |index: Signal<usize>, key: ListKey, cx: &mut Context| -> View {
@@ -3995,7 +4004,7 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
                 cx.retain(cx.runtime().effect(move || {
                     let _ = r.resize(count());
                 }));
-                measured_virtual_list(offset, rows, *overscan, list_key, row)
+                measured_virtual_list(offset, rows, *overscan, |i| i, plain_row)
             }
             // Heights by key, kept as rows move: every row's key, read in
             // one Luau loop.
@@ -4032,9 +4041,16 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             });
             let _ = r.replace(values);
         }));
-        let list = variable_virtual_list(offset.clone(), rows.clone(), *overscan, list_key, row)
-            .keyboard_navigation(keyboard)
-            .row_text(copy);
+        let list = match key {
+            None => {
+                variable_virtual_list(offset.clone(), rows.clone(), *overscan, |i| i, plain_row)
+            }
+            Some(_) => {
+                variable_virtual_list(offset.clone(), rows.clone(), *overscan, list_key, row)
+            }
+        }
+        .keyboard_navigation(keyboard)
+        .row_text(copy);
         match sticky {
             None => list,
             Some(sticky) => sticky_list(
@@ -4050,11 +4066,11 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
             ),
         }
     } else {
-        virtual_list(
-            offset, *height, *overscan, count, list_key,
-            // Each row owns what it makes, as `each` rows do.
-            row,
-        )
+        // Each row owns what it makes, as `each` rows do.
+        match key {
+            None => virtual_list(offset, *height, *overscan, count, |i| i, plain_row),
+            Some(_) => virtual_list(offset, *height, *overscan, count, list_key, row),
+        }
         .keyboard_navigation(keyboard)
         .row_text(copy)
     }
