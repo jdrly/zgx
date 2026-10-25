@@ -102,9 +102,10 @@ fn main() {
     }
     for tick in 0..200 {
         println!(
-            "vtick {tick} {} {} {:?}",
+            "vtick {tick} {} {} {} {:?}",
             vlist::delta(vlist::Mode::Scroll, tick),
             vlist::delta(vlist::Mode::Fling, tick),
+            vlist::delta(vlist::Mode::Jump, tick),
             vlist::jump(tick)
         );
     }

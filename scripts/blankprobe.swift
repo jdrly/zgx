@@ -20,6 +20,10 @@ guard args.count == 5, let pid = pid_t(args[1]), let warmup = Double(args[2]),
     FileHandle.standardError.write("usage: blankprobe PID WARMUP SECONDS RATE\n".data(using: .utf8)!)
     exit(2)
 }
+// A connection to the window server (CoreGraphics needs one), as an app
+// that never shows itself: no Dock icon, never active.
+let app = NSApplication.shared
+app.setActivationPolicy(.prohibited)
 guard CGPreflightScreenCaptureAccess() else {
     print("{\"error\":\"no screen recording permission\"}")
     exit(1)

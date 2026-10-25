@@ -85,7 +85,10 @@ PACING_SECONDS, PACING_REPEATS = 8, 8
 # trials, fewer pacing captures and idle launches, and more repeats only for
 # cells whose trials disagree. Checked against the full protocol's ranges on
 # the heavy dashboard (docs/benchmarking.md).
-SUITE = {'REQUESTED': 13, 'WARMUP': 3, 'SAMPLED': 10, 'IDLE_REPEATS': 3, 'PACING_REPEATS': 2}
+# The full protocol's 5 s warm-up stays: from 3 s, startup's own work (first
+# shaping, caches, memory still growing) read 5-10% more CPU for every
+# framework (2026-10-25).
+SUITE = {'REQUESTED': 15, 'WARMUP': 5, 'SAMPLED': 10, 'IDLE_REPEATS': 3, 'PACING_REPEATS': 2}
 # A cell whose CPU or GPU work spreads more than this share of its median
 # over its trials gets EXTRA more (the suite).
 SPREAD, EXTRA = 0.10, 2

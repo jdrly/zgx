@@ -9,7 +9,8 @@ the trials of a full-protocol run of the same scene, cell by cell.
 full run's other cells measured an older build): `framework:metric`, `*`
 for every metric. Writes protocol-check.json beside the suite run and prints
 a table; exits 1 when a median falls outside its range by more than the
-allowance (the full run's own spread, at least 2% of its median), which is
+allowance (the full run's own spread, at least 2% of its median and, for
+CPU, 0.05 points of a core), which is
 how far two sessions of the full protocol differ.
 """
 import argparse, json, statistics, sys
@@ -44,7 +45,8 @@ def main():
             if name == 'memory' and g['mode'] == 'idle':
                 continue
             median, low, high = g[key]['median'], old[key]['min'], old[key]['max']
-            allowance = max(high - low, 0.02 * old[key]['median'])
+            # At least 0.05 points of a core for CPU: idle reads thousandths.
+            allowance = max(high - low, 0.02 * old[key]['median'], 0.05 if name == 'cpu' else 0)
             outside = max(low - median, median - high, 0)
             ok = outside <= allowance
             rows.append({'framework': g['framework'], 'mode': g['mode'], 'metric': name, 'suite_median': median,

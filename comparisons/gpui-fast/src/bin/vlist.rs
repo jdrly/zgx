@@ -96,6 +96,7 @@ fn main() {
                                 break;
                             }
                             tick += 1;
+                            let before = state.logical_scroll_top();
                             match vlist::jump(tick) {
                                 Some(row) if mode == vlist::Mode::Jump => {
                                     state.scroll_to(ListOffset {
@@ -112,7 +113,10 @@ fn main() {
                                     }
                                 }
                             }
-                            if chat.update(cx, |_, cx| cx.notify()).is_err() {
+                            // A frame only when the list moved, as zgx and MyGo draw.
+                            let after = state.logical_scroll_top();
+                            let moved = (before.item_ix, before.offset_in_item) != (after.item_ix, after.offset_in_item);
+                            if moved && chat.update(cx, |_, cx| cx.notify()).is_err() {
                                 break;
                             }
                             deadline += PERIOD;

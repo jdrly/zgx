@@ -519,7 +519,8 @@ pub mod heavy {
 /// image placeholder under its text, shown by each framework's own list
 /// widget. Every adapter uses the same font, size, line height and widths,
 /// so the same rows wrap to the same lines; the widget measures the heights.
-/// Modes: a steady scroll, flings (a velocity curve), and jumps to rows.
+/// Modes: a steady scroll, flings (a velocity curve), and a steady scroll
+/// with a jump to a seeded row every `JUMP_EVERY` ticks.
 pub mod vlist {
     pub const WIDTH: f32 = 720.;
     pub const HEIGHT: f32 = 800.;
@@ -648,12 +649,14 @@ pub mod vlist {
         }
         text
     }
-    /// The scroll a tick adds (scroll and fling).
+    /// The scroll a tick adds (every mode; a jump's tick lands on its row instead).
     pub fn delta(mode: Mode, tick: u64) -> f32 {
         match mode {
             Mode::Scroll => SCROLL_STEP,
             Mode::Fling => FLING.0 * FLING.1.powi((tick % FLING.2) as i32),
-            Mode::Jump => 0.,
+            // Jump scrolls between its jumps, so frames keep coming and their
+            // times show what each jump costs.
+            Mode::Jump => SCROLL_STEP,
         }
     }
     /// The row a jump lands on at `tick`, if one does then.
@@ -685,6 +688,7 @@ pub mod vlist {
             assert_eq!(jump(0), None);
             assert!(jump(JUMP_EVERY).is_some_and(|r| r < ROWS));
             assert_eq!(jump(JUMP_EVERY + 1), None);
+            assert_eq!(delta(Mode::Jump, 7), SCROLL_STEP);
         }
     }
 }
