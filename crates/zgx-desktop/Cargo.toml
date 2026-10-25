@@ -19,6 +19,8 @@ jpeg = ["zgx-gpu/jpeg"]
 gif = ["zgx-gpu/gif"]
 # Windows: Vulkan where Direct3D 12 has no adapter (see zgx-gpu).
 vulkan = ["zgx-gpu/vulkan"]
+# Scratch: the measured floor (examples/sol_floor.rs).
+floor = ["zgx-gpu/floor"]
 # macOS private API, looked up as it is first used and done without where
 # it is missing: `CGSMoveWindow` moves a drag preview's window (a sixth of
 # what `setFrameOrigin:` costs). Off for App Store builds, which may not
@@ -102,6 +104,10 @@ block2 = "0.6"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGPath", "CGColor", "CGAffineTransform"] }
+
+[[example]]
+name = "sol_floor"
+required-features = ["floor"]
 
 [[example]]
 name = "ghostty_pane"

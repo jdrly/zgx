@@ -12,6 +12,9 @@ mod composition;
 #[cfg(windows)]
 mod dxgi;
 mod effects;
+#[cfg(feature = "floor")]
+#[allow(missing_docs)]
+pub mod floor;
 mod font_cache;
 #[cfg(target_os = "macos")]
 mod layer_present;
@@ -4120,6 +4123,17 @@ impl GpuRenderer {
                         .get()
                         .and_then(Option::as_ref)
                         .is_some_and(metal_frame::MetalFrame::stencils)
+            });
+            #[cfg(feature = "floor")]
+            floor::CAPTURE.with(|c| {
+                if let Some(slot @ None) = &mut *c.borrow_mut() {
+                    *slot = Some(floor::Captured {
+                        quads: quads.clone(),
+                        draws: draws.clone(),
+                        regions: regions.clone(),
+                        clips: clips.clone(),
+                    });
+                }
             });
             return Ok(self.render_direct(
                 quads, draws, &regions, &batches, catch_up, shown, effects, &clips, stamp, stats,

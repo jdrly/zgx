@@ -20,6 +20,8 @@ svg = ["dep:resvg"]
 png = ["image/png"]
 jpeg = ["image/jpeg"]
 gif = ["dep:gif"]
+# Scratch: the measured floor (src/floor.rs).
+floor = []
 # Windows: presentation into DirectComposition visuals of the caller's
 # (composition.rs), with native views composited between the planes.
 composition = ["windows/Win32_Graphics_DirectComposition"]
