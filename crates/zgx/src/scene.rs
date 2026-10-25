@@ -1574,6 +1574,20 @@ struct Slot {
 }
 /// Where a parent's children are damaged (`Scene::damage_context`).
 type DamageContext = Option<(Transform, Option<Rect>)>;
+/// What `Scene::leaf_damage` reads of a leaf beside its box, the same
+/// before and after layout moves it (`Scene::leaf_place`).
+#[derive(Clone, Copy)]
+struct LeafPlace {
+    /// Its parent's translation and its own.
+    transform: Transform,
+    /// The clip it paints within.
+    parent_clip: Option<Rect>,
+    /// Whether it clips what it holds (`clip_axes`).
+    clips: bool,
+    /// Whether its own paint reaches past that clip (`paints_past_clip`).
+    past_clip: bool,
+    blur_radius: f32,
+}
 /// What a [`Scene::flush`] did, for renderers and diagnostics.
 #[derive(Default, Debug)]
 pub struct FrameReport {
@@ -4103,39 +4117,52 @@ impl Scene {
         self.damage.first() == Some(&self.viewport)
             || self.damage_grid.as_ref().is_some_and(DamageGrid::full)
     }
-    /// What `damage_subtree_with` would add for leaf `id` (no children)
-    /// where nothing is transformed or filtered, quantized as `add_damage`
-    /// quantizes it: two such areas sharing their extent along an axis and
-    /// overlapping are, together, their union. `context`: its parent's, as
-    /// `damage_subtree_with` keeps it. Out of line: `arrange` stays small.
+    /// What `leaf_damage` reads of leaf `id` (no children) beside its box,
+    /// where nothing is transformed or filtered: worked out once for its
+    /// damage where it was and where layout places it. `None`: it damages
+    /// nothing. `context`: its parent's, as `damage_subtree_with` keeps it.
+    /// Out of line: `arrange` stays small.
     #[inline(never)]
-    fn leaf_damage(&self, id: NodeId, context: &mut Option<DamageContext>) -> Option<Rect> {
+    fn leaf_place(&self, id: NodeId, context: &mut Option<DamageContext>) -> Option<LeafPlace> {
         if self.damage_is_full() {
             return None;
         }
-        let parent = self.node(id).parent;
-        let (parent, parent_clip) = (*context.get_or_insert_with(|| self.damage_context(parent)))?;
-        // As `damage_subtree_in` and `damage_painted` work it out.
         let node = self.node(id);
+        let (parent, parent_clip) =
+            (*context.get_or_insert_with(|| self.damage_context(node.parent)))?;
+        // As `damage_subtree_in` and `damage_painted` work it out.
         let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
         if !own_visible(&node.style) || unplaced {
             return None;
         }
-        let transform = Transform {
-            x: parent.x + node.transform.x,
-            y: parent.y + node.transform.y,
+        let clips = clip_axes(&node.style) != (false, false);
+        Some(LeafPlace {
+            transform: Transform {
+                x: parent.x + node.transform.x,
+                y: parent.y + node.transform.y,
+            },
+            parent_clip,
+            clips,
+            past_clip: clips && matches!(node.kind, NodeKind::Quad(_) | NodeKind::Panel { .. }),
+            blur_radius: node.effects.blur_radius,
+        })
+    }
+    /// What `damage_subtree_with` would add for leaf `id` at `bounds` (its
+    /// box before or after layout moves it), placed as `place` says,
+    /// quantized as `add_damage` quantizes it: two such areas sharing their
+    /// extent along an axis and overlapping are, together, their union.
+    #[inline(never)]
+    fn leaf_damage(&self, id: NodeId, place: &LeafPlace, bounds: Rect) -> Option<Rect> {
+        let bounds = bounds.translated(place.transform);
+        let clip = match place.clips {
+            true => clipped_bounds(place.parent_clip, bounds, &self.node(id).style),
+            false => place.parent_clip,
         };
-        let bounds = node.bounds.translated(transform);
-        let clip = if clip_axes(&node.style) != (false, false) {
-            clipped_bounds(parent_clip, bounds, &node.style)
-        } else {
-            parent_clip
-        };
-        let own = match self.paints_past_clip(id) {
-            true => parent_clip,
+        let own = match place.past_clip {
+            true => place.parent_clip,
             false => clip,
         };
-        let painted = self.painted(id, bounds, node.effects.blur_radius)?;
+        let painted = self.painted(id, bounds, place.blur_radius)?;
         own.and_then(|clip| painted.intersection(clip))
             .map(quantized)
     }
@@ -4395,7 +4422,7 @@ impl Scene {
     /// clip its children paint within. One walk up its ancestors checks they
     /// show and sums the translation (each of those walked them again);
     /// only an ancestor that clips sends the clip to `world`.
-    // Inlined into `damage_subtree_with` and `leaf_damage`: damage runs it
+    // Inlined into `damage_subtree_with` and `leaf_place`: damage runs it
     // for every node damaged alone.
     #[inline(always)]
     fn shown_context(&self, id: NodeId) -> DamageContext {
@@ -5765,8 +5792,14 @@ impl Scene {
         // with what it will paint, once it is placed (see `leaf_damage`).
         let leaf =
             damage && self.node(id).children.is_empty() && self.transformed + self.filtered == 0;
+        let place = match damage && leaf {
+            true => self.leaf_place(id, context),
+            false => None,
+        };
         let before = match (damage, leaf) {
-            (true, true) => self.leaf_damage(id, context),
+            (true, true) => {
+                place.and_then(|place| self.leaf_damage(id, &place, self.node(id).bounds))
+            }
             (true, false) => {
                 self.damage_subtree_with(id, context);
                 None
@@ -5800,7 +5833,7 @@ impl Scene {
             });
         }
         if damage && leaf {
-            let after = self.leaf_damage(id, context);
+            let after = place.and_then(|place| self.leaf_damage(id, &place, bounds));
             match (before, after) {
                 // A box growing or moving along one axis (a bar): one area,
                 // as the two would be marked or merged.
