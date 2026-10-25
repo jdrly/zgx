@@ -188,6 +188,23 @@ cost: running the handler, and building each row that scrolls in from Luau
 Engine changes that move these keep the public API and ship only if they make
 every measured figure faster.
 
+**The floor under a frame with the GPU encode.** Most of zgx's `RENDER=1`
+frame is what any Metal frame costs. `crates/zgx-gpu/examples/mtl_floor.rs`
+times a bare one (a command buffer, one empty render pass into a 2048 × 1536
+target, scissor, end, commit, waiting for it before the next):
+
+| on this Mac (2026-10-25) | process CPU | main thread | Metal's own threads |
+| --- | --- | --- | --- |
+| back to back | 44–94 µs | 12–24 µs | about 30–70 µs |
+| one frame per 16.7 ms | about 209 µs | about 80 µs | about 130 µs |
+
+The main thread retires the same 70,000 instructions either way; paced frames
+take longer because each starts on cold caches and a clocked-down core.
+zgx's own work over the floor is about 15,000 instructions drawing and 18,000
+presenting, beside its frame without the encode. So judge renderer changes by
+the main thread's retired instructions, and quote a frame's process CPU against
+this floor.
+
 ## The macOS comparison, quick and full
 
 `python3 scripts/run_macos_comparison.py --scene heavy --quick` measures zgx
