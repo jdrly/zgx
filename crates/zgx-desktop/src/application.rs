@@ -1159,6 +1159,11 @@ struct Host {
     /// would hold the next resize step back.
     #[cfg(target_os = "macos")]
     resized_at: Option<std::time::Instant>,
+    /// The window's size as AppKit last reported it (`Resized`, sent for
+    /// every change of the content view's frame): asking every frame
+    /// costs a walk of the window's frame views. None until reported.
+    #[cfg(target_os = "macos")]
+    reported_size: Option<PhysicalSize<u32>>,
     #[cfg(target_os = "macos")]
     latch: Latch,
     frame_timer: crate::frame_source::FrameTimer,
@@ -1415,6 +1420,8 @@ impl Host {
             #[cfg(target_os = "macos")]
             resized_at: None,
             #[cfg(target_os = "macos")]
+            reported_size: None,
+            #[cfg(target_os = "macos")]
             latch: Latch::default(),
             frame_arrived: false,
             trim_at: None,
@@ -1656,6 +1663,11 @@ impl Host {
             self.context.ui.cancel_interactions();
             return Ok(());
         };
+        #[cfg(target_os = "macos")]
+        let size = *self
+            .reported_size
+            .get_or_insert_with(|| window.inner_size());
+        #[cfg(not(target_os = "macos"))]
         let size = window.inner_size();
         let visible = window.is_visible();
         // X11's minimized query is a synchronous property roundtrip. Focused
@@ -2477,6 +2489,10 @@ impl Host {
             }
         }
         self.window = Some(window);
+        #[cfg(target_os = "macos")]
+        {
+            self.reported_size = None;
+        }
         self.context
             .ui
             .set_presented(self.state.visible && !self.state.minimized && !self.native_occluded);
@@ -2895,6 +2911,10 @@ impl Host {
                 self.draw()?;
             }
             WindowEvent::Resized(size) => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.reported_size = Some(size);
+                }
                 if size.width > 0 && size.height > 0 {
                     self.presentation.expose();
                 }
