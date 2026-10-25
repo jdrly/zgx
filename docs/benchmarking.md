@@ -160,7 +160,7 @@ python scripts/windows_compare.py --zgx target/dist/examples --gpui comparisons/
 ```
 
 Startup and keystroke latency are measured apart:
-- **`scripts/windows_startup_probe.py`** times a launch to its first content as macOS's probe does: spawn, the window, then its header strip until the header's text has drawn. It reports medians of wall time, CPU time and cycles over alternating launches.
+- **`scripts/windows_startup_probe.py`** times a launch to its first content as macOS's probe does: spawn, the window, then its header strip until the header's text has drawn, read as the window drew it (`PrintWindow`), so a window covering it cannot pass for its text. It reports medians of wall time, CPU time and cycles over launches in rotating order; `--settle 5` then keeps each at rest five seconds and takes its private bytes and working set.
 - **`scripts/windows_latency_probe.py --press`** times a key press to the composed screen. Use `key_workload` (zgx-desktop's example) against GPUI's `keys`: each redraws a counter at every key.
 
 Each run also records whether a UI Automation client read zgx's window (zgx prints `accessibility: a client asked for the tree` when `ZGX_ACCESSIBILITY_LOG` is set, which the harness sets), and the summary says whether a screen reader ran (`SPI_GETSCREENREADER`) and which known UIA client processes did (the shell's touch keyboard host, Voice Access, Magnifier, test tools). Real desktops have such clients, so runs measure the machine as it is; zgx's accessibility work for them is part of its cost, and GPUI has no UI Automation provider. Compare only runs whose clients match.

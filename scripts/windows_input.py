@@ -36,6 +36,7 @@ for dll, name, res, args in [
     (user32, "PostMessageW", wintypes.BOOL, [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]),
     (user32, "GetDC", wintypes.HDC, [wintypes.HWND]),
     (user32, "ReleaseDC", ctypes.c_int, [wintypes.HWND, wintypes.HDC]),
+    (user32, "PrintWindow", wintypes.BOOL, [wintypes.HWND, wintypes.HDC, wintypes.UINT]),
     (gdi32, "CreateCompatibleDC", wintypes.HDC, [wintypes.HDC]),
     (gdi32, "CreateCompatibleBitmap", wintypes.HBITMAP, [wintypes.HDC, ctypes.c_int, ctypes.c_int]),
     (gdi32, "SelectObject", wintypes.HGDIOBJ, [wintypes.HDC, wintypes.HGDIOBJ]),
@@ -323,6 +324,26 @@ def capture(hwnd):
     width, height = client_size(hwnd)
     x, y = to_screen(hwnd, 0, 0)
     return capture_rect(x, y, width, height)
+
+
+def capture_window(hwnd):
+    """The client area's pixels as the window drew them, as `capture`, even
+    while other windows cover it (`PrintWindow`, `PW_RENDERFULLCONTENT`:
+    the compositor's copy, DirectComposition content included)."""
+    width, height = client_size(hwnd)
+    screen = user32.GetDC(None)
+    memory = gdi32.CreateCompatibleDC(screen)
+    bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
+    old = gdi32.SelectObject(memory, bitmap)
+    user32.PrintWindow(hwnd, memory, 1 | 2)  # PW_CLIENTONLY | PW_RENDERFULLCONTENT
+    header = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+    pixels = ctypes.create_string_buffer(width * height * 4)
+    gdi32.GetDIBits(memory, bitmap, 0, height, pixels, ctypes.byref(header), 0)
+    gdi32.SelectObject(memory, old)
+    gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(memory)
+    user32.ReleaseDC(None, screen)
+    return width, height, pixels.raw
 
 
 def capture_rect(x, y, width, height):
