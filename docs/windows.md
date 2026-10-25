@@ -563,6 +563,13 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   clipboard and restores it after, keeps what it puts there out of clipboard
   history, and skips the copy and paste checks while cloud clipboard sync is
   on.
+- `windows_glass_smoke.py` (`glass_counter`): each glass material asks the
+  compositor for its system backdrop, read back from outside the app
+  (`DWMWA_SYSTEMBACKDROP_TYPE`): Acrylic for the heads-up glass, Mica for a
+  window's background, Mica Alt for a title bar's. Acrylic must also show: an
+  empty patch of the window changes as another test window takes the
+  activation (Windows draws a solid colour for an inactive window's acrylic),
+  where an opaque fill would not.
 - `windows_vlist_smoke.py` (each framework's `vlist` adapter, `comparisons/README.md`):
   as the macOS runner checks the scene, the probe rows' heights agree within
   2 points in the one font file every adapter loads, and in `scroll`, `fling`

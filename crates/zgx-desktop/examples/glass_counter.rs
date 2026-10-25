@@ -7,12 +7,14 @@
 //!
 //! `-- --fixture`: checks the chrome `WindowOptions` asked for against live
 //! AppKit state, prints `FIXTURE` lines, then exits (non-zero on failure).
+//! `ZGX_GLASS_MATERIAL=window` or `titlebar` frosts the window with that
+//! material instead of the heads-up glass (`windows_glass_smoke.py`).
 use zgx::{
     compose::prelude::*,
     input::{EventPhase, InputEvent, Key},
     text_layout::{FontFeatures, TextAlign},
 };
-use zgx_desktop::{Application, Glass, Titlebar, WindowOptions};
+use zgx_desktop::{Application, Glass, GlassMaterial, Titlebar, WindowOptions};
 
 const TITLE: &str = "zgx glass counter";
 const WIDTH: f64 = 340.;
@@ -31,7 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_size: Some((280., 340.)),
             // Content under inset traffic lights, on frosted glass.
             titlebar: Titlebar::Inset,
-            glass: Some(Glass::default()),
+            glass: Some(match std::env::var("ZGX_GLASS_MATERIAL").as_deref() {
+                Ok("window") => Glass::new(GlassMaterial::WindowBackground),
+                Ok("titlebar") => Glass::new(GlassMaterial::Titlebar),
+                _ => Glass::default(),
+            }),
             ..Default::default()
         })
         .run(move |cx| {
