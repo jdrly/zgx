@@ -563,6 +563,13 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   clipboard and restores it after, keeps what it puts there out of clipboard
   history, and skips the copy and paste checks while cloud clipboard sync is
   on.
+- `windows_vlist_smoke.py` (each framework's `vlist` adapter, `comparisons/README.md`):
+  as the macOS runner checks the scene, the probe rows' heights agree within
+  2 points in the one font file every adapter loads, and in `scroll`, `fling`
+  and `jump` zgx's list shows no unfilled rows: 10 captures a second for 8 s,
+  scanned inside the rows' left padding for runs of the window's background.
+  The other frameworks' counts are reported. Its windows are put above the
+  others while they run, never activated.
 - `windows_caret_blink_probe.py` (`text_selection`, a release build): the
   caret blinks one frame a phase at the system's blink rate (counted with
   `ZGX_PRESENT_LOG`), the process's cycles a blink, and with the field still
