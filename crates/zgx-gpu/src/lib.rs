@@ -1274,6 +1274,20 @@ fn preferred_dx12_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
     // SAFETY: the adapter was exposed from this instance's own hal instance.
     Some(unsafe { instance.create_adapter_from_hal(exposed) })
 }
+/// Keep the shaders FXC compiles in the user's local app data between
+/// launches (`vendor/wgpu-hal/ZGX_PATCH.md`): a window's first frame
+/// compiled its pipelines' shaders every launch, 45 ms of a 280 ms start.
+#[cfg(all(windows, zgx_wgpu_hal_patched))]
+fn keep_compiled_shaders() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::var_os("LOCALAPPDATA")
+            .map(|local| std::path::PathBuf::from(local).join("zgx\\shaders"));
+        wgpu::hal::dx12::set_shader_cache_dir(dir);
+    });
+}
+#[cfg(not(all(windows, zgx_wgpu_hal_patched)))]
+fn keep_compiled_shaders() {}
 /// What a `GpuContext` holds that another thread can make (`GpuContext::prepare`).
 struct Prepared {
     lost: Arc<std::sync::Mutex<Option<String>>>,
@@ -1374,6 +1388,7 @@ impl GpuContext {
         } else {
             &[wgpu::Backends::PRIMARY]
         };
+        keep_compiled_shaders();
         let mut found = Err(GpuError("no graphics backend".into()));
         for &backends in attempts {
             let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();

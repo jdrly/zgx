@@ -239,6 +239,12 @@ fn compile_fxc(
         compile_flags |= Fxc::D3DCOMPILE_DEBUG | Fxc::D3DCOMPILE_SKIP_OPTIMIZATION;
     }
 
+    // zgx patch: compiled at an earlier launch, read back (`shader_disk_cache`).
+    let cache_key = super::shader_disk_cache::key(compile_flags, full_stage, raw_ep, source);
+    if let Some(code) = super::shader_disk_cache::read(&cache_key) {
+        return Ok(super::CompiledShader::Precompiled(code));
+    }
+
     let mut shader_data = None;
     let mut error = None;
     let hr = fxc.compile(
@@ -253,7 +259,15 @@ fn compile_fxc(
 
     match hr {
         Ok(()) => {
-            let shader_data = shader_data.unwrap();
+            let shader_data: ID3DBlob = shader_data.unwrap();
+            // SAFETY: the blob's own buffer, read while the blob lives.
+            let code = unsafe {
+                core::slice::from_raw_parts(
+                    shader_data.GetBufferPointer().cast::<u8>(),
+                    shader_data.GetBufferSize(),
+                )
+            };
+            super::shader_disk_cache::write(&cache_key, code);
             Ok(super::CompiledShader::Fxc(shader_data))
         }
         Err(e) => {

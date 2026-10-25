@@ -63,6 +63,25 @@ zgx opens a device on the one adapter it draws with (DXGI's first for low
 power, `vendor/wgpu-hal/ZGX_PATCH.md`): wgpu would otherwise open one on
 every adapter to choose, and each driver keeps memory after it is released.
 
+### Startup
+
+A window's first frame used to compile its pipelines' shaders with FXC every
+launch, about 45 ms. They are kept in `%LOCALAPPDATA%\zgx\shaders` (about
+52 KB) from the first launch on, and read back after
+(`vendor/wgpu-hal/ZGX_PATCH.md`). Measured with
+`scripts/windows_startup_probe.py`, the lab scene's first text, medians of 12
+alternating launches on an RTX 4090:
+
+| | First text | CPU by then |
+| --- | --- | --- |
+| zgx, shaders compiled | 330 ms | 273 ms |
+| zgx, shaders kept | 278 ms | 219 ms |
+| GPUI Fast | 307 ms | 273 ms |
+
+Most of the rest is the GPU driver opening its device (about 160 ms for a
+Direct3D 11 device and 180 ms for Direct3D 12, alone in a process), a floor
+any app on this GPU pays.
+
 ### What a frame costs below zgx
 
 Most of an animating zgx frame's CPU is spent below zgx. Profiled on an RTX

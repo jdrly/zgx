@@ -83,6 +83,9 @@ mod instance;
 mod pipeline_desc;
 mod sampler;
 mod shader_compilation;
+mod shader_disk_cache;
+// zgx patch: FXC's compiled shaders kept between launches.
+pub use shader_disk_cache::set_shader_cache_dir;
 mod suballocation;
 mod types;
 mod view;

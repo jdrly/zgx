@@ -1,11 +1,13 @@
-# zgx patch to wgpu-hal 29.0.4 (Metal backend, one Direct3D 12 addition)
+# zgx patch to wgpu-hal 29.0.4 (Metal backend, two Direct3D 12 additions)
 
 Vendored from crates.io `wgpu-hal` 29.0.4 (MIT OR Apache-2.0, license files
 unchanged) and applied through `[patch.crates-io]` in the workspace
 `Cargo.toml`. Only `src/metal/{command,mod,device,adapter}.rs` differ, plus
 the new `src/metal/buffer_writes.rs`, and for Direct3D 12
-`src/dx12/instance.rs` and `src/auxil/dxgi/factory.rs` (see the last
-section); search for "zgx patch".
+`src/dx12/instance.rs`, `src/auxil/dxgi/factory.rs`,
+`src/dx12/shader_compilation.rs`, `src/dx12/mod.rs` and the new
+`src/dx12/shader_disk_cache.rs` (see the last two sections); search for
+"zgx patch".
 
 ## Why
 
@@ -82,3 +84,25 @@ enumeration. zgx-gpu (`preferred_dx12_adapter`) passes the result to
 `request_adapter` when it finds none or it cannot present to the window.
 Tested, for low power and high performance, by
 `crates/zgx-gpu/tests/adapter.rs`.
+
+## Direct3D 12: compiled shaders kept between launches
+
+FXC compiles the HLSL naga writes for each pipeline stage when a pipeline
+is first made, and wgpu-hal keeps the result for the device alone. A zgx
+window makes its pipelines at its first frame: six compiles, about 45 ms of
+a 330 ms start to first text on an RTX 4090 machine, every launch.
+
+`dx12::set_shader_cache_dir(dir)` keeps FXC's output in `dir`
+(`shader_disk_cache.rs`). A file is named by a hash of everything FXC was
+given (its flags, target, entry point and source) and holds that key in
+full, which must match byte for byte before its bytecode (a DXBC container)
+is used: a hash collision, other flags or another version's HLSL compile
+again. Files are written whole and renamed into place, so another process
+never reads half of one. DXC's output is not kept: its DLL is the app's
+own, of any version. zgx-gpu sets `%LOCALAPPDATA%\zgx\shaders`
+(`keep_compiled_shaders`); a window's shaders take about 52 KB there. With
+them kept, its first text came at 278 ms instead of 330 ms (medians of 12
+alternating launches), sooner than GPUI Fast's 307 ms, whose shaders are
+compiled when it is built. Tested by `crates/zgx-gpu/tests/shader_cache.rs`:
+a second device reads the shaders the first compiled (spoilt on disk, its
+pipeline fails; restored, it works) and compiles none again.
