@@ -38,6 +38,9 @@ pub enum Value {
     /// An element a script keeps (`ui.use_state(el)`): opaque to Rust, equal
     /// only to itself, and `null` as JSON.
     Element(ElementHandle),
+    /// An image a script keeps (a `Bitmap`: `ui.bitmap`'s, or the
+    /// clipboard's): equal only to itself, and `null` as JSON.
+    Image(std::sync::Arc<zgx::image::ImageData>),
 }
 
 /// A value's room in a list or map, for `Value::weight`.
@@ -89,6 +92,7 @@ impl PartialEq for Value {
                 l.is_empty() && m.is_empty()
             }
             (Value::Element(a), Value::Element(b)) => a == b,
+            (Value::Image(a), Value::Image(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -116,7 +120,7 @@ impl Value {
     pub fn to_json(&self) -> String {
         fn convert(value: &Value) -> serde_json::Value {
             match value {
-                Value::Nil | Value::Element(_) => serde_json::Value::Null,
+                Value::Nil | Value::Element(_) | Value::Image(_) => serde_json::Value::Null,
                 Value::Bool(b) => serde_json::Value::Bool(*b),
                 // Whole numbers as integers: `2`, not `2.0`.
                 Value::Num(n) if n.fract() == 0. && n.abs() < 9e15 => {
@@ -153,6 +157,8 @@ impl Value {
                     .sum::<usize>()
             }
             Value::Element(_) => 64,
+            // Its pixels: a pasted 4K screenshot is 33 MB.
+            Value::Image(image) => 64 + image.pixels().len(),
             Value::Nil | Value::Bool(_) | Value::Num(_) => 0,
         }
     }
@@ -485,13 +491,14 @@ impl Value {
             Value::List(_) => "a list",
             Value::Map(_) => "a table",
             Value::Element(_) => "an element",
+            Value::Image(_) => "an image",
         }
     }
 }
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Nil | Value::Element(_) => Ok(()),
+            Value::Nil | Value::Element(_) | Value::Image(_) => Ok(()),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Num(n) if n.fract() == 0. && n.abs() < 1e15 => write!(f, "{}", *n as i64),
             Value::Num(n) => write!(f, "{n}"),
@@ -616,6 +623,9 @@ fn convert_in(value: mlua::Value, old: Option<&Value>, depth: u32) -> mlua::Resu
         mlua::Value::UserData(ud) if ud.is::<crate::element::ElementUd>() => Value::Element(
             ElementHandle(ud.borrow::<crate::element::ElementUd>()?.0.clone()),
         ),
+        mlua::Value::UserData(ud) if ud.is::<crate::node::BitmapUd>() => {
+            Value::Image(ud.borrow::<crate::node::BitmapUd>()?.0.clone())
+        }
         mlua::Value::UserData(ud) if ud.is::<crate::element::RefUd>() => {
             return Err(mlua::Error::runtime(
                 "state holds elements, not refs: keep the ref itself, or store ref:get()",
@@ -988,6 +998,9 @@ pub(crate) fn to_lua(value: &Value, lua: &Lua, frozen: bool) -> mlua::Result<mlu
         Value::Element(e) => lua
             .create_userdata(crate::element::ElementUd(e.0.clone()))
             .map(mlua::Value::UserData),
+        Value::Image(image) => lua
+            .create_userdata(crate::node::BitmapUd(image.clone()))
+            .map(mlua::Value::UserData),
     }
 }
 /// Push `text` as a string, its chunks copied straight in.
@@ -1343,9 +1356,11 @@ fn shared_part(value: &Value, lua: &Lua) -> mlua::Result<mlua::Value> {
     file(lua, value, &table)?;
     Ok(mlua::Value::Table(table))
 }
+/// Whether `value` holds an element or an image: userdata, which only
+/// mlua makes (`raw_shared` pushes neither).
 fn has_element(value: &Value) -> bool {
     match value {
-        Value::Element(_) => true,
+        Value::Element(_) | Value::Image(_) => true,
         Value::List(items) => items.iter().any(has_element),
         Value::Map(fields) => fields.iter().any(|(_, v)| has_element(v)),
         _ => false,
@@ -1385,7 +1400,7 @@ fn raw_shared(lua: &Lua, value: &Value) -> mlua::Result<Table> {
         // SAFETY: as this function's.
         unsafe {
             match value {
-                Value::Nil | Value::Element(_) => ffi::lua_pushnil(state),
+                Value::Nil | Value::Element(_) | Value::Image(_) => ffi::lua_pushnil(state),
                 Value::Bool(b) => ffi::lua_pushboolean(state, c_int::from(*b)),
                 Value::Num(n) => ffi::lua_pushnumber(state, *n),
                 Value::Str(s) => {

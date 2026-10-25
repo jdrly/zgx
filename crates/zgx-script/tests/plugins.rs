@@ -514,6 +514,38 @@ result:set(`{made} {memory(made_error)} {pushed} {memory(push_error)} {rewrites}
 }
 
 #[test]
+fn a_bitmap_kept_in_state_counts_its_pixels() {
+    // Its pixels live in Rust too: a pasted 4K screenshot is 33 MB.
+    let entry = plugin(
+        "painter",
+        r#"
+local result = ui.state("result", "")
+ui.contribute("bar", ui.text { id = "got", "{result}" })
+local small = pcall(function() ui.state("small", ui.bitmap(8, 8, function() return 1 end)) end)
+local big = ui.bitmap(1024, 1024, function() return 1 end)
+local kept, e = pcall(function() ui.state("big", big) end)
+local short = e ~= nil and string.find(tostring(e), "memory", 1, true) ~= nil
+result:set(`{small} {kept} {short}`)
+"#,
+    );
+    let mut h = Harness::new(|runtime| {
+        let host = ScriptHost::inline(runtime, "app", APP).limits(zgx_script::Limits {
+            plugin_memory: 4 << 20,
+            ..Default::default()
+        });
+        host.set_plugins(vec![Plugin {
+            name: "painter".into(),
+            entry,
+            grants: vec![],
+        }]);
+        host
+    });
+    assert_eq!(h.error(), None);
+    // 4 MB of pixels is more than the 4 MB limit leaves.
+    assert_eq!(h.text("got"), "true false true");
+}
+
+#[test]
 fn a_plugin_is_not_handed_what_the_system_opens() {
     let entry = plugin(
         "opener",

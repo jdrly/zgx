@@ -695,6 +695,7 @@ fn quick(item: &Value) -> Quick {
         Value::List(l) => Quick::At(Rc::as_ptr(l).cast::<()>() as usize),
         Value::Map(m) => Quick::At(Rc::as_ptr(m).cast::<()>() as usize),
         Value::Element(e) => Quick::At(Rc::as_ptr(&e.0).cast::<()>() as usize),
+        Value::Image(image) => Quick::At(std::sync::Arc::as_ptr(image).cast::<()>() as usize),
     }
 }
 /// Hashes items' contents to match rows (equal contents are compared

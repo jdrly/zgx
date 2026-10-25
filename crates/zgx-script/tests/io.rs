@@ -14,7 +14,7 @@ use zgx_script::ScriptHost;
 
 struct Fake {
     clipboard: RefCell<String>,
-    image: RefCell<Option<zgx::image::ImageData>>,
+    image: RefCell<Option<std::sync::Arc<zgx::image::ImageData>>>,
     /// What the open dialog picks, and where the save dialog saves.
     opens: PathBuf,
     saves: PathBuf,
@@ -27,15 +27,15 @@ impl Platform for Fake {
         *self.clipboard.borrow_mut() = text;
         true
     }
-    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
-        let image = self.image.borrow();
-        let image = image.as_ref()?;
-        zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok()
+    fn clipboard_image(&self) -> Pending<Option<zgx::image::ImageData>> {
+        // A copy sharing the pixels.
+        let image = (self.image.borrow().as_ref())
+            .map(|image| image.transformed(zgx::affine::Affine::IDENTITY));
+        Box::pin(async move { image })
     }
-    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
-        *self.image.borrow_mut() =
-            zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok();
-        true
+    fn set_clipboard_image(&self, image: std::sync::Arc<zgx::image::ImageData>) -> Pending<bool> {
+        *self.image.borrow_mut() = Some(image);
+        Box::pin(async { true })
     }
     fn open_files(&self, _: FilePicker) -> Pending<Result<Vec<PathBuf>, String>> {
         let path = self.opens.clone();
@@ -49,6 +49,7 @@ impl Platform for Fake {
 
 const APP: &str = r#"
 local shown = ui.state("shown", "")
+local kept = ui.state("kept", nil)
 return ui.column {
     ui.text { id = "label", function() return shown:get() end },
     ui.button { id = "copy", w = 40, h = 20, "c", on_click = function()
@@ -56,10 +57,14 @@ return ui.column {
         shown:set(ui.clipboard.read() or "")
     end },
     ui.button { id = "image", w = 40, h = 20, "i", on_click = function()
-        local before = ui.clipboard.read_image()
-        ui.clipboard.write_image(ui.bitmap(3, 2, function(x, y) return x / 2 end))
-        local image = ui.clipboard.read_image()
-        shown:set(`{before == nil} {image.w}x{image.h}`)
+        ui.task(function()
+            local before = ui.clipboard.read_image():await()
+            local mask = ui.bitmap(3, 2, function(x, y) return x / 2 end)
+            local written = ui.clipboard.write_image(mask):await()
+            -- Kept in state, as a pasted image to show is.
+            kept:set(ui.clipboard.read_image():await())
+            shown:set(`{before == nil} {written} {kept:get().w}x{kept:get().h}`)
+        end)
     end },
     ui.button { id = "open", w = 40, h = 20, "o", on_click = function()
         ui.task(function()
@@ -133,7 +138,7 @@ fn the_clipboard_takes_and_gives_images() {
     let dir = dir("clipboard-image");
     let mut h = app(&dir, APP, None);
     h.click("image");
-    wait_for(&mut h, "true 3x2");
+    wait_for(&mut h, "true true 3x2");
 }
 
 #[test]

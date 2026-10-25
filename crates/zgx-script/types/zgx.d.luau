@@ -483,6 +483,8 @@ end
 -- `variants = …`.
 declare extern type Variants with
 end
+-- Pixels in Rust, `w` by `h`: `ui.bitmap`'s white with alpha, or a
+-- full-colour image (the clipboard's). A mask reads only its alpha.
 declare extern type Bitmap with
 	w: number
 	h: number
@@ -13537,12 +13539,14 @@ declare ui: {
 	-- a promise of a `Response`. A plugin needs the host's grant.
 	fetch: (url: string, opts: FetchOptions?) -> Promise<Response>,
 	-- The clipboard's text (nil if it holds none), and putting text on it;
-	-- its image as a `Bitmap` (nil if it holds none), and putting one on it.
+	-- its image as a `Bitmap` (nil if it holds none), and putting one on
+	-- it: promises, as a large image is decoded and encoded off the main
+	-- thread.
 	clipboard: {
 		read: () -> string?,
 		write: (text: string) -> boolean,
-		read_image: () -> Bitmap?,
-		write_image: (image: Bitmap) -> boolean,
+		read_image: () -> Promise<Bitmap?>,
+		write_image: (image: Bitmap) -> Promise<boolean>,
 	},
 	-- The files the user picks: a promise of a list of `File` (empty if
 	-- they cancel).

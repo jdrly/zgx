@@ -52,7 +52,7 @@ use zgx::{
 #[derive(Default)]
 pub struct FakeDesktop {
     clipboard: RefCell<String>,
-    image: RefCell<Option<zgx::image::ImageData>>,
+    image: RefCell<Option<std::sync::Arc<zgx::image::ImageData>>>,
     opens: RefCell<std::collections::VecDeque<Vec<std::path::PathBuf>>>,
     saves: RefCell<std::collections::VecDeque<std::path::PathBuf>>,
     asked: RefCell<Vec<zgx::platform::FilePicker>>,
@@ -84,8 +84,8 @@ impl FakeDesktop {
     /// Put an image (`width` by `height` RGBA `pixels`) on the clipboard, as
     /// another app copies one.
     pub fn copy_image(&self, width: u32, height: u32, pixels: Vec<u8>) {
-        *self.image.borrow_mut() =
-            Some(zgx::image::ImageData::new(width, height, pixels).expect("a valid image"));
+        let image = zgx::image::ImageData::new(width, height, pixels).expect("a valid image");
+        *self.image.borrow_mut() = Some(std::sync::Arc::new(image));
     }
 }
 impl zgx::platform::Platform for FakeDesktop {
@@ -96,15 +96,18 @@ impl zgx::platform::Platform for FakeDesktop {
         *self.clipboard.borrow_mut() = text;
         true
     }
-    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
-        let image = self.image.borrow();
-        let image = image.as_ref()?;
-        zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok()
+    fn clipboard_image(&self) -> zgx::platform::Pending<Option<zgx::image::ImageData>> {
+        // A copy sharing the pixels.
+        let image = (self.image.borrow().as_ref())
+            .map(|image| image.transformed(zgx::affine::Affine::IDENTITY));
+        Box::pin(async move { image })
     }
-    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
-        *self.image.borrow_mut() =
-            zgx::image::ImageData::new(image.width(), image.height(), image.pixels().to_vec()).ok();
-        true
+    fn set_clipboard_image(
+        &self,
+        image: std::sync::Arc<zgx::image::ImageData>,
+    ) -> zgx::platform::Pending<bool> {
+        *self.image.borrow_mut() = Some(image);
+        Box::pin(async { true })
     }
     fn open_files(
         &self,

@@ -14,6 +14,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 use zgx::platform::{FilePicker, PlatformService};
 
@@ -165,14 +166,21 @@ pub(crate) fn install(
         let shared = shared.clone();
         board.set(
             "read_image",
-            lua.create_function(move |_, ()| {
+            // A promise: a large image is decoded off the main thread.
+            lua.create_function(move |lua, ()| {
                 if !clipboard {
                     return Err(denied("ui.clipboard.read_image", "Clipboard"));
                 }
-                Ok(platform(&shared, "ui.clipboard.read_image")?
+                let reading = platform(&shared, "ui.clipboard.read_image")?
                     .0
-                    .clipboard_image()
-                    .map(|image| crate::node::BitmapUd(std::sync::Arc::new(image))))
+                    .clipboard_image();
+                let promise = pending(lua, "clipboard.read_image".into())?;
+                settle_with(lua, &promise, async move {
+                    Ok(reading
+                        .await
+                        .map_or(Value::Nil, |image| Value::Image(Arc::new(image))))
+                })?;
+                Ok(PromiseUd(promise))
             })?,
         )?;
     }
@@ -180,14 +188,20 @@ pub(crate) fn install(
         let shared = shared.clone();
         board.set(
             "write_image",
-            lua.create_function(move |_, image: mlua::UserDataRef<crate::node::BitmapUd>| {
-                if !clipboard {
-                    return Err(denied("ui.clipboard.write_image", "Clipboard"));
-                }
-                Ok(platform(&shared, "ui.clipboard.write_image")?
-                    .0
-                    .set_clipboard_image(&image.0))
-            })?,
+            // A promise too: encoding a large image takes frames.
+            lua.create_function(
+                move |lua, image: mlua::UserDataRef<crate::node::BitmapUd>| {
+                    if !clipboard {
+                        return Err(denied("ui.clipboard.write_image", "Clipboard"));
+                    }
+                    let writing = platform(&shared, "ui.clipboard.write_image")?
+                        .0
+                        .set_clipboard_image(image.0.clone());
+                    let promise = pending(lua, "clipboard.write_image".into())?;
+                    settle_with(lua, &promise, async move { Ok(Value::Bool(writing.await)) })?;
+                    Ok(PromiseUd(promise))
+                },
+            )?,
         )?;
     }
     board.set_readonly(true);
