@@ -88,7 +88,10 @@ def settle_keyboard(env, deadline):
     meanwhile reached the app instead of Openbox's Close, and the app stayed
     open (one probe run in thirty, under load). The window manager handles X
     events in order, so once it has answered a request sent after the key,
-    it has rebound: a desktop added and taken away."""
+    it has rebound: a desktop added and taken away. Openbox, already
+    showing its 4 desktops, left the request for 5 unanswered in 4 of 900
+    loaded starts (and the probe failed): one unanswered is sent again each
+    half second, and any it answers was sent after the key."""
     def desktops():
         found = subprocess.run(["xprop", "-root", "_NET_NUMBER_OF_DESKTOPS"], env=env, capture_output=True,
                                text=True).stdout.rsplit("=", 1)[-1].strip()
@@ -98,10 +101,17 @@ def settle_keyboard(env, deadline):
     if count is None:
         return
     for want in (count + 1, count):
-        subprocess.run(["xdotool", "set_num_desktops", str(want)], env=env, check=True)
-        while desktops() != want:
+        asked = 0.
+        while (shown := desktops()) != want:
             if time.monotonic() > deadline:
-                raise RuntimeError("the window manager did not answer after the first key")
+                raise RuntimeError(f"the window manager did not answer after the first key: asked for {want} "
+                                   f"desktops (from {count}), it shows {shown}")
+            if time.monotonic() - asked > .5:
+                if asked:
+                    print(f"settle_keyboard: asked again for {want} desktops (from {count}), it shows {shown}",
+                          file=sys.stderr, flush=True)
+                subprocess.run(["xdotool", "set_num_desktops", str(want)], env=env, check=True)
+                asked = time.monotonic()
             time.sleep(.02)
 
 
