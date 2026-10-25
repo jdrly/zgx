@@ -1253,6 +1253,9 @@ impl Host {
             options.width as f32,
             options.height as f32,
         );
+        // No reader has asked for the window's tree yet: names and values
+        // made from state wait for one (`InitialTreeRequested`).
+        ui.set_assistive_technology(false);
         let viewport = ui.signal((options.width as f32, options.height as f32));
         let frames = FrameClock::new();
         frames.set_max_rate(options.max_frame_rate);
@@ -3509,11 +3512,17 @@ impl Host {
                 self.accessibility_action(request)
             }
             accesskit_winit::WindowEvent::InitialTreeRequested => {
+                // Names and values made from state, worked out from the
+                // state as it is (their effects run as this is set), before
+                // the tree is first given.
+                self.context.ui.set_assistive_technology(true);
                 self.tree.reset();
                 self.last_accessibility = None;
                 self.sync_accessibility();
             }
-            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                self.context.ui.set_assistive_technology(false);
+            }
         }
     }
     fn update(&mut self) -> Result<bool, Box<dyn Error>> {

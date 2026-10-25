@@ -910,6 +910,8 @@ struct UiStorage {
     elastic: RefCell<crate::elastic::State>,
     /// Scrollbars hide until their view scrolls (`Ui::set_overlay_scrollbars`).
     overlay_scrollbars: Signal<bool>,
+    /// Assistive technology reads the semantics (`Ui::set_assistive_technology`).
+    assistive: Signal<bool>,
     /// Overlay scrollbars shown, to fade once their view stops scrolling.
     scrollbar_fades: RefCell<Vec<std::rc::Weak<crate::compose_scrollbar::Fade>>>,
     /// Input is being dispatched: what scrolls now, the user scrolled.
@@ -1064,6 +1066,7 @@ impl Ui {
             text_geometry_revision: runtime.signal(0),
             presented: runtime.signal(true),
             overlay_scrollbars: runtime.signal(false),
+            assistive: runtime.signal(true),
             popup_screens: runtime.signal(Vec::new()),
             popup_limits: runtime.signal(Vec::new()),
             popup_flips: runtime.signal(Vec::new()),
@@ -1906,6 +1909,27 @@ impl Ui {
     }
     pub(crate) fn overlay_scrollbars(&self) -> Signal<bool> {
         self.storage.overlay_scrollbars.clone()
+    }
+    /// Whether assistive technology (a screen reader, a switch control)
+    /// reads this document's semantics. While none does, the names and
+    /// values views give it as functions of state (`label`, `value`) are not
+    /// worked out as that state changes: they are only ever read by it.
+    /// Turned on, they are worked out at once, from the state as it is, as
+    /// the effects run (before the tree is read). On by default (tests and
+    /// headless documents read the semantics); a desktop host turns it off
+    /// until a reader asks for its tree, and off again when it leaves.
+    pub fn set_assistive_technology(&self, listening: bool) {
+        self.storage.assistive.set(listening);
+    }
+    /// Whether assistive technology reads the semantics (see
+    /// `set_assistive_technology`).
+    pub fn assistive_technology(&self) -> bool {
+        self.storage
+            .assistive
+            .with_untracked(|listening| *listening)
+    }
+    pub(crate) fn assistive(&self) -> Signal<bool> {
+        self.storage.assistive.clone()
     }
     /// Whether input is being dispatched, so a scroll now is the user's.
     pub(crate) fn is_dispatching(&self) -> bool {

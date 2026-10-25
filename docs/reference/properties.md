@@ -160,7 +160,7 @@ The types: `Color` is `"#rgb"`, `"#rrggbb"`, `"#rrggbbaa"`, `"rgb(…)"`, `"rgba
 
 ## Accessibility
 
-What assistive technology (VoiceOver, Narrator, Orca) reads for a node beyond what it is: controls say their role, name and state themselves, and these say what a plain box means. They cost nothing on nodes that don't set them.
+What assistive technology (VoiceOver, Narrator, Orca) reads for a node beyond what it is: controls say their role, name and state themselves, and these say what a plain box means. They cost nothing on nodes that don't set them. A `label` given as a state or function costs nothing either while no screen reader is on: it is worked out only while assistive technology reads the window (from the state as it is, when one starts), not each time what it reads changes.
 
 | Property | Type | Default | |
 | --- | --- | --- | --- |

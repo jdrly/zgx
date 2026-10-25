@@ -95,6 +95,9 @@ impl Bench {
                 .args(args.iter().cloned())
         });
         app.ui.scene.borrow_mut().resize(size.0, size.1);
+        // As a desktop window with no screen reader on: names and values
+        // made from state wait for one.
+        app.ui.set_assistive_technology(false);
         setup(&mut app);
         let drawing = make(&mut app.ui.scene.borrow_mut(), size);
         let reps = self::size("REPS", 20);

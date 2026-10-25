@@ -916,7 +916,9 @@ impl View {
         self
     }
     /// `accessible_label` followed: a recycled row's name, made from what it
-    /// shows now ("Unread, Grace Hopper, Lunch?, Oct 28").
+    /// shows now ("Unread, Grace Hopper, Lunch?, Oct 28"). Only while
+    /// assistive technology listens (`Ui::set_assistive_technology`): with
+    /// none, `label` is not called as what it reads changes.
     pub fn accessible_label_when(mut self, label: impl FnMut() -> String + 'static) -> Self {
         self.accessibility_mut().label = Some(Box::new(label));
         self
@@ -954,7 +956,8 @@ impl View {
         self
     }
     /// What this control's value reads as to assistive technology, followed:
-    /// a select's chosen option, a combobox's text.
+    /// a select's chosen option, a combobox's text. Worked out only while
+    /// assistive technology listens, as `accessible_label_when`.
     pub fn value_when(mut self, value: impl FnMut() -> String + 'static) -> Self {
         self.accessibility_mut().value = Some(Box::new(value));
         self
@@ -4949,14 +4952,20 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility) 
             node.hidden |= hidden;
         });
     }
+    // A name or value worked out from state is read by assistive technology
+    // alone: worked out while one listens, its effect following nothing but
+    // that while none does (`Ui::set_assistive_technology`).
+    let assistive = ui.assistive();
     if let Some(mut label) = label {
         let tree = ui.semantics.clone();
+        tree.borrow_mut().update(root, |node| node.named = true);
+        let assistive = assistive.clone();
         ui.bind(root, move || {
+            if !assistive.get() {
+                return;
+            }
             let label = label();
-            tree.borrow_mut().update(root, |node| {
-                node.label = label;
-                node.named = true;
-            });
+            tree.borrow_mut().update(root, |node| node.label = label);
         });
     }
     if let Some(mut checked) = checked {
@@ -4980,6 +4989,9 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility) 
     if let Some(mut value) = value {
         let tree = ui.semantics.clone();
         ui.bind(root, move || {
+            if !assistive.get() {
+                return;
+            }
             let value = value();
             tree.borrow_mut()
                 .update(root, |node| node.value = Some(value));
