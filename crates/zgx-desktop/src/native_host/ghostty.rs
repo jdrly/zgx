@@ -2089,6 +2089,25 @@ impl MacTerminal {
     }
 }
 impl TerminalBackend for MacTerminal {
+    fn snapshot(&self, max_width: u32) -> Option<std::sync::Arc<zgx::image::ImageData>> {
+        // Ghostty's renderer makes the view's layer an IOSurface layer, its
+        // contents the IOSurface it last drew (BGRA, premultiplied).
+        let layer = self.view.layer()?;
+        // SAFETY: `contents` is a CALayer property, an object or nil.
+        let contents: *mut AnyObject = unsafe { msg_send![&*layer, contents] };
+        if contents.is_null() {
+            return None;
+        }
+        // SAFETY: `contents` is a live CF object (the layer holds it); its
+        // type is compared with IOSurface's before it is used as one.
+        let surface = unsafe {
+            if iosurface::CFGetTypeID(contents.cast()) != iosurface::IOSurfaceGetTypeID() {
+                return None;
+            }
+            contents.cast::<c_void>()
+        };
+        iosurface::thumbnail(surface, max_width)
+    }
     fn run(&self, command: TerminalCommand) {
         let surface = self.view.ivars().surface.get();
         match command {
@@ -2191,5 +2210,56 @@ mod tests {
         );
         assert_eq!(shell_escape("/tmp/a'b&c$d"), r"/tmp/a\'b\&c\$d");
         assert_eq!(shell_escape("/plain/path.jpg"), "/plain/path.jpg");
+    }
+}
+
+/// Reading a terminal's last frame (an IOSurface of Ghostty's) into a
+/// thumbnail.
+mod iosurface {
+    use std::ffi::c_void;
+
+    const READ_ONLY: u32 = 1; // kIOSurfaceLockReadOnly
+    #[link(name = "IOSurface", kind = "framework")]
+    unsafe extern "C" {
+        pub fn IOSurfaceGetTypeID() -> usize;
+        fn IOSurfaceLock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+        fn IOSurfaceUnlock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+        fn IOSurfaceGetWidth(surface: *const c_void) -> usize;
+        fn IOSurfaceGetHeight(surface: *const c_void) -> usize;
+        fn IOSurfaceGetBytesPerRow(surface: *const c_void) -> usize;
+        fn IOSurfaceGetBaseAddress(surface: *const c_void) -> *const u8;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        pub fn CFGetTypeID(object: *const c_void) -> usize;
+    }
+
+    /// `surface` (live, BGRA with premultiplied alpha) scaled down by a whole
+    /// factor to at most `max_width` pixels wide, each pixel the average of
+    /// those it covers, as straight-alpha RGBA.
+    pub fn thumbnail(
+        surface: *const c_void,
+        max_width: u32,
+    ) -> Option<std::sync::Arc<zgx::image::ImageData>> {
+        // SAFETY: `surface` is a live IOSurface (the caller checked its type,
+        // and its layer holds it). Locked read-only, its base address is
+        // readable for `height` rows of `stride` bytes until it is unlocked
+        // below; nothing of it is kept past that.
+        unsafe {
+            if IOSurfaceLock(surface, READ_ONLY, std::ptr::null_mut()) != 0 {
+                return None;
+            }
+            let (width, height) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+            let stride = IOSurfaceGetBytesPerRow(surface);
+            let base = IOSurfaceGetBaseAddress(surface);
+            let image = if width == 0 || height == 0 || base.is_null() || stride < width * 4 {
+                None
+            } else {
+                let bytes = std::slice::from_raw_parts(base, stride * height);
+                crate::thumbnail::image(bytes, width, height, stride, max_width as usize)
+            };
+            IOSurfaceUnlock(surface, READ_ONLY, std::ptr::null_mut());
+            image
+        }
     }
 }

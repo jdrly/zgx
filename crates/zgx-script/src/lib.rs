@@ -2210,6 +2210,7 @@ impl ScriptHost {
                 _ => name.as_str().into(),
             },
             meter: plugin.then(|| meter::Meter::new(&lua, memory, watch)),
+            assets: self.0.assets.clone(),
         });
         node::install(&lua).map_err(fail)?;
         let ui: mlua::Table = lua.globals().get("ui").map_err(fail)?;

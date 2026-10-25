@@ -573,6 +573,11 @@ pub(crate) struct Events {
     /// `on_drag_end(payload, accepted)` on the source when it ends.
     pub drag: Option<Function>,
     pub drag_preview: Option<Function>,
+    /// `drag_preview_anchor = { 0.5, 0 }`, `drag_preview_offset = { 0, 16 }`:
+    /// that point of the preview (fractions of its size) that far from the
+    /// pointer, rather than the preview at the grab point.
+    pub drag_preview_anchor: Option<(f32, f32)>,
+    pub drag_preview_offset: Option<(f32, f32)>,
     pub drag_end: Option<Function>,
     /// `drag_export(payload) -> { text, url, files }`: what the drag carries
     /// to other apps as it leaves the window (macOS).
@@ -591,6 +596,10 @@ pub(crate) struct Events {
     pub drop_when: Option<Function>,
     pub drag_over: Option<Function>,
     pub drag_leave: Option<Function>,
+    /// `on_drag_spring(payload)`: an accepted drag has rested on it for the
+    /// platform's spring-loading delay, or Space was pressed (returning
+    /// `false` declines: it does not spring open).
+    pub drag_spring: Option<Function>,
     /// `fn({ x, y, local_x, local_y }) -> { menu_item, … }`: a secondary
     /// click (control-click on macOS) shows what it returns as a menu at
     /// the pointer; nothing returned, no menu.
@@ -628,6 +637,8 @@ impl Events {
         visible: None,
         drag: None,
         drag_preview: None,
+        drag_preview_anchor: None,
+        drag_preview_offset: None,
         drag_end: None,
         drag_export: None,
         drag_outside: None,
@@ -636,6 +647,7 @@ impl Events {
         drop_when: None,
         drag_over: None,
         drag_leave: None,
+        drag_spring: None,
         context_menu: None,
         context_menu_style: None,
         context_menu_below: false,
@@ -657,6 +669,7 @@ impl Events {
             || self.drop.is_some()
             || self.drag_over.is_some()
             || self.drag_leave.is_some()
+            || self.drag_spring.is_some()
     }
 }
 
@@ -1280,6 +1293,8 @@ pub(crate) struct Env {
     pub persist_as: Rc<str>,
     /// A plugin's: what its states hold, counted against its memory limit.
     pub meter: Option<Rc<crate::meter::Meter>>,
+    /// The images the host sets (`host:` sources): pictures scripts take.
+    pub assets: Rc<crate::lower::Assets>,
 }
 /// What a script adds to a slot: the slot, who added it (`ui.slot`'s
 /// `from`) and the node.
@@ -1287,6 +1302,12 @@ pub(crate) type Contribution = (String, Rc<str>, Rc<Node>);
 /// Each slot's contributions, by slot, with who added each.
 pub(crate) type Slots = std::collections::HashMap<String, Vec<(Rc<str>, Rc<Node>)>>;
 impl Env {
+    /// `image` as `host:<name>`, replacing what was there: the `src` that
+    /// shows it.
+    pub(crate) fn host_image(&self, name: &str, image: Arc<zgx::image::ImageData>) -> String {
+        self.assets.set_hosted(name, Some(image), &self.runtime);
+        format!("host:{name}")
+    }
     /// Whether the script may reach `key` of what the app `exposed`
     /// (`what` says which, for the error): the app's scripts always.
     pub(crate) fn permits(
@@ -2086,12 +2107,36 @@ fn set_handler(
     if !(key.starts_with("on_")
         || matches!(
             key,
-            "context_menu" | "drag_preview" | "drop_when" | "drag_export" | "drag_moves_window"
+            "context_menu"
+                | "drag_preview"
+                | "drag_preview_anchor"
+                | "drag_preview_offset"
+                | "drop_when"
+                | "drag_export"
+                | "drag_moves_window"
         ))
     {
         return Ok(Some(value));
     }
     let events = events.get_or_insert_default();
+    if let "drag_preview_anchor" | "drag_preview_offset" = key {
+        let mlua::Value::Table(t) = value else {
+            return Err(mlua::Error::runtime(format!("{key} takes {{ x, y }}")));
+        };
+        let at = |i: i64, name: &str| -> mlua::Result<f32> {
+            match t.get::<Option<f32>>(i)? {
+                Some(v) => Ok(v),
+                None => Ok(t.get::<Option<f32>>(name)?.unwrap_or(0.)),
+            }
+        };
+        let point = Some((at(1, "x")?, at(2, "y")?));
+        if key == "drag_preview_anchor" {
+            events.drag_preview_anchor = point;
+        } else {
+            events.drag_preview_offset = point;
+        }
+        return Ok(None);
+    }
     let slot = match key {
         "on_click" => &mut events.click,
         "on_press" => &mut events.press,
@@ -2133,7 +2178,8 @@ fn set_handler(
             return Ok(None);
         }
         "on_drag" | "drag_preview" | "on_drag_end" | "drag_export" | "on_drag_outside"
-        | "drag_moves_window" | "on_drop" | "drop_when" | "on_drag_over" | "on_drag_leave" => {
+        | "drag_moves_window" | "on_drop" | "drop_when" | "on_drag_over" | "on_drag_leave"
+        | "on_drag_spring" => {
             let mlua::Value::Function(f) = value else {
                 return Err(mlua::Error::runtime(format!("{key} takes a function")));
             };
@@ -2147,7 +2193,8 @@ fn set_handler(
                 "on_drop" => &mut events.drop,
                 "drop_when" => &mut events.drop_when,
                 "on_drag_over" => &mut events.drag_over,
-                _ => &mut events.drag_leave,
+                "on_drag_leave" => &mut events.drag_leave,
+                _ => &mut events.drag_spring,
             } = Some(f);
             return Ok(None);
         }

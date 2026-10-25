@@ -5522,6 +5522,11 @@ impl NodeHandle {
     pub fn select_all(&self) -> bool {
         self.editor().map(|editor| editor.select_all()).is_some()
     }
+    /// A picture of the node as the window last showed it, at most
+    /// `max_width` pixels wide (see `Ui::snapshot`).
+    pub fn snapshot(&self, max_width: u32) -> Option<std::sync::Arc<crate::image::ImageData>> {
+        self.ui.upgrade()?.snapshot(self.node, max_width)
+    }
     /// Keep `resource` until the node is removed, then drop it.
     pub fn retain(&self, resource: impl Any) {
         if let Some(mut ui) = self.ui.upgrade()

@@ -27,6 +27,23 @@ pub enum DragPhase {
     Drop,
     /// It ended, dropped or not; sent to the source.
     End,
+    /// The pointer has rested on the destination for the spring-loading
+    /// delay (`set_spring_delay`), or Space was pressed there: sent to the
+    /// destination, which springs open (a tab shows, a folder opens) and
+    /// says so with `prevent_default`. Once per destination: moving within
+    /// it does not start the delay again; leaving it does.
+    Spring,
+}
+/// How long a drag rests on a destination before it springs open, where the
+/// host does not say (`InputDispatcher::set_spring_delay`): macOS's default,
+/// and Chrome's for its tabs.
+pub const SPRING_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// The destination a drag rests on, from when, and whether it sprang.
+#[derive(Clone, Copy)]
+pub(super) struct SpringArm {
+    node: NodeId,
+    since: Instant,
+    fired: bool,
 }
 /// A drag between nodes, at one of its phases.
 #[derive(Clone, Debug, PartialEq)]
@@ -339,12 +356,19 @@ impl InputDispatcher {
     pub fn cancel_drag(&self, scene: &Rc<RefCell<Scene>>) {
         self.finish_drag(scene, false);
     }
-    /// Cancel the drag if its source can no longer take input (hidden,
-    /// disabled or outside the modal scope), and let go of a destination
-    /// that can't, which hears `Leave`.
+    /// Cancel the drag if its source shows but can no longer take input
+    /// (disabled, or outside the modal scope), and let go of a destination
+    /// that can't, which hears `Leave`. A source hidden or removed keeps
+    /// its drag, as a browser's and AppKit's do: what it carries may be
+    /// dropped where the drag itself led (a pane held over a tab, whose
+    /// tab then shows, its own hidden), and its listeners still hear the
+    /// drag move and end.
     pub fn validate_drag(&self, scene: &Rc<RefCell<Scene>>) {
         let source = self.state.borrow().drag.as_ref().map(|drag| drag.source);
-        if source.is_some_and(|source| !self.enabled(&scene.borrow(), source)) {
+        if source.is_some_and(|source| {
+            let scene = scene.borrow();
+            scene.layout_visible(source) && !self.enabled(&scene, source)
+        }) {
             self.cancel_drag(scene);
             return;
         }
@@ -356,6 +380,7 @@ impl InputDispatcher {
             if let Some(active) = &mut self.state.borrow_mut().drag {
                 active.destination = None;
             }
+            self.arm_spring(None);
             if scene.borrow().contains(destination) {
                 self.route(scene, destination, drag.event(DragPhase::Leave, false));
             }
@@ -396,6 +421,7 @@ impl InputDispatcher {
             let mut state = self.state.borrow_mut();
             state.drag = Some(drag.clone());
             state.drag_orphans.clear();
+            state.spring = None;
             let pressed = state.pressed.take();
             state.key_pressed = None;
             state.clicks.0 = None;
@@ -450,7 +476,7 @@ impl InputDispatcher {
             active.x = x;
             active.y = y;
         }
-        self.route(scene, drag.source, drag.event(DragPhase::Move, false));
+        self.to_source(scene, drag.source, drag.event(DragPhase::Move, false));
         // Over another window, its destinations hear it (`drag_over`).
         if drag.away {
             return;
@@ -479,6 +505,73 @@ impl InputDispatcher {
         if let Some(active) = &mut self.state.borrow_mut().drag {
             active.destination = destination;
         }
+        self.arm_spring(destination);
+    }
+    /// The spring-loading delay starts as a drag comes to rest on a new
+    /// destination (or stops, on none); within the same one it runs on.
+    fn arm_spring(&self, destination: Option<NodeId>) {
+        let mut state = self.state.borrow_mut();
+        if state.spring.map(|arm| arm.node) != destination {
+            state.spring = destination.map(|node| SpringArm {
+                node,
+                since: Instant::now(),
+                fired: false,
+            });
+        }
+    }
+    /// How long a drag rests on a destination before it springs open
+    /// (`DragPhase::Spring`): the platform's setting, which the host reads
+    /// (macOS's spring-loading delay), or `None` where it is turned off.
+    /// [`SPRING_DELAY`] until set.
+    pub fn set_spring_delay(&self, delay: Option<std::time::Duration>) {
+        let mut state = self.state.borrow_mut();
+        state.spring_delay = delay;
+        state.spring_off = delay.is_none();
+    }
+    fn spring_delay(&self) -> Option<std::time::Duration> {
+        let state = self.state.borrow();
+        (!state.spring_off).then(|| state.spring_delay.unwrap_or(SPRING_DELAY))
+    }
+    /// When the destination a drag rests on springs open, if one is waiting.
+    pub fn next_spring_deadline(&self) -> Option<Instant> {
+        let delay = self.spring_delay()?;
+        let state = self.state.borrow();
+        let destination = state.drag.as_ref()?.destination;
+        // Only for the destination it rests on now: nothing stale stays due.
+        state
+            .spring
+            .filter(|arm| !arm.fired && Some(arm.node) == destination)
+            .map(|arm| arm.since + delay)
+    }
+    /// Spring open the destination the drag has rested on long enough by
+    /// `now`; whether one heard it.
+    pub fn advance_spring(&self, scene: &Rc<RefCell<Scene>>, now: Instant) -> bool {
+        match self.next_spring_deadline() {
+            Some(at) if at <= now => self.spring_now(scene).is_some(),
+            _ => false,
+        }
+    }
+    /// Spring open the destination under the drag now: `None` if there is
+    /// none waiting, else whether it took it (`prevent_default`).
+    fn spring_now(&self, scene: &Rc<RefCell<Scene>>) -> Option<bool> {
+        self.spring_delay()?;
+        let drag = self.state.borrow().drag.clone()?;
+        let node = {
+            let mut state = self.state.borrow_mut();
+            let arm = state.spring.as_mut()?;
+            if arm.fired || Some(arm.node) != drag.destination {
+                return None;
+            }
+            arm.fired = true;
+            arm.node
+        };
+        if !self.enabled(&scene.borrow(), node) {
+            return None;
+        }
+        Some(
+            self.route(scene, node, drag.event(DragPhase::Spring, false))
+                .prevented,
+        )
     }
     fn finish_drag(&self, scene: &Rc<RefCell<Scene>>, drop: bool) {
         self.finish(scene, drop, false, false);
@@ -489,6 +582,7 @@ impl InputDispatcher {
         let Some(drag) = self.state.borrow_mut().drag.take() else {
             return;
         };
+        self.state.borrow_mut().spring = None;
         self.state.borrow_mut().drag_ending = Some(drag.source);
         {
             let mut state = self.state.borrow_mut();
@@ -508,28 +602,16 @@ impl InputDispatcher {
         if let Some(id) = drag.destination.filter(|id| scene.borrow().contains(*id)) {
             self.route(scene, id, drag.event(DragPhase::Leave, accepted));
         }
-        let orphans = {
-            let mut state = self.state.borrow_mut();
-            state.drag_ending = None;
-            std::mem::take(&mut state.drag_orphans)
-        };
         let mut end = drag.event(DragPhase::End, accepted);
         if let InputEvent::Drag(event) = &mut end {
             event.outside = outside;
         }
-        let torn = if scene.borrow().contains(drag.source) {
-            self.route(scene, drag.source, end).prevented
-        } else {
-            // The source went during the drag: its own listeners still learn
-            // that it ended (and whether it was taken), at the target phase.
-            let mut cx = EventContext::new(end, drag.source);
-            for callback in orphans {
-                if let Ok(mut callback) = callback.try_borrow_mut() {
-                    callback(&mut cx);
-                }
-            }
-            cx.default_prevented()
-        };
+        let torn = self.to_source(scene, drag.source, end).prevented;
+        {
+            let mut state = self.state.borrow_mut();
+            state.drag_ending = None;
+            state.drag_orphans.clear();
+        }
         self.state.borrow_mut().drag_ended = Some(DragEnded {
             source: drag.source,
             preview: drag.preview,
@@ -540,6 +622,27 @@ impl InputDispatcher {
             let hovered = self.hit_target(&scene.borrow(), drag.x, drag.y);
             self.set_hover(scene, hovered);
         }
+    }
+    /// `event` to the drag's source; or, the source gone during the drag,
+    /// to its own listeners, which still learn how it goes (and whether it
+    /// was taken), at the target phase.
+    fn to_source(
+        &self,
+        scene: &Rc<RefCell<Scene>>,
+        source: NodeId,
+        event: InputEvent,
+    ) -> EventContext {
+        if scene.borrow().contains(source) {
+            return self.route(scene, source, event);
+        }
+        let orphans = self.state.borrow().drag_orphans.clone();
+        let mut cx = EventContext::new(event, source);
+        for callback in orphans {
+            if let Ok(mut callback) = callback.try_borrow_mut() {
+                callback(&mut cx);
+            }
+        }
+        cx
     }
     pub(super) fn dispatch_drag(&self, scene: &Rc<RefCell<Scene>>, event: &InputEvent) -> bool {
         self.validate_drag(scene);
@@ -568,6 +671,11 @@ impl InputDispatcher {
                 self.cancel_drag(scene);
                 true
             }
+            // Space springs the destination open at once, as in Finder
+            // (taken only if it did: otherwise the key goes on as usual).
+            InputEvent::KeyDown {
+                key: Key::Space, ..
+            } if self.spring_now(scene) == Some(true) => true,
             InputEvent::PointerLeave => {
                 let drag = self.state.borrow().drag.clone().unwrap();
                 if let Some(id) = drag.destination.filter(|id| scene.borrow().contains(*id)) {
@@ -576,6 +684,7 @@ impl InputDispatcher {
                 if let Some(drag) = &mut self.state.borrow_mut().drag {
                     drag.destination = None;
                 }
+                self.arm_spring(None);
                 true
             }
             _ => false,

@@ -1079,6 +1079,21 @@ impl UserData for ElementUd {
             settle(lua);
             Ok(true)
         });
+        // A picture of the element as the window last showed it, at most
+        // `max_width` pixels wide (480 if not given): the `src` of an image
+        // showing it, replaced on each call; nil if it is not laid out, or
+        // the host takes none. Native views in it show as what is under them.
+        methods.add_method("snapshot", |lua, e, max_width: Option<u32>| {
+            let Some(image) =
+                e.0.handle
+                    .get()
+                    .and_then(|h| h.snapshot(max_width.unwrap_or(480)))
+            else {
+                return Ok(None);
+            };
+            let name = format!("zgx.element:{:x}", Rc::as_ptr(&e.0) as usize);
+            Ok(Some(crate::node::env(lua)?.host_image(&name, image)))
+        });
         methods.add_method("has_class", |_, e, class: String| {
             Ok(e.0.classes.iter().any(|c| **c == *class))
         });

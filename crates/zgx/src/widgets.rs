@@ -839,6 +839,8 @@ impl EditorDrag {
         self.generation.set(self.generation.get().wrapping_add(1));
     }
 }
+/// The host's picture of a region of what the window last showed.
+type Snapshotter = Rc<dyn Fn(Rect, u32) -> Option<std::sync::Arc<crate::image::ImageData>>>;
 pub(crate) struct UiStorage {
     runtime: Runtime,
     pub(crate) themes: Rc<Themes>,
@@ -861,6 +863,8 @@ pub(crate) struct UiStorage {
     /// whether it was called and not yet heard (`popup_soon_heard`).
     popup_soon: RefCell<Option<Rc<dyn Fn()>>>,
     popup_soon_sent: Cell<bool>,
+    /// The host's way to picture what the window last showed (`Ui::on_snapshot`).
+    snapshotter: RefCell<Option<Snapshotter>>,
     /// The host shows drag previews in windows of their own (`set_popup_previews`).
     popup_previews: Cell<bool>,
     pub(crate) scene: Rc<RefCell<Scene>>,
@@ -1089,6 +1093,7 @@ impl Ui {
             popups: RefCell::new(Vec::new()),
             popup_soon: RefCell::new(None),
             popup_soon_sent: Cell::new(false),
+            snapshotter: RefCell::new(None),
             popup_previews: Cell::new(false),
             runtime,
             scene: Rc::new(RefCell::new(Scene::new(width, height))),
@@ -2149,6 +2154,40 @@ impl Ui {
     pub(crate) fn popup_flips(&self) -> Signal<Vec<(NodeId, (bool, bool))>> {
         self.storage.popup_flips.clone()
     }
+    /// How the host pictures what the window last showed: `take(rect,
+    /// max_width)` gives `rect` (in points, the window's coordinates) at
+    /// most `max_width` pixels wide, its height in proportion, or `None`.
+    /// What [`Ui::snapshot`] and `NodeHandle::snapshot` use; without it they
+    /// give nothing.
+    pub fn on_snapshot(
+        &self,
+        take: impl Fn(Rect, u32) -> Option<std::sync::Arc<crate::image::ImageData>> + 'static,
+    ) {
+        *self.storage.snapshotter.borrow_mut() = Some(Rc::new(take));
+    }
+    /// A picture of `node` as the window last showed it (a thumbnail of a
+    /// pane, say): its box, at most `max_width` pixels wide. Native views
+    /// in it (a page, a terminal) are the platform's to draw and show as
+    /// what zgx drew under them. `None` if the host takes no pictures, or
+    /// the node is not laid out or is hidden (its box is not what shows).
+    pub fn snapshot(
+        &self,
+        node: NodeId,
+        max_width: u32,
+    ) -> Option<std::sync::Arc<crate::image::ImageData>> {
+        let take = self.storage.snapshotter.borrow().clone()?;
+        let bounds = {
+            let scene = self.scene.borrow();
+            if !scene.layout_visible(node) {
+                return None;
+            }
+            scene.bounds(node)
+        };
+        if bounds.width <= 0. || bounds.height <= 0. {
+            return None;
+        }
+        take(bounds, max_width.max(1))
+    }
     /// Call `soon` as the pointer reaches something that opens a popup (a
     /// popover's or menu's trigger, a view with a tooltip or context menu),
     /// once until the host hears it (`popup_soon_heard`): a host showing
@@ -2545,10 +2584,13 @@ impl Ui {
             && self.input.focused() == Some(job.owner)
             && self.input.is_enabled(&self.scene.borrow(), job.owner)
     }
-    /// Next deadline for active editor drag autoscroll. Idle editors schedule nothing.
+    /// Next deadline of a timed interaction: a key sequence waiting, a drag
+    /// resting on a destination toward springing it open, editor drag
+    /// autoscroll. Idle windows schedule nothing.
     pub fn next_interaction_deadline(&self) -> Option<Instant> {
         [
             self.input.next_key_deadline(),
+            self.input.next_spring_deadline(),
             self.next_editor_interaction_deadline(),
             self.next_selection_deadline(),
             crate::compose_scrollbar::next_fade(self),
@@ -2598,6 +2640,13 @@ impl Ui {
         };
         // A stretched scroll view springing back.
         let keys = if crate::elastic::advance(self, now) {
+            self.try_prepare_frame()?;
+            true
+        } else {
+            keys
+        };
+        // A drag resting on a destination long enough to spring it open.
+        let keys = if self.input.advance_spring(&self.scene, now) {
             self.try_prepare_frame()?;
             true
         } else {

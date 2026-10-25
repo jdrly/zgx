@@ -665,6 +665,11 @@ declare extern type Element with
 	-- The selection replaced by `text`, as typing it would (one step of
 	-- undo): a search's Replace.
 	function replace_selection(self, text: string): boolean
+	-- A picture of it as the window last showed it, at most `max_width`
+	-- pixels wide (480 if not given): the `src` of an image showing it,
+	-- replaced on each call. Nil if it is not laid out or the host takes
+	-- none; native views in it show as what is under them.
+	function snapshot(self, max_width: number?): string?
 	-- Clear keyboard focus if it is on the element or inside it.
 	function blur(self): ()
 end
@@ -870,6 +875,10 @@ declare extern type Term with
 	function binding(self, action: string): ()
 	-- Whether closing would end something other than an idle shell.
 	function needs_confirm(self): boolean
+	-- A picture of what it shows now, at most `max_width` pixels wide (480
+	-- if not given): the `src` of a `ui.image` showing it, replaced on each
+	-- call; nil before it shows, or where the platform takes none.
+	function snapshot(self, max_width: number?): string?
 	-- End the session (its process is hung up).
 	function close(self): ()
 end
@@ -1490,6 +1499,13 @@ export type NodeProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: (() -> any)?,
 	drag_preview: ((payload: any) -> Node)?,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: { number }?,
+	drag_preview_offset: { number }?,
 	on_drag_end: ((payload: any, accepted: boolean) -> ...unknown)?,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -1506,6 +1522,10 @@ export type NodeProps = {
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
 	on_drag_leave: ((payload: any) -> ...unknown)?,
 	on_drop: ((payload: any, e: DragPoint) -> ...unknown)?,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: ((payload: any) -> boolean?)?,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -1786,6 +1806,13 @@ export type Props = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -1802,6 +1829,10 @@ export type Props = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -1994,6 +2025,8 @@ export type Props_on_resize = ((size: Size, element: Element) -> ...unknown)?
 export type Props_on_visible = ((visible: boolean, element: Element) -> ...unknown)?
 export type Props_on_drag = (() -> any)?
 export type Props_drag_preview = ((payload: any) -> Node)?
+export type Props_drag_preview_anchor = { number }?
+export type Props_drag_preview_offset = { number }?
 export type Props_on_drag_end = ((payload: any, accepted: boolean) -> ...unknown)?
 export type Props_drag_export = ((payload: any) -> DragExport?)?
 export type Props_on_drag_outside = ((payload: any, e: { x: number, y: number, grab_x: number, grab_y: number }) -> ...unknown)?
@@ -2002,6 +2035,7 @@ export type Props_drop_when = ((payload: any) -> unknown)?
 export type Props_on_drag_over = ((payload: any, e: DragPoint) -> ...unknown)?
 export type Props_on_drag_leave = ((payload: any) -> ...unknown)?
 export type Props_on_drop = ((payload: any, e: DragPoint) -> ...unknown)?
+export type Props_on_drag_spring = ((payload: any) -> boolean?)?
 export type Props_context_menu = ((e: PointerEvent) -> ...{ Node }?)?
 export type Props_context_menu_style = Styles?
 export type Props_context_menu_below = boolean?
@@ -2266,6 +2300,13 @@ export type ContainerProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -2282,6 +2323,10 @@ export type ContainerProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -2562,6 +2607,13 @@ export type ScrollProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -2578,6 +2630,10 @@ export type ScrollProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -3160,6 +3216,13 @@ export type MarkdownViewProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -3176,6 +3239,10 @@ export type MarkdownViewProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -3503,6 +3570,13 @@ export type RichProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -3519,6 +3593,10 @@ export type RichProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -3792,6 +3870,13 @@ export type ImageProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -3808,6 +3893,10 @@ export type ImageProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -4091,6 +4180,13 @@ export type SvgProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -4107,6 +4203,10 @@ export type SvgProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -4382,6 +4482,13 @@ export type CanvasProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -4398,6 +4505,10 @@ export type CanvasProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -4703,6 +4814,13 @@ export type CheckboxProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -4719,6 +4837,10 @@ export type CheckboxProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -5000,6 +5122,13 @@ export type InputProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -5016,6 +5145,10 @@ export type InputProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -5353,6 +5486,13 @@ export type ProgressProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -5369,6 +5509,10 @@ export type ProgressProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -5643,6 +5787,13 @@ export type SliderProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -5659,6 +5810,10 @@ export type SliderProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -5946,6 +6101,13 @@ export type SegmentedProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -5962,6 +6124,10 @@ export type SegmentedProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -6245,6 +6411,13 @@ export type StepperProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -6261,6 +6434,10 @@ export type StepperProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -6545,6 +6722,13 @@ export type DisclosureProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -6561,6 +6745,10 @@ export type DisclosureProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -6844,6 +7032,13 @@ export type AccordionProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -6860,6 +7055,10 @@ export type AccordionProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -7131,6 +7330,13 @@ export type SectionProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -7147,6 +7353,10 @@ export type SectionProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -7429,6 +7639,13 @@ export type SeparatorProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -7445,6 +7662,10 @@ export type SeparatorProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -7724,6 +7945,13 @@ export type TabsProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -7740,6 +7968,10 @@ export type TabsProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -8027,6 +8259,13 @@ export type TreeProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -8043,6 +8282,10 @@ export type TreeProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -8340,6 +8583,13 @@ export type DataGridProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -8356,6 +8606,10 @@ export type DataGridProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -8649,6 +8903,13 @@ export type CalendarProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -8665,6 +8926,10 @@ export type CalendarProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -8950,6 +9215,13 @@ export type DatePickerProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -8966,6 +9238,10 @@ export type DatePickerProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -9249,6 +9525,13 @@ export type TimeFieldProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -9265,6 +9548,10 @@ export type TimeFieldProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -9547,6 +9834,13 @@ export type ComboboxProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -9563,6 +9857,10 @@ export type ComboboxProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -9854,6 +10152,13 @@ export type CommandPaletteProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -9870,6 +10175,10 @@ export type CommandPaletteProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -10149,6 +10458,13 @@ export type SelectProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -10165,6 +10481,10 @@ export type SelectProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -10447,6 +10767,13 @@ export type SplitProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -10463,6 +10790,10 @@ export type SplitProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -10757,6 +11088,13 @@ export type ListProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -10773,6 +11111,10 @@ export type ListProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -11106,6 +11448,13 @@ export type LayerProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -11122,6 +11471,10 @@ export type LayerProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -11401,6 +11754,13 @@ export type ModalProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -11417,6 +11777,10 @@ export type ModalProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -11711,6 +12075,13 @@ export type PopoverProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -11727,6 +12098,10 @@ export type PopoverProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -12022,6 +12397,13 @@ export type MenuItemProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -12038,6 +12420,10 @@ export type MenuItemProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -12320,6 +12706,13 @@ export type SubmenuProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -12336,6 +12729,10 @@ export type SubmenuProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -12618,6 +13015,13 @@ export type WebViewProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -12634,6 +13038,10 @@ export type WebViewProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -12930,6 +13338,13 @@ export type TerminalProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -12946,6 +13361,10 @@ export type TerminalProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -13220,6 +13639,13 @@ export type SlotProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -13236,6 +13662,10 @@ export type SlotProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -13515,6 +13945,13 @@ export type EachOptions = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -13531,6 +13968,10 @@ export type EachOptions = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -13813,6 +14254,13 @@ export type PresenceOptions = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -13829,6 +14277,10 @@ export type PresenceOptions = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.

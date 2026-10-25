@@ -577,3 +577,173 @@ fn values_round_trip_through_json() {
     assert_eq!(Value::from_json(&json), Some(value));
     assert_eq!(Value::from_json("not json"), None);
 }
+
+/// A terminal that shows a 2 by 1 picture.
+struct Pictured;
+impl zgx::terminal::TerminalBackend for Pictured {
+    fn run(&self, _: zgx::terminal::TerminalCommand) {}
+    fn snapshot(&self, max_width: u32) -> Option<std::sync::Arc<zgx::image::ImageData>> {
+        assert_eq!(max_width, 120);
+        let pixels = vec![255u8; 2 * 4];
+        Some(std::sync::Arc::new(
+            zgx::image::ImageData::new(2, 1, pixels).unwrap(),
+        ))
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[test]
+fn an_elements_snapshot_is_the_hosts_picture_of_its_box() {
+    let mut h = Harness::inline(
+        r##"local card = ui.ref()
+        local src = ui.state("src", "none")
+        return ui.column {
+            ui.div { ref = card, w = 60, h = 30 },
+            ui.button { id = "take", w = 20, h = 20, on_click = function()
+                src:set(card:get():snapshot(100) or "none")
+            end },
+            ui.text { "{src}", id = "src" },
+            ui.image { id = "picture", w = 40, h = 20, src = function()
+                local s = src:get()
+                return if s ~= "none" then s else "host:nothing"
+            end },
+        }"##,
+    );
+    // A host that takes none: no picture.
+    h.click("take");
+    h.settle();
+    assert_eq!(h.text("src"), "none");
+    // One that does: a pixel a point, of the box it is asked for.
+    let asked = std::rc::Rc::new(std::cell::Cell::new(None));
+    let seen = asked.clone();
+    h.ui.on_snapshot(move |rect, max_width| {
+        seen.set(Some((rect.width, rect.height, max_width)));
+        let (w, h) = (rect.width as u32, rect.height as u32);
+        zgx::image::ImageData::new(w, h, vec![255; (w * h * 4) as usize])
+            .ok()
+            .map(std::sync::Arc::new)
+    });
+    h.click("take");
+    h.settle();
+    assert_eq!(asked.get(), Some((60., 30., 100)));
+    let src = h.text("src");
+    assert!(src.starts_with("host:zgx.element:"), "{src}");
+    h.ui.prepare_frame();
+    let node = h.find("picture").unwrap();
+    let scene = h.ui.scene.borrow();
+    let mut stack = vec![node];
+    let mut found = None;
+    while let Some(n) = stack.pop() {
+        if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+            found = Some((image.width(), image.height()));
+        }
+        stack.extend(scene.children(n).iter().copied());
+    }
+    assert_eq!(
+        found,
+        Some((60, 30)),
+        "the image shows the element's picture"
+    );
+}
+
+#[test]
+fn a_terminals_snapshot_shows_in_an_image() {
+    let mut h = Harness::inline(
+        r##"local term = ui.term("p1")
+        local src = ui.state("src", "none")
+        return ui.column {
+            ui.terminal { term = term, w = 200, h = 100 },
+            ui.button { id = "take", w = 20, h = 20, on_click = function()
+                src:set(term:snapshot(120) or "none")
+            end },
+            ui.text { "{src}", id = "src" },
+            ui.image { id = "picture", w = 40, h = 20, src = function()
+                local s = src:get()
+                return if s ~= "none" then s else "host:nothing"
+            end },
+        }"##,
+    );
+    // Before a platform terminal shows it: no picture.
+    h.click("take");
+    h.settle();
+    assert_eq!(h.text("src"), "none");
+    let term = terminal(&mut h);
+    term.attach(std::rc::Rc::new(Pictured));
+    h.click("take");
+    h.settle();
+    assert_eq!(h.text("src"), "host:zgx.term:p1");
+    h.ui.prepare_frame();
+    let node = h.find("picture").unwrap();
+    let scene = h.ui.scene.borrow();
+    let mut stack = vec![node];
+    let mut found = None;
+    while let Some(n) = stack.pop() {
+        if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+            found = Some((image.width(), image.height()));
+        }
+        stack.extend(scene.children(n).iter().copied());
+    }
+    assert_eq!(
+        found,
+        Some((2, 1)),
+        "the image shows the terminal's picture"
+    );
+}
+
+#[test]
+fn a_destination_springs_open_unless_it_declines() {
+    use std::time::{Duration, Instant};
+    use zgx::input::{InputEvent, PointerButton};
+    let mut h = Harness::inline(
+        r##"local sprang = ui.state("sprang", "")
+        local function target(name: string, open: boolean)
+            return ui.div { id = name, w = 80, h = 40, on_drop = function() end,
+                on_drag_spring = function(payload)
+                    sprang:set(sprang:peek() .. name .. ":" .. payload .. " ")
+                    if not open then
+                        return false
+                    end
+                    return nil
+                end }
+        end
+        return ui.column {
+            ui.div { id = "source", w = 80, h = 40, on_drag = function() return "card" end },
+            -- What a target declines goes on to what holds it.
+            ui.column {
+                on_drag_spring = function(payload)
+                    sprang:set(sprang:peek() .. "column:" .. payload .. " ")
+                end,
+                target("opens", true),
+                target("declines", false),
+            },
+            ui.text { "{sprang}", id = "log" },
+        }"##,
+    );
+    let at = |h: &mut Harness, id: &str| {
+        let b = h.bounds(id);
+        (b.x + b.width / 2., b.y + b.height / 2.)
+    };
+    let (sx, sy) = at(&mut h, "source");
+    h.ui.dispatch(InputEvent::PointerMove { x: sx, y: sy });
+    h.ui.dispatch(InputEvent::PointerDown {
+        x: sx,
+        y: sy,
+        button: PointerButton::Primary,
+    });
+    for target in ["opens", "declines"] {
+        let (x, y) = at(&mut h, target);
+        h.ui.dispatch(InputEvent::PointerMove { x, y: y - 1. });
+        h.ui.dispatch(InputEvent::PointerMove { x, y });
+        h.ui.advance_interactions(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        h.settle();
+    }
+    assert_eq!(h.text("log"), "opens:card declines:card column:card ");
+    h.ui.dispatch(InputEvent::PointerUp {
+        x: sx,
+        y: sy,
+        button: PointerButton::Primary,
+    });
+}

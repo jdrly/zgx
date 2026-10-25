@@ -635,6 +635,12 @@ struct State {
     visit: Option<drag::Visit>,
     /// How the last drag ended, until its host takes it (`take_drag_ended`).
     drag_ended: Option<drag::DragEnded>,
+    /// The destination the drag rests on, toward springing it open.
+    spring: Option<drag::SpringArm>,
+    /// The spring-loading delay the host set (`set_spring_delay`), and
+    /// whether it turned spring-loading off.
+    spring_delay: Option<std::time::Duration>,
+    spring_off: bool,
     /// The physical key of the key event being dispatched (`set_key_code`).
     key_code: Option<Rc<str>>,
     /// The scroll view a wheel gesture is latched to, the axis it moves
@@ -3490,4 +3496,4 @@ mod disabled_observer_tests {
 
 #[path = "input_drag.rs"]
 mod drag;
-pub use drag::{DragEnded, DragEvent, DragItem, DragPhase, DragState};
+pub use drag::{DragEnded, DragEvent, DragItem, DragPhase, DragState, SPRING_DELAY};

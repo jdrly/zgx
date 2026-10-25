@@ -3104,10 +3104,18 @@ fn with_drag(
     }
     if let Some(preview) = events.drag_preview.clone() {
         let (vm, low) = (vm.clone(), low.clone());
-        view = view.drag_preview(move |payload: &Value| {
+        let build = move |payload: &Value| {
             let result = vm.call::<mlua::Value>(&preview, payload.clone());
             built(&vm, result, &low)
-        });
+        };
+        view = match (events.drag_preview_anchor, events.drag_preview_offset) {
+            (None, None) => view.drag_preview(build),
+            (anchor, offset) => view.drag_preview_anchored(
+                anchor.unwrap_or_default(),
+                offset.unwrap_or_default(),
+                build,
+            ),
+        };
     }
     if let Some(end) = events.drag_end.clone() {
         let vm = vm.clone();
@@ -3157,13 +3165,14 @@ fn with_drag(
             })
         });
     }
-    let (drop, accept, over, leave) = (
+    let (drop, accept, over, leave, spring) = (
         events.drop.clone(),
         events.drop_when.clone(),
         events.drag_over.clone(),
         events.drag_leave.clone(),
+        events.drag_spring.clone(),
     );
-    if drop.is_none() && over.is_none() && leave.is_none() {
+    if drop.is_none() && over.is_none() && leave.is_none() && spring.is_none() {
         return view;
     }
     let vm = vm.clone();
@@ -3216,6 +3225,18 @@ fn with_drag(
                 }
                 cx.prevent_default();
                 cx.stop_propagation();
+            }
+            // Sprang open unless it returned `false`.
+            DragPhase::Spring if !cx.default_prevented() && accepts() => {
+                if let Some(f) = &spring
+                    && !matches!(
+                        call(&vm, f, payload.clone()),
+                        Some(mlua::Value::Boolean(false))
+                    )
+                {
+                    cx.prevent_default();
+                    cx.stop_propagation();
+                }
             }
             _ => {}
         }

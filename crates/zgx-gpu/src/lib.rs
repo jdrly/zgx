@@ -7282,6 +7282,18 @@ impl GpuRenderer {
             Some((width as u32, height as u32, pixels))
         }
     }
+    /// The surface its layer shows now, to read a region of later
+    /// (`ShownFrame::read`): what the window last showed. Holding it keeps
+    /// only that surface, which the renderer does not draw into while it is
+    /// shown; take a new one after each frame.
+    #[cfg(target_os = "macos")]
+    pub fn shown_frame(&self) -> Option<ShownFrame> {
+        let present = self.layer_present.as_ref()?;
+        let (buffer, _) = present.buffers.get(present.shown?)?;
+        Some(ShownFrame {
+            surface: buffer.surface.clone(),
+        })
+    }
     /// How long the GPU took to run the frame last presented, when it was
     /// encoded with Metal directly: the frame's own work, plus however long
     /// other work on the GPU (the window server's compositing, other apps)
@@ -7697,6 +7709,67 @@ impl GpuRenderer {
         drop(mapped);
         buffer.unmap();
         Ok(pixels)
+    }
+}
+/// A frame a window showed (`GpuRenderer::shown_frame`), its pixels
+/// readable while it is held.
+#[cfg(target_os = "macos")]
+pub struct ShownFrame {
+    surface: objc2_core_foundation::CFRetained<objc2_io_surface::IOSurfaceRef>,
+}
+#[cfg(target_os = "macos")]
+impl ShownFrame {
+    /// The region `x, y, width, height` (pixels, from its top left, clipped
+    /// to it) as premultiplied BGRA rows, with its size; `None` for a region
+    /// outside it.
+    pub fn read(&self, x: u32, y: u32, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)> {
+        use std::ffi::c_void;
+        // SAFETY: IOSurface's declarations (IOSurface.framework, linked by
+        // objc2-io-surface): `IOSurfaceLockOptions` and the seed are `u32`,
+        // `kern_return_t` is `i32`.
+        unsafe extern "C" {
+            fn IOSurfaceLock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+            fn IOSurfaceUnlock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
+            fn IOSurfaceGetBaseAddress(surface: *const c_void) -> *const u8;
+            fn IOSurfaceGetBytesPerRow(surface: *const c_void) -> usize;
+            fn IOSurfaceGetWidth(surface: *const c_void) -> usize;
+            fn IOSurfaceGetHeight(surface: *const c_void) -> usize;
+        }
+        let surface = objc2_core_foundation::CFRetained::as_ptr(&self.surface)
+            .as_ptr()
+            .cast::<c_void>()
+            .cast_const();
+        // SAFETY: a live surface (held), locked read-only (1) while rows of
+        // the region are copied: `height` rows `stride` bytes apart, each at
+        // least `width * 4` bytes (a BGRA surface); the region is clipped to
+        // the surface first. It was shown, so the GPU finished drawing it.
+        unsafe {
+            if IOSurfaceLock(surface, 1, std::ptr::null_mut()) != 0 {
+                return None;
+            }
+            let (full_w, full_h) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
+            let (base, stride) = (
+                IOSurfaceGetBaseAddress(surface),
+                IOSurfaceGetBytesPerRow(surface),
+            );
+            let (x, y) = (x as usize, y as usize);
+            let w = (width as usize).min(full_w.saturating_sub(x));
+            let h = (height as usize).min(full_h.saturating_sub(y));
+            let region = if base.is_null() || w == 0 || h == 0 {
+                None
+            } else {
+                let mut pixels = Vec::with_capacity(w * h * 4);
+                for row in y..y + h {
+                    pixels.extend_from_slice(std::slice::from_raw_parts(
+                        base.add(row * stride + x * 4),
+                        w * 4,
+                    ));
+                }
+                Some((w as u32, h as u32, pixels))
+            };
+            IOSurfaceUnlock(surface, 1, std::ptr::null_mut());
+            region
+        }
     }
 }
 /// `rect` less `cut`, as up to four rectangles pushed to `out`.

@@ -1111,6 +1111,9 @@ struct Host {
     native_focused: bool,
     x11: bool,
     scale_factor: f64,
+    /// What the window last showed, and its scale, for `Ui::snapshot`.
+    #[cfg(target_os = "macos")]
+    shown: std::rc::Rc<std::cell::RefCell<Option<(zgx_gpu::ShownFrame, f64)>>>,
     force: bool,
     presentation: Presentation,
     native_occluded: bool,
@@ -1313,6 +1316,28 @@ impl Host {
             // Drag previews too, moved with the pointer (`PopupHost::follow`).
             ui.set_popup_previews(cfg!(any(target_os = "macos", windows)));
         }
+        // How long a drag rests on a destination before it springs open:
+        // the system's spring-loading delay (Accessibility settings).
+        #[cfg(target_os = "macos")]
+        ui.input.set_spring_delay(spring_delay());
+        // Pictures of what the window showed (`Ui::snapshot`): a region of
+        // its last frame, read when asked.
+        #[cfg(target_os = "macos")]
+        let shown: std::rc::Rc<std::cell::RefCell<Option<(zgx_gpu::ShownFrame, f64)>>> =
+            std::rc::Rc::default();
+        #[cfg(target_os = "macos")]
+        {
+            let shown = shown.clone();
+            ui.on_snapshot(move |rect, max_width| {
+                let shown = shown.borrow();
+                let (frame, scale) = shown.as_ref()?;
+                let px = |v: f32| (f64::from(v) * scale).round().max(0.) as u32;
+                let (w, h, bgra) =
+                    frame.read(px(rect.x), px(rect.y), px(rect.width), px(rect.height))?;
+                let (w, h) = (w as usize, h as usize);
+                crate::thumbnail::image(&bgra, w, h, w * 4, max_width as usize)
+            });
+        }
         let inspector = zgx::inspect::Inspector::new();
         {
             let handle = handle.clone();
@@ -1389,6 +1414,8 @@ impl Host {
             native_focused: false,
             x11: false,
             scale_factor: 1.,
+            #[cfg(target_os = "macos")]
+            shown,
             force: true,
             presentation: Presentation::default(),
             native_occluded: false,
@@ -1812,6 +1839,11 @@ impl Host {
                 #[cfg(target_os = "macos")]
                 {
                     self.presented_at = Some(std::time::Instant::now());
+                    // What it shows now, for `Ui::snapshot` (the last frame's
+                    // surface is the renderer's to reuse again).
+                    *self.shown.borrow_mut() = renderer
+                        .shown_frame()
+                        .map(|frame| (frame, self.scale_factor));
                     if let Some(gpu) = renderer.take_gpu_time()
                         && grid.is_some()
                     {
@@ -3676,6 +3708,19 @@ impl Host {
             .is_some_and(|at| at <= std::time::Instant::now())
         {
             self.sync_accessibility();
+        }
+        // A timed interaction due (a drag resting on a destination long
+        // enough to spring it open, a key sequence timing out): the event
+        // loop woke for it, and a frame runs it (`Ui::advance_interactions`),
+        // the pointer still or not.
+        if self
+            .context
+            .ui
+            .next_interaction_deadline()
+            .is_some_and(|at| at <= std::time::Instant::now())
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
         }
         if self.scroll.pending() {
             // Each refresh applies the motion due by then; with no refreshes
@@ -5666,6 +5711,42 @@ static FIRST_PRESENT: std::sync::Once = std::sync::Once::new();
 fn first_mark(once: &std::sync::Once, what: &str) {
     once.call_once(|| zgx::profile::mark(what));
 }
+/// The system's spring-loading delay (Accessibility > Pointer Control), or
+/// `None` where it is turned off.
+#[cfg(target_os = "macos")]
+fn spring_delay() -> Option<std::time::Duration> {
+    use objc2::{msg_send, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    // SAFETY: NSUserDefaults' `standardUserDefaults` (unretained, the
+    // process keeps it); `objectForKey:` (an unretained object or nil,
+    // only tested for nil), `boolForKey:` (BOOL) and `doubleForKey:`
+    // (double), each read at once.
+    unsafe {
+        let defaults: *mut AnyObject =
+            msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+        let Some(defaults) = defaults.as_ref() else {
+            return Some(zgx::input::SPRING_DELAY);
+        };
+        let set = |key: &NSString| {
+            let value: *mut AnyObject = msg_send![defaults, objectForKey: key];
+            !value.is_null()
+        };
+        let enabled = NSString::from_str("com.apple.springing.enabled");
+        if set(&enabled) {
+            let on: bool = msg_send![defaults, boolForKey: &*enabled];
+            if !on {
+                return None;
+            }
+        }
+        let delay = NSString::from_str("com.apple.springing.delay");
+        if !set(&delay) {
+            return Some(zgx::input::SPRING_DELAY);
+        }
+        let seconds: f64 = msg_send![defaults, doubleForKey: &*delay];
+        Some(std::time::Duration::from_secs_f64(seconds.clamp(0., 10.)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

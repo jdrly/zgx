@@ -307,6 +307,16 @@ impl UserData for TermUd {
         });
     }
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        // A picture of what it shows now, at most `max_width` pixels wide
+        // (480 if not given): the `src` of an image showing it, replaced on
+        // each call; nil before it shows, or where the platform takes none.
+        methods.add_method("snapshot", |lua, t, max_width: Option<u32>| {
+            let Some(image) = t.term.snapshot(max_width.unwrap_or(480)) else {
+                return Ok(None);
+            };
+            let name = format!("zgx.term:{}", t.id);
+            Ok(Some(crate::node::env(lua)?.host_image(&name, image)))
+        });
         methods.add_method("focus", |_, t, ()| {
             t.term.focus();
             Ok(())

@@ -665,6 +665,11 @@ declare extern type Element with
 	-- The selection replaced by `text`, as typing it would (one step of
 	-- undo): a search's Replace.
 	function replace_selection(self, text: string): boolean
+	-- A picture of it as the window last showed it, at most `max_width`
+	-- pixels wide (480 if not given): the `src` of an image showing it,
+	-- replaced on each call. Nil if it is not laid out or the host takes
+	-- none; native views in it show as what is under them.
+	function snapshot(self, max_width: number?): string?
 	-- Clear keyboard focus if it is on the element or inside it.
 	function blur(self): ()
 end
@@ -863,6 +868,10 @@ declare extern type Term with
 	function binding(self, action: string): ()
 	-- Whether closing would end something other than an idle shell.
 	function needs_confirm(self): boolean
+	-- A picture of what it shows now, at most `max_width` pixels wide (480
+	-- if not given): the `src` of a `ui.image` showing it, replaced on each
+	-- call; nil before it shows, or where the platform takes none.
+	function snapshot(self, max_width: number?): string?
 	-- End the session (its process is hung up).
 	function close(self): ()
 end
@@ -1458,6 +1467,13 @@ export type NodeProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: (() -> any)?,
 	drag_preview: ((payload: any) -> Node)?,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: { number }?,
+	drag_preview_offset: { number }?,
 	on_drag_end: ((payload: any, accepted: boolean) -> ...unknown)?,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -1474,6 +1490,10 @@ export type NodeProps = {
 	on_drag_over: ((payload: any, e: DragPoint) -> ...unknown)?,
 	on_drag_leave: ((payload: any) -> ...unknown)?,
 	on_drop: ((payload: any, e: DragPoint) -> ...unknown)?,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: ((payload: any) -> boolean?)?,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
