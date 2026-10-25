@@ -7,7 +7,9 @@ import (
 
 // The variable-height list scene: 100,000 deterministic chat rows of
 // wrapped text, 1 to 8 lines each, about one in four with a fixed-size
-// image placeholder under its text (the crate's `vlist`).
+// image placeholder under its text (the crate's `vlist`). Modes: a steady
+// scroll, flings (a velocity curve), and a steady scroll with a jump to a
+// seeded row every JumpEvery ticks.
 const (
 	VWidth      = float32(720)
 	VHeight     = float32(800)
@@ -107,15 +109,14 @@ func Text(row int) string {
 	return b.String()
 }
 
-// Delta is the scroll a tick adds (scroll and fling).
+// Delta is the scroll a tick adds (every mode; a jump's tick lands on its
+// row instead).
 func Delta(mode VMode, tick uint64) float32 {
-	switch mode {
-	case VScroll:
-		return ScrollStep
-	case VFling:
+	if mode == VFling {
 		return Fling.Velocity * powi(Fling.Decay, int32(tick%Fling.Every))
 	}
-	return 0
+	// Jump scrolls between its jumps too.
+	return ScrollStep
 }
 
 // Jump is the row a jump lands on at tick, if one does then.

@@ -85,7 +85,7 @@ func TestVlistRowsAreDeterministicAndVaried(t *testing.T) {
 }
 
 func TestVlistModesMoveAsDescribed(t *testing.T) {
-	if Delta(VScroll, 5) != ScrollStep || Delta(VFling, 0) <= Delta(VFling, 30) || Delta(VFling, Fling.Every) != Fling.Velocity {
+	if Delta(VScroll, 5) != ScrollStep || Delta(VFling, 0) <= Delta(VFling, 30) || Delta(VFling, Fling.Every) != Fling.Velocity || Delta(VJump, 7) != ScrollStep {
 		t.Fatal("deltas")
 	}
 	if _, ok := Jump(0); ok {

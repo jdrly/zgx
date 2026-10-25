@@ -81,7 +81,7 @@ func golden() []byte {
 		if row, ok := Jump(tick); ok {
 			jump = fmt.Sprintf("Some(%d)", row)
 		}
-		p("vtick %d %s %s %s", tick, f32(Delta(VScroll, tick)), f32(Delta(VFling, tick)), jump)
+		p("vtick %d %s %s %s %s", tick, f32(Delta(VScroll, tick)), f32(Delta(VFling, tick)), f32(Delta(VJump, tick)), jump)
 	}
 	return out.Bytes()
 }
