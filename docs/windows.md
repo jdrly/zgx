@@ -493,6 +493,7 @@ python scripts/windows_popup_smoke.py target/debug/examples
 python scripts/windows_drag_smoke.py target/debug/examples
 python scripts/windows_window_smoke.py target/debug/examples
 python scripts/windows_text_smoke.py target/debug/examples/text_selection.exe
+python scripts/windows_contrast_smoke.py target/debug/examples/text_selection.exe
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -521,10 +522,22 @@ python scripts/windows_text_smoke.py target/debug/examples/text_selection.exe
   by `SM_CYDOUBLECLK`) is a new first press, inside it a double click; a
   triple click selects the line; copied lines reach the clipboard ending in
   CR LF, as Windows apps take them, and CR LF pasted in leaves no CR in the
-  editor. Selections are read through UI Automation. It saves the user's
+  editor; Windows' emoji panel (Win+.) opens under the caret, for carets at
+  two places. Windows places the panel from the caret area zgx gives input
+  methods (`ImmSetCandidateWindow`), where their candidate windows show:
+  without it, the panel opens away from the window. Selections are read
+  through UI Automation. It saves the user's
   clipboard and restores it after, keeps what it puts there out of clipboard
   history, and skips the copy and paste checks while cloud clipboard sync is
   on.
+- `windows_contrast_smoke.py` (`text_selection`): a contrast theme switched on
+  while the window runs, as the Left Alt+Left Shift+Print Screen shortcut does,
+  turns its background into the theme's window colour, its text the theme's
+  text colour and a double-clicked word's selection the theme's highlight; off
+  again, the window takes back the colours it had. It switches the signed-in
+  user's contrast theme for about ten seconds, repainting the whole desktop,
+  and restores the user's settings after, the shortcut's own included; with a
+  contrast theme already on, it checks that one and switches nothing.
 - `windows_webview_smoke.py` (`web_view` built with `--features webview2`):
   the page loads and its title reaches the state, a click in the page reaches
   it, zgx's composer over the page takes clicks and typing and its script

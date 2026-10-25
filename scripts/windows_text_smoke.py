@@ -9,7 +9,10 @@ keys in `text_selection`'s editors:
 - a triple click selects the whole line;
 - copied lines end in CR LF, as Windows apps take them (read raw from the
   clipboard), and CR LF text pasted in from another process leaves no CR in
-  the editor.
+  the editor;
+- Windows' emoji panel (Win+.) opens under the caret, for carets at two
+  places: Windows places it from the caret area zgx gives input methods,
+  where their candidate windows show.
 
 Selections are read through UI Automation (`windows_uia_dump.ps1`). The
 user's clipboard is saved first and restored after, and what the smoke puts
@@ -157,6 +160,52 @@ def press(window, x, y):
     win.click(window, x, y)
 
 
+def changed_box(before, after, threshold=40):
+    """The box (left, top, right, bottom) of the pixels that differ."""
+    width, height, a = before
+    b = after[2]
+    xs, ys = [], []
+    for y in range(0, height, 2):
+        for x in range(0, width, 2):
+            i = (y * width + x) * 4
+            if max(abs(a[i] - b[i]), abs(a[i + 1] - b[i + 1]), abs(a[i + 2] - b[i + 2])) > threshold:
+                xs.append(x)
+                ys.append(y)
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+
+def emoji_panel(binary, offset):
+    """Where Windows' emoji panel (Win+.) opens over a fresh window whose
+    caret is `offset` points into the line: the box of pixels it changes.
+    Windows places it from the caret area zgx gives the input method
+    (`ImmSetCandidateWindow`), as an input method places its candidates;
+    without that area it opens away from the window. The pointer is moved
+    off first, so following the pointer cannot pass, and closing the window
+    closes the panel."""
+    proc = subprocess.Popen([str(binary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        window = win.wait_window(proc)
+        time.sleep(1)
+        win.activate(window)
+        (x, y, w, h), _ = editors(window)["Words"]
+        scale = win.dpi(window) / 96
+        caret = (x + (10 + offset) * scale, y + h / 2)
+        press(window, *caret)
+        win.move(window, x + w - 5 * scale, 5 * scale)
+        time.sleep(0.4)
+        before = win.capture(window)
+        win.key("win+.")
+        time.sleep(1.2)
+        box = changed_box(before, win.capture(window))
+        win.close(window)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    return caret, (x, y, w, h), box
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary", type=pathlib.Path)
@@ -250,9 +299,20 @@ def main():
             proc.kill()
             proc.wait()
         put_clipboard(saved)
+    # The emoji panel opens under the caret, wherever the caret is.
+    panels = []
+    for offset in (45, 120):
+        caret, (x, y, w, h), panel = emoji_panel(args.binary, offset)
+        assert panel, f"the emoji panel did not open over the window (caret at {caret})"
+        left, top = panel[:2]
+        assert abs(left - caret[0]) <= 24 and y <= top <= y + h + 30, \
+            f"the emoji panel opened at {(left, top)}, not under the caret at {caret} in the editor {(x, y, w, h)}"
+        panels.append((caret[0], left))
+    results.append("emoji panel under the caret: " + ", ".join(f"caret x {c:.0f}, panel x {p}" for c, p in panels))
     for line in results:
         print(f"  {line}")
-    print(f"PASS: text selection at {interval * 1000:.0f} ms and a {box[0]}x{box[1]} box; clipboard line ends")
+    print(f"PASS: text selection at {interval * 1000:.0f} ms and a {box[0]}x{box[1]} box; clipboard line ends; "
+          "the emoji panel at the caret")
 
 
 if __name__ == "__main__":
