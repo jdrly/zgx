@@ -536,9 +536,10 @@ struct Click {
     time: Instant,
     count: u8,
 }
-/// The last press, and how soon after it another counts as its second or
-/// third (the system's double-click time).
-struct ClickTracker(Option<Click>, Duration);
+/// The last press, how soon after it another counts as its second or third
+/// (the system's double-click time), and how far from it the next may land:
+/// half the system's double-click box, where the host gives one.
+struct ClickTracker(Option<Click>, Duration, Option<(f32, f32)>);
 /// Windows' and macOS's default double-click time, until the host gives the
 /// system's.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
@@ -547,22 +548,25 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 const DRAG_THRESHOLD: f32 = 4.;
 impl Default for ClickTracker {
     fn default() -> Self {
-        Self(None, DOUBLE_CLICK)
+        Self(None, DOUBLE_CLICK, None)
     }
 }
 impl ClickTracker {
     fn moved(&mut self, x: f32, y: f32) {
         if self
             .0
-            .is_some_and(|click| !Self::near(click.position, (x, y)))
+            .is_some_and(|click| !self.near(click.position, (x, y)))
         {
             self.0 = None;
         }
     }
-    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+    fn near(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let dx = f64::from(a.0) - f64::from(b.0);
         let dy = f64::from(a.1) - f64::from(b.1);
-        dx * dx + dy * dy <= 16.
+        match self.2 {
+            Some((x, y)) => dx.abs() <= f64::from(x) && dy.abs() <= f64::from(y),
+            None => dx * dx + dy * dy <= 16.,
+        }
     }
     fn press(
         &mut self,
@@ -579,7 +583,7 @@ impl ClickTracker {
                     && now
                         .checked_duration_since(old.time)
                         .is_some_and(|elapsed| elapsed <= self.1)
-                    && Self::near(old.position, position)
+                    && self.near(old.position, position)
             })
             .map_or(1, |old| old.count % 3 + 1);
         self.0 = Some(Click {
@@ -732,6 +736,25 @@ impl InputDispatcher {
     pub fn set_double_click_time(&self, interval: Duration) {
         self.state.borrow_mut().clicks.1 =
             interval.clamp(Duration::from_millis(100), Duration::from_secs(5));
+    }
+    /// The box, in points, centred on a press, that the next must land in
+    /// to count as its double (then triple) click: the system's, which the
+    /// desktop host gives (Windows' `SM_CXDOUBLECLK` by `SM_CYDOUBLECLK`,
+    /// which people whose hands shake widen); until it does, within 4
+    /// points of the press in any direction. Each side held between 1 and
+    /// 200; NaN leaves the box as it was.
+    pub fn set_double_click_area(&self, width: f32, height: f32) {
+        if width.is_nan() || height.is_nan() {
+            return;
+        }
+        self.state.borrow_mut().clicks.2 =
+            Some((width.clamp(1., 200.) / 2., height.clamp(1., 200.) / 2.));
+    }
+    /// The double-click box's width and height in points
+    /// (`set_double_click_area`), once the host has given one.
+    pub fn double_click_area(&self) -> Option<(f32, f32)> {
+        let (x, y) = self.state.borrow().clicks.2?;
+        Some((x * 2., y * 2.))
     }
     /// How far, in points, the pointer moves from a press before it is a
     /// drag rather than a click (`EventContext::drag_threshold`): the
@@ -2471,6 +2494,43 @@ mod tests {
         assert_eq!(press(1400), 2);
         input.set_double_click_time(Duration::ZERO);
         assert_eq!(input.state.borrow().clicks.1, Duration::from_millis(100));
+    }
+    #[test]
+    fn a_second_press_counts_inside_the_double_click_box_alone() {
+        let (_, a, _) = setup();
+        let input = InputDispatcher::new();
+        let now = Instant::now();
+        let press = |at: u64, x: f32, y: f32| {
+            input.state.borrow_mut().clicks.press(
+                a,
+                PointerButton::Primary,
+                (x, y),
+                now + Duration::from_millis(at),
+            )
+        };
+        // Until the host gives a box: within 4 points in any direction.
+        assert_eq!(press(0, 0., 0.), 1);
+        assert_eq!(press(100, 3., 0.), 2);
+        // Windows' default box, 4 by 4 pixels: 2 either side.
+        input.set_double_click_area(4., 4.);
+        assert_eq!(press(1000, 0., 0.), 1);
+        assert_eq!(press(1100, 3., 0.), 1, "outside the box");
+        assert_eq!(press(2000, 0., 0.), 1);
+        assert_eq!(press(2100, 2., -2.), 2, "on its edge");
+        // Widened, as a user whose hands shake sets it: 20 by 10.
+        input.set_double_click_area(20., 10.);
+        assert_eq!(press(3000, 0., 0.), 1);
+        assert_eq!(press(3100, 9., 4.), 2);
+        assert_eq!(
+            press(3200, 9., 10.),
+            1,
+            "below the last press's box: a new first"
+        );
+        // Moving out of the box ends the chance of a double click.
+        input.state.borrow_mut().clicks.moved(9., 16.);
+        assert!(input.state.borrow().clicks.0.is_none());
+        input.set_double_click_area(f32::NAN, 4.);
+        assert_eq!(input.state.borrow().clicks.2, Some((10., 5.)));
     }
 
     #[test]

@@ -429,7 +429,12 @@ pub(crate) fn sync(ui: &zgx::widgets::Ui) {
         ui.input.set_double_click_time(interval);
     }
     #[cfg(windows)]
-    ui.input.set_drag_threshold(windows_drag_threshold());
+    {
+        ui.input.set_drag_threshold(windows_drag_threshold());
+        if let Some((width, height)) = windows_double_click_area() {
+            ui.input.set_double_click_area(width, height);
+        }
+    }
     // On X11 the session's XSETTINGS come first, as GTK takes them there.
     #[cfg(target_os = "linux")]
     {
@@ -511,6 +516,26 @@ fn windows_drag_threshold() -> f32 {
     }
 }
 
+/// Windows' double-click box (`SM_CXDOUBLECLK` by `SM_CYDOUBLECLK`: centred
+/// on a press, where the next must land to double it, 4 by 4 by default,
+/// widened in the registry's `DoubleClickWidth`/`DoubleClickHeight`), at 96
+/// DPI: in points.
+#[cfg(windows)]
+fn windows_double_click_area() -> Option<(f32, f32)> {
+    use windows::Win32::UI::{
+        HiDpi::GetSystemMetricsForDpi,
+        WindowsAndMessaging::{SM_CXDOUBLECLK, SM_CYDOUBLECLK},
+    };
+    // SAFETY: reads two system settings.
+    let (x, y) = unsafe {
+        (
+            GetSystemMetricsForDpi(SM_CXDOUBLECLK, 96),
+            GetSystemMetricsForDpi(SM_CYDOUBLECLK, 96),
+        )
+    };
+    (x > 0 && y > 0).then_some((x as f32, y as f32))
+}
+
 /// Windows' "Text size" (Settings, Accessibility): 1 to 2.25, scaling text
 /// alone, as WinUI's text follows it.
 #[cfg(windows)]
@@ -569,5 +594,16 @@ mod tests {
         let system = super::windows_drag_threshold();
         assert!(system >= 1., "{system}");
         assert_eq!(ui.input.drag_threshold(), system);
+    }
+
+    /// A window's double-click box is Windows' own (`SM_CXDOUBLECLK` by
+    /// `SM_CYDOUBLECLK`), in points.
+    #[test]
+    fn the_double_click_box_is_the_systems() {
+        let ui = zgx::widgets::Ui::new(100., 100.);
+        super::sync(&ui);
+        let system = super::windows_double_click_area().expect("a double-click box");
+        assert!(system.0 >= 1. && system.1 >= 1., "{system:?}");
+        assert_eq!(ui.input.double_click_area(), Some(system));
     }
 }

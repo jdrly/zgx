@@ -279,8 +279,11 @@ captured gestures when a host becomes inactive. The fallible advance method
 returns whether a tick ran. Idle editors schedule no interaction wakeups.
 
 The native host forwards pointer modifiers and tracks clicks per target and
-button within the system's double-click time and four logical pixels, cycling
-through counts 1, 2, 3, then 1. The time is the person's setting, as native
+button within the system's double-click time and distance, cycling
+through counts 1, 2, 3, then 1. The distance is Windows' double-click box
+(`SM_CXDOUBLECLK` by `SM_CYDOUBLECLK`, centred on the last press, 4 by 4 by
+default, `InputDispatcher::set_double_click_area`), and elsewhere four logical
+pixels in any direction. The time is the person's setting, as native
 controls follow it: macOS's and Windows' mouse settings, GNOME's `double-click`
 and KDE's `DoubleClickInterval` through the settings portal, and on X11 the
 session's XSETTINGS `Net/DoubleClickTime` ahead of them, as GTK takes it there
