@@ -198,28 +198,26 @@ Within zgx's start, `ZGX_PROFILE=1` prints the process's instructions and millis
 
 ## On Windows
 
-`scripts/windows_compare.py` runs the shared workloads against GPUI's adapter in turn on the same desktop, the Windows counterpart of `scripts/compare.py` (whose sampler reads `/proc`):
-- **Scenes** (zgx example / GPUI binary): `lab` (`component_workload` / `zgx-compare-gpui`) in each mode; `animate` (`animation_workload` / `animate`); `heavy` (`heavy_workload` / `heavy`); `busy` (`busy_workload` / `busy`).
-- **Samples**, every 100 ms after the warmup: CPU time (`GetProcessTimes`), CPU cycles (`QueryProcessCycleTime`, finer than CPU time's scheduler ticks), working set and private bytes.
-- **Work.** Each run must report what it did (`workload_ticks`, `"ticks"` or `animation_frames`), and cycles are given per tick or frame too, so a run that did less cannot look cheaper.
-- **Order.** The frameworks alternate in rotating order over `--repeats`. It prints a table and the binaries' sizes, and writes `summary.json`.
+`scripts/windows_compare.py` runs the comparison scenes (`comparisons/README.md`) for zgx, GPUI Fast, MyGo and the older GPUI adapter in turn on the same desktop, the Windows counterpart of the macOS runner:
+- **Scenes and modes:** `lab` (`idle`, `stream`, `scroll`, `both`), `animate`, `heavy` (`both`) and `vlist` (`scroll`, `fling`, `jump`), each framework's binary as `comparisons/README.md` names it; `busy` for the old GPUI adapter. A scene runs for the frameworks whose binary is there.
+- **Samples**, every 100 ms after a 3 s warm-up, for 10 s: CPU time (`GetProcessTimes`), CPU cycles (`QueryProcessCycleTime`, finer than CPU time's scheduler ticks), working set and private bytes.
+- **Valid runs only.** A run must last as long as it was asked and report what it did (`workload_ticks`, `"ticks"` or `animation_frames`), at least nine tenths of 60 a second outside `idle`; an invalid run is run again once, then recorded as invalid. Cycles are given per tick or frame too, so a run that did less cannot look cheaper.
+- **Order.** The frameworks alternate in rotating order over 3 rounds; a scene and mode whose cycles spread wider than 5% of their median gets another round, up to 6. It prints a table and writes `summary.json` with every run, the binaries' sizes and hashes.
 
 ```powershell
-cargo build --profile dist --locked -p zgx-desktop --example component_workload
-cargo build --profile dist --locked -p zgx-desktop --example animation_workload
-cargo build --profile dist --locked -p zgx-desktop --example heavy_workload
-cargo build --profile dist --locked -p zgx-desktop --example busy_workload
-cargo build --profile dist --locked --manifest-path comparisons/gpui/Cargo.toml
-python scripts/windows_compare.py --zgx target/dist/examples --gpui comparisons/gpui/target/dist --output target/windows-compare
+cargo build --profile dist --locked -p zgx-desktop --example component_workload --example animation_workload --example heavy_workload --example vlist_workload
+cargo build --profile dist --locked --manifest-path comparisons/gpui-fast/Cargo.toml
+cd comparisons/mygo; ./build.sh; cd ../..   # Go 1.27, with CGO_ENABLED=0 as build.sh sets it
+python scripts/windows_compare.py --zgx target/dist/examples --gpui-fast comparisons/gpui-fast/target/dist --mygo comparisons/mygo/bin --output target/windows-compare
 ```
 
 Startup and keystroke latency are measured apart:
 - **`scripts/windows_startup_probe.py`** times a launch to its first content as macOS's probe does: spawn, the window, then its header strip until the header's text has drawn, read as the window drew it (`PrintWindow`), so a window covering it cannot pass for its text. It reports medians of wall time, CPU time and cycles over launches in rotating order; `--settle 5` then keeps each at rest five seconds and takes its private bytes and working set.
 - **`scripts/windows_latency_probe.py --press`** times a key press to the composed screen. Use `key_workload` (zgx-desktop's example) against GPUI's `keys`: each redraws a counter at every key.
 
-Each run also records whether a UI Automation client read zgx's window (zgx prints `accessibility: a client asked for the tree` when `ZGX_ACCESSIBILITY_LOG` is set, which the harness sets), and the summary says whether a screen reader ran (`SPI_GETSCREENREADER`) and which known UIA client processes did (the shell's touch keyboard host, Voice Access, Magnifier, test tools). Real desktops have such clients, so runs measure the machine as it is; zgx's accessibility work for them is part of its cost, and GPUI has no UI Automation provider. Compare only runs whose clients match.
+Each run also records whether a UI Automation client read zgx's window (zgx prints `accessibility: a client asked for the tree` when `ZGX_ACCESSIBILITY_LOG` is set, which the harness sets), and the summary says whether a screen reader ran (`SPI_GETSCREENREADER`) and which known UIA client processes did (the shell's touch keyboard host, Voice Access, Magnifier, test tools). Real desktops have such clients, so runs measure the machine as it is; zgx's accessibility work for them is part of its cost, and GPUI Fast and MyGo have no UI Automation provider. Compare only runs whose clients match.
 
-Keep the windows uncovered, the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI): see `vendor/wgpu-hal/ZGX_PATCH.md` and [windows.md](windows.md).
+Keep the windows uncovered, the machine otherwise idle and on mains power, and repeat a comparison: the same binary's cycles a frame have moved by 15% between sessions on one machine (`animation_workload`, 2.73, then 3.16 after a day of GPU driver stress tests, then 2.66 after a reboot), so compare only runs that alternate within one session. A process's private bytes include the graphics driver's floor, which differs between Direct3D 12 (zgx) and Direct3D 11 (GPUI Fast, MyGo): see `vendor/wgpu-hal/ZGX_PATCH.md` and [windows.md](windows.md).
 
 ## Selecting and validating the zgx renderer
 
