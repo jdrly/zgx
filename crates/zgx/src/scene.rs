@@ -4208,6 +4208,21 @@ impl Scene {
             .map(quantized)
     }
     fn add_damage(&mut self, rect: Rect) {
+        self.add_damage_as::<false>(rect);
+    }
+    /// `add_damage` for a moved leaf (`arrange`), the grid first.
+    #[inline(never)]
+    fn add_leaf_damage(&mut self, rect: Rect) {
+        self.add_damage_as::<true>(rect);
+    }
+    /// `add_damage`, looking for the grid before a recent rectangle that
+    /// holds `rect` when `GRID_FIRST`: on the grid, marking cells again
+    /// changes nothing, so the check is work for no change. Where most
+    /// damage goes to a list (small scenes, a frame's first changes), the
+    /// check comes first, as it then saves merging. Layout's moved leaves
+    /// (bars, fills: hundreds a frame) take the grid first.
+    #[inline(always)]
+    fn add_damage_as<const GRID_FIRST: bool>(&mut self, rect: Rect) {
         // Raster coverage rounds fractional edges outwards. Quantize before merging
         // so adjacent subpixel rectangles cannot repaint the same alpha pixel twice,
         // and every primitive covering a touched pixel participates in its repaint.
@@ -4215,6 +4230,10 @@ impl Scene {
         let Some(mut rect) = rect.intersection(self.viewport) else {
             return;
         };
+        if GRID_FIRST && let Some(grid) = &mut self.damage_grid {
+            grid.mark(rect);
+            return;
+        }
         let holds = |outer: &Rect| {
             outer.x <= rect.x
                 && outer.y <= rect.y
@@ -4226,7 +4245,7 @@ impl Scene {
         }
         self.recent_damage.rotate_right(1);
         self.recent_damage[0] = rect;
-        if let Some(grid) = &mut self.damage_grid {
+        if !GRID_FIRST && let Some(grid) = &mut self.damage_grid {
             grid.mark(rect);
             return;
         }
@@ -5912,11 +5931,11 @@ impl Scene {
                         || before.y == after.y && before.height == after.height)
                         && before.intersects(after) =>
                 {
-                    self.add_damage(before.union(after));
+                    self.add_leaf_damage(before.union(after));
                 }
                 (before, after) => {
                     for rect in [before, after].into_iter().flatten() {
-                        self.add_damage(rect);
+                        self.add_leaf_damage(rect);
                     }
                 }
             }
