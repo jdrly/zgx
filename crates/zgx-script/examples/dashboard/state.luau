@@ -26,7 +26,9 @@ M.volumes = ui.state("volumes", volumes)
 M.value = ui.state("value", value)
 -- Bumped each time the feed changes rows: what reads it follows the feed.
 M.tick = ui.state("tick", 0)
-M.live = ui.state("live", true)
+-- `zgx-run dashboard 1000 paused`: the feed paused until Live is checked
+-- (a benchmark's: no tick but the ones it measures, however slow the run).
+M.live = ui.state("live", ui.args[2] ~= "paused")
 M.query = ui.state("query", "")
 M.sector = ui.state("sector", "All")
 M.sort = ui.state("sort", { key = "symbol" :: SortKey, descending = false })

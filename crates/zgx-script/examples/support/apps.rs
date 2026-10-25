@@ -226,11 +226,15 @@ fn mail(make: MakeDrawing) {
 fn dashboard(make: MakeDrawing) {
     let rows = size("ROWS", 100_000).to_string();
     // The live feed's timer ticks by the wall clock, as often as the run is
-    // slow (under cachegrind, many times as often): paused before the first
-    // frame, each tick is the one this measures.
-    let mut b = Bench::with("dashboard", (1280., 800.), &[rows], make, |app| {
-        app.click("live")
-    });
+    // slow: paused from the start (a run slow enough, cachegrind's cold
+    // start, ticked it before a click could pause it, a feed tick more in
+    // the count), and checked paused, so each tick is the one this measures.
+    let args = [rows, "paused".to_owned()];
+    let mut b = Bench::with("dashboard", (1280., 800.), &args, make, |_| {});
+    let calls = b.app.calls();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    b.frames(2);
+    assert_eq!(b.app.calls(), calls, "the live feed is paused");
     b.app.click("sort-price");
     b.frames(2);
     b.measure("dashboard: feed tick, sorted by price", |b, _| {
