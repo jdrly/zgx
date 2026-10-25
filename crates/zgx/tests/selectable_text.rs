@@ -1048,12 +1048,28 @@ fn copying_takes_rows_a_virtual_list_has_not_mounted_from_its_row_text() {
     offset.set(10_000.);
     ui.prepare_frame();
     assert_eq!(ui.selected_text(), every);
-    // A selection whose rows all scrolled away still copies them.
+    // A selection whose rows all scrolled away still copies them, cut
+    // where it was: no more than was selected.
     offset.set(0.);
     ui.prepare_frame();
     drag(&mut ui, (6., 50.), (18., 90.));
     assert_eq!(ui.selected_text(), "ow 1\nRow 2\nRow");
     offset.set(10_000.);
     ui.prepare_frame();
-    assert_eq!(ui.selected_text(), "Row 1\nRow 2\nRow 3");
+    assert_eq!(ui.selected_text(), "ow 1\nRow 2\nRow");
+    // One end scrolled away, the other in view.
+    offset.set(0.);
+    ui.prepare_frame();
+    drag(&mut ui, (12., 50.), (12., 110.));
+    assert_eq!(ui.selected_text(), "w 1\nRow 2\nRow 3\nRo");
+    // Row 1 is two rows above the view, past the overscan.
+    offset.set(60.);
+    ui.prepare_frame();
+    assert_eq!(ui.selected_text(), "w 1\nRow 2\nRow 3\nRo");
+    // Within one row, scrolled away.
+    drag(&mut ui, (6., 70.), (18., 70.));
+    let within = ui.selected_text();
+    offset.set(10_000.);
+    ui.prepare_frame();
+    assert_eq!(ui.selected_text(), within);
 }

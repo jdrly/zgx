@@ -112,6 +112,10 @@ struct RowAddress {
     content: NodeId,
     index: usize,
     path: Vec<u32>,
+    /// The row's text as a copy takes it, when the end was set there, and
+    /// where the end lies in it: a copy of an end whose row has scrolled
+    /// away cuts the row where the selection did.
+    copied: Option<(Rc<str>, usize)>,
 }
 
 /// A selection's end, as it stands: in mounted text, in a row the list has
@@ -760,7 +764,7 @@ impl Ui {
                            old: Option<TextPoint>,
                            kept: &Option<RowAddress>| match point {
                     Some(point) if Some(point) == old => kept.clone(),
-                    Some(point) => row_address(&state.rows, &scene, point.node),
+                    Some(point) => row_address(&state.rows, &scene, point),
                     None => None,
                 };
                 (
@@ -1387,11 +1391,26 @@ impl Ui {
                 .unwrap_or(shown.len());
             // Bounded, should a list never end.
             let hi = hi.min(lo.saturating_add(MAX_PROVIDED_ROWS));
+            // An end in a row scrolled away cuts it where it did.
+            let cut = |end: &End, index: usize| match end {
+                End::Parked(row, _) if row.content == *content && row.index == index => {
+                    row.copied.clone()
+                }
+                _ => None,
+            };
             let mut index = lo;
             while index <= hi {
                 if !mounted.iter().any(|(_, m)| *m == index) {
-                    let Some(row) = text(index) else {
-                        break;
+                    let row = match (cut(&start, index), cut(&end, index)) {
+                        (Some((row, from)), Some((_, to))) if from <= to && to <= row.len() => {
+                            row[from..to].to_owned()
+                        }
+                        (Some((row, from)), None) => row[from.min(row.len())..].to_owned(),
+                        (None, Some((row, to))) => row[..to.min(row.len())].to_owned(),
+                        _ => match text(index) {
+                            Some(row) => row,
+                            None => break,
+                        },
                     };
                     let before = mounted
                         .iter()
@@ -2006,17 +2025,17 @@ fn row_of(
         .find_map(|at| Some((scene.parent(at)?, rows.get(&at)?.with_untracked(|i| *i))))
 }
 
-/// Where `node` lies in a virtual list's row, as a `RowAddress`.
+/// Where `point` lies in a virtual list's row, as a `RowAddress`.
 fn row_address(
     rows: &HashMap<NodeId, crate::reactive::Signal<usize>>,
     scene: &Scene,
-    node: NodeId,
+    point: TextPoint,
 ) -> Option<RowAddress> {
-    if rows.is_empty() || !scene.contains(node) {
+    if rows.is_empty() || !scene.contains(point.node) {
         return None;
     }
     let mut path = Vec::new();
-    let mut at = node;
+    let mut at = point.node;
     while let Some(parent) = scene.parent(at) {
         if let Some(index) = rows.get(&at) {
             path.reverse();
@@ -2024,12 +2043,50 @@ fn row_address(
                 content: parent,
                 index: index.with_untracked(|index| *index),
                 path,
+                copied: row_copy(scene, at, point),
             });
         }
         path.push(scene.children(parent).iter().position(|c| *c == at)? as u32);
         at = parent;
     }
     None
+}
+
+/// Row `row`'s text as `selected_text` takes it (its text nodes joined as
+/// a copy joins them), and where `point` lies in it.
+fn row_copy(scene: &Scene, row: NodeId, point: TextPoint) -> Option<(Rc<str>, usize)> {
+    let clean = |text: &str, out: &mut String| {
+        out.extend(
+            text.chars()
+                .filter(|c| *c != '\u{2060}' && *c != '\u{fffc}'),
+        );
+    };
+    let (mut out, mut at) = (String::new(), None);
+    let mut previous: Option<(NodeId, f32)> = None;
+    let mut pending = vec![row];
+    while let Some(id) = pending.pop() {
+        pending.extend(scene.children(id).iter().rev());
+        if !scene.layout_visible(id) {
+            continue;
+        }
+        let Some(text) = text_of(scene, id) else {
+            continue;
+        };
+        let size = font_size(scene, id);
+        if let Some((before, before_size)) = previous {
+            out.push_str(separator(scene, before, id, before_size.min(size)));
+        }
+        if id == point.node {
+            let cut = point.offset.min(text.len());
+            clean(&text[..cut], &mut out);
+            at = Some(out.len());
+            clean(&text[cut..], &mut out);
+        } else {
+            clean(&text, &mut out);
+        }
+        previous = Some((id, size));
+    }
+    Some((out.into(), at?))
 }
 
 /// The text node at `row`, if its row is mounted.
