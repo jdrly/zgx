@@ -515,3 +515,14 @@ a screen reader (`accessible_label_when`): tabs, the select's value, the date
 picker's days, the dashboard's instruments with their trends and its charts
 named by what they show. A grid's cells are named by their text
 (`vendor/accesskit_windows/ZGX_PATCH.md`).
+
+UI Automation clients that are not screen readers attach to windows on most
+desktops (the shell's touch keyboard host, Voice Access, Magnifier, test
+tools). While no screen reader runs (none has set `SPI_GETSCREENREADER`, as
+Narrator, NVDA and JAWS do), a window's tree reaches them paced: focus at
+once, names, values and selection and geometry at most 100 ms late, so a
+dashboard's live values do not rebuild the tree every frame. With a screen
+reader running, names, values and selection go out at once. AccessKit
+answers clients' reads from the tree it was last given, so a test reading a
+value straight after an action that does not move focus may wait up to
+100 ms for it.
