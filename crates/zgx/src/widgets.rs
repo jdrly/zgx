@@ -2670,6 +2670,11 @@ impl Ui {
     /// Free what removed nodes held, a chunk at least and for at most
     /// `budget` past it: whether some is left for the next call.
     pub fn reclaim(&self, budget: std::time::Duration) -> bool {
+        // Most frames free nothing: no look at the clock for them.
+        if !self.reclaiming() {
+            self.shrink_storage();
+            return false;
+        }
         let started = std::time::Instant::now();
         loop {
             // A chunk at a time between looks at the clock.
