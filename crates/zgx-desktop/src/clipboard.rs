@@ -10,6 +10,32 @@ use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+/// Text as the platform's apps take it from the clipboard. Windows': lines
+/// ending in CR LF, as browsers write them there (a classic edit control
+/// shows a lone LF as no break at all). Pasting gives editors either.
+fn platform_text(text: String) -> String {
+    #[cfg(windows)]
+    if text.contains('\n') {
+        return crlf(&text);
+    }
+    text
+}
+
+/// `text` with a CR before each LF that has none.
+#[cfg(any(windows, test))]
+fn crlf(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut previous = None;
+    for c in text.chars() {
+        if c == '\n' && previous != Some('\r') {
+            out.push('\r');
+        }
+        out.push(c);
+        previous = Some(c);
+    }
+    out
+}
+
 enum Backend {
     Native(arboard::Clipboard),
     #[cfg(target_os = "linux")]
@@ -44,7 +70,7 @@ impl Clipboard {
     /// Wayland.
     pub(crate) fn set_rich_text(&mut self, text: String, html: String) -> Result<()> {
         match &mut self.backend {
-            Backend::Native(clipboard) => clipboard.set_html(html, Some(text))?,
+            Backend::Native(clipboard) => clipboard.set_html(html, Some(platform_text(text)))?,
             #[cfg(target_os = "linux")]
             Backend::Wayland(clipboard) => clipboard.store_rich(text, html)?,
         }
@@ -63,7 +89,7 @@ impl Clipboard {
     /// offered, not that another process has accepted or persisted its data.
     pub(crate) fn set_text(&mut self, text: String) -> Result<()> {
         match &mut self.backend {
-            Backend::Native(clipboard) => clipboard.set_text(text)?,
+            Backend::Native(clipboard) => clipboard.set_text(platform_text(text))?,
             #[cfg(target_os = "linux")]
             Backend::Wayland(clipboard) => clipboard.store(false, text)?,
         }
@@ -100,5 +126,31 @@ impl Clipboard {
             Backend::Wayland(clipboard) => clipboard.store(true, text)?,
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lines_copied_end_in_cr_lf_once() {
+        assert_eq!(
+            super::crlf("one\ntwo\r\nthree\n"),
+            "one\r\ntwo\r\nthree\r\n"
+        );
+        assert_eq!(super::crlf("\n\n"), "\r\n\r\n");
+        assert_eq!(super::crlf("no break \r here"), "no break \r here");
+        assert_eq!(super::crlf("é\nü"), "é\r\nü");
+    }
+
+    /// On Windows, what zgx copies has Windows' line ends; elsewhere it is
+    /// as it was.
+    #[test]
+    fn copied_text_has_the_platforms_line_ends() {
+        let copied = super::platform_text("a\nb".into());
+        if cfg!(windows) {
+            assert_eq!(copied, "a\r\nb");
+        } else {
+            assert_eq!(copied, "a\nb");
+        }
     }
 }

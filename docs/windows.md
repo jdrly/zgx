@@ -482,7 +482,7 @@ what it reports. They need only Python's standard library and an unlocked,
 interactive desktop, and take the pointer and keyboard while they run:
 
 ```powershell
-cargo build -p zgx-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe --example window_probe
+cargo build -p zgx-desktop --example gallery --example dpi_transition --example native_ime --example selectable_text --example platform_services --example drag_drop --example scrollbars --example workbench --example form --example selectable_text --example popup_probe --example drag_probe --example drop_target_probe --example window_probe --example text_selection
 python scripts/windows_desktop_smoke.py target/debug/examples/gallery.exe
 python scripts/windows_dpi_smoke.py target/debug/examples/dpi_transition.exe
 python scripts/windows_ime_smoke.py target/debug/examples/native_ime.exe --install-korean
@@ -492,6 +492,7 @@ python scripts/windows_touch_smoke.py target/debug/examples
 python scripts/windows_popup_smoke.py target/debug/examples
 python scripts/windows_drag_smoke.py target/debug/examples
 python scripts/windows_window_smoke.py target/debug/examples
+python scripts/windows_text_smoke.py target/debug/examples/text_selection.exe
 ```
 
 - `windows_desktop_smoke.py`: pointer activation, typing, selection, clipboard,
@@ -514,6 +515,16 @@ python scripts/windows_window_smoke.py target/debug/examples
   editor, the file picker and the message box (each owned by its window, the
   window disabled while it shows), and a file dragged in from another process
   through OLE drag and drop, as from Explorer.
+- `windows_text_smoke.py` (`text_selection`): a double click within the
+  system's double-click time selects a word, and presses further apart do
+  not; a second press outside the system's double-click box (`SM_CXDOUBLECLK`
+  by `SM_CYDOUBLECLK`) is a new first press, inside it a double click; a
+  triple click selects the line; copied lines reach the clipboard ending in
+  CR LF, as Windows apps take them, and CR LF pasted in leaves no CR in the
+  editor. Selections are read through UI Automation. It saves the user's
+  clipboard and restores it after, keeps what it puts there out of clipboard
+  history, and skips the copy and paste checks while cloud clipboard sync is
+  on.
 - `windows_webview_smoke.py` (`web_view` built with `--features webview2`):
   the page loads and its title reaches the state, a click in the page reaches
   it, zgx's composer over the page takes clicks and typing and its script
