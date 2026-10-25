@@ -350,7 +350,16 @@ impl Drop for Sample {
 /// layer's contents instead, and the video layer is dropped at rest.
 pub(crate) struct Layer {
     host: Retained<CALayer>,
+    /// Holds a layer per surface (`tiles`), and no contents of its own.
     plain: Retained<CALayer>,
+    /// Each surface shown on the plain layer, as a sublayer of `plain` whose
+    /// contents are set once, when the surface is first shown: showing a
+    /// surface again flips which tile is hidden. New contents every frame
+    /// make the window server take the surface in afresh each time, which
+    /// cost it about 4 points of a core more than GPUI's presents in the
+    /// heavy dashboard (2026-10-25: 13.4% against 9.8% with tiles, at the
+    /// same app CPU and GPU power). Dropped with their surfaces (`keep`).
+    tiles: Vec<(u32, Retained<CALayer>)>,
     /// Whether `plain` has contents (shows a surface, or holds one under
     /// `video` until the video layer shows a frame of its own).
     plain_shows: Rc<Cell<bool>>,
@@ -363,7 +372,7 @@ pub(crate) struct Layer {
     /// What the layers were last given, so a frame sets only what changed.
     opaque: Cell<bool>,
 }
-/// Clears the plain layer's contents once the video layer above it shows a
+/// Hides the plain layer's tiles once the video layer above it shows a
 /// frame: until then they show the frame before; after, under a window's
 /// translucent pixels, they would show through. Checked on the main queue
 /// each refresh or so, as no further frame may come to check it.
@@ -419,8 +428,7 @@ impl Uncover {
         if shown || this.tries > 60 {
             crate::present_log::log(|| format!("uncover tries={} confirmed={shown}", this.tries));
             transaction(|| {
-                // SAFETY: No contents (nil) is a layer's valid contents.
-                unsafe { this.plain.setContents(None) };
+                hide_tiles(&this.plain, None);
                 this.video.setOpacity(1.);
             });
             this.shows.set(false);
@@ -490,6 +498,17 @@ fn describe(host: &CALayer) -> String {
         for sub in subs.iter() {
             out += " ";
             out += &one(&sub);
+            // The plain layer's tiles, one per surface (`Layer::tiles`).
+            // SAFETY: as the host's, above.
+            if let Some(tiles) = unsafe { sub.sublayers() } {
+                out += "{";
+                out += &tiles
+                    .iter()
+                    .map(|tile| one(&tile))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out += "}";
+            }
         }
     }
     out
@@ -574,6 +593,20 @@ fn fill(layer: &CALayer, host: &CALayer, opaque: bool) {
     unsafe {
         let actions = &*(&*actions as *const CFDictionary<CFString, CFNull>).cast::<AnyObject>();
         let _: () = msg_send![layer, setActions: actions];
+    }
+}
+/// Shows `plain`'s tile of the surface `shown` (none: hides them all),
+/// changing only the tiles whose state differs.
+fn hide_tiles(plain: &CALayer, shown: Option<&CALayer>) {
+    // SAFETY: The layer's live sublayer array, read on the main thread while
+    // nothing else changes it.
+    if let Some(tiles) = unsafe { plain.sublayers() } {
+        for tile in tiles.iter() {
+            let hidden = shown.is_none_or(|shown| !std::ptr::eq(&*tile, shown));
+            if tile.isHidden() != hidden {
+                tile.setHidden(hidden);
+            }
+        }
     }
 }
 /// Run `change` as one Core Animation transaction, without animation.
@@ -676,8 +709,51 @@ impl Layer {
             generation: Default::default(),
             uncovering: Default::default(),
             video: None,
+            tiles: Vec::new(),
             opaque: Cell::new(false),
         }
+    }
+    /// Shows `buffer`'s tile on the plain layer, made (its contents set) the
+    /// first time the surface shows; in the caller's transaction.
+    fn show_tile(&mut self, buffer: &Buffer) {
+        let id = buffer.surface.id();
+        let tile = match self.tiles.iter().position(|(tile, _)| *tile == id) {
+            Some(at) => &self.tiles[at].1,
+            None => {
+                let tile = CALayer::new();
+                fill(&tile, &self.plain, self.opaque.get());
+                tile.setHidden(true);
+                let surface = &*buffer.surface as *const IOSurfaceRef as *const AnyObject;
+                // SAFETY: `surface` points to the buffer's live IOSurface, an
+                // object (bridged to `IOSurface`) and a layer's valid contents,
+                // which the layer retains.
+                unsafe { tile.setContents(Some(&*surface)) };
+                self.plain.addSublayer(&tile);
+                self.tiles.push((id, tile));
+                &self.tiles[self.tiles.len() - 1].1
+            }
+        };
+        hide_tiles(&self.plain, Some(tile));
+    }
+    /// Drops the tiles of surfaces other than `surfaces` (the renderer's, as
+    /// it keeps fewer or makes new ones): a tile holds its surface.
+    pub fn keep(&mut self, surfaces: impl Iterator<Item = u32> + Clone) {
+        if self
+            .tiles
+            .iter()
+            .all(|(id, _)| surfaces.clone().any(|kept| kept == *id))
+        {
+            return;
+        }
+        transaction(|| {
+            self.tiles.retain(|(id, tile)| {
+                let kept = surfaces.clone().any(|kept| kept == *id);
+                if !kept {
+                    tile.removeFromSuperlayer();
+                }
+                kept
+            })
+        });
     }
     /// The surface on screen (its IOSurface ID), if the video layer shows it
     /// and says so (macOS 14.4). The window server keeps every surface a
@@ -718,16 +794,13 @@ impl Layer {
             let hidden = !opaque && self.plain_shows.get();
             self.video = Some(Video::new(&self.host, opaque, hidden));
         }
-        let Some(video) = &self.video else {
-            let surface = &*buffer.surface as *const IOSurfaceRef as *const AnyObject;
+        if self.video.is_none() {
             crate::present_log::log(|| format!("plain-set surface={}", buffer.surface.id()));
-            // SAFETY: `surface` points to the buffer's live IOSurface, an
-            // object (bridged to `IOSurface`) and a layer's valid contents,
-            // which the layer retains.
-            transaction(|| unsafe { self.plain.setContents(Some(&*surface)) });
+            transaction(|| self.show_tile(buffer));
             self.plain_shows.set(true);
             return;
-        };
+        }
+        let video = self.video.as_ref().expect("checked above");
         video.enqueue(sample.expect("looked for while the video layer shows"));
         if !self.plain_shows.get() || self.uncovering.replace(true) {
             return;
@@ -758,14 +831,11 @@ impl Layer {
             crate::present_log::log(|| "video-drop (plain takes over)".into());
             self.generation.set(self.generation.get() + 1);
         }
-        let surface = &*buffer.surface as *const IOSurfaceRef as *const AnyObject;
         crate::present_log::log(|| {
             format!("plain-set surface={} (show_plain)", buffer.surface.id())
         });
         transaction(|| {
-            // SAFETY: As in `show`: the buffer's live IOSurface, a layer's
-            // valid contents.
-            unsafe { self.plain.setContents(Some(&*surface)) };
+            self.show_tile(buffer);
             if let Some(video) = &video {
                 video.layer.removeFromSuperlayer();
             }
@@ -775,7 +845,9 @@ impl Layer {
     fn set_opaque(&self, opaque: bool) {
         if self.opaque.replace(opaque) != opaque {
             transaction(|| {
-                self.plain.setOpaque(opaque);
+                for (_, tile) in &self.tiles {
+                    tile.setOpaque(opaque);
+                }
                 if let Some(video) = &self.video {
                     video.layer.setOpaque(opaque);
                 }

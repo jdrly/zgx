@@ -62,6 +62,8 @@ fn view(live: Signal<u32>) -> View {
 
 #[cfg(target_os = "macos")]
 struct Window {
+    /// The layer the renderer presents into (`Layer`'s host).
+    host: objc2::rc::Retained<objc2_quartz_core::CALayer>,
     ui: Ui,
     gpu: GpuRenderer,
     live: Signal<u32>,
@@ -73,13 +75,15 @@ impl Window {
     fn new(live: u32) -> Self {
         let host = objc2_quartz_core::CALayer::new();
         let mut gpu =
-            GpuRenderer::debug_for_layer(host, (SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+            GpuRenderer::debug_for_layer(host.clone(), (SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32)
+                .unwrap();
         gpu.set_scale_factor(2.);
         let mut ui = Ui::new(SIZE.0, SIZE.1);
         gpu.install_text(&mut ui.scene.borrow_mut());
         let state = ui.signal(live);
         ui.mount(view(state.clone()));
         Window {
+            host,
             ui,
             gpu,
             live: state,
@@ -115,10 +119,76 @@ fn scattered_damage_presented_through_surfaces_matches_drawing_whole() {
     assert!(window.patched > 0, "no frame patched");
 }
 
+/// The plain layer's tiles (one per surface shown, `Layer::tiles`): each
+/// one's contents, as an address, and whether it is hidden.
+#[cfg(target_os = "macos")]
+fn tiles(host: &objc2_quartz_core::CALayer) -> Vec<(usize, bool)> {
+    use objc2::{msg_send, rc::Retained, runtime::AnyObject};
+    // SAFETY: the layers' live sublayer arrays, read on the main thread.
+    let plain = unsafe { host.sublayers() }
+        .and_then(|subs| subs.iter().find(|sub| unsafe { sub.sublayers() }.is_some()))
+        .expect("a plain layer holding tiles");
+    unsafe { plain.sublayers() }
+        .expect("tiles")
+        .iter()
+        .map(|tile| {
+            // SAFETY: `contents` returns a nullable object (`id`), retained here.
+            let contents: Option<Retained<AnyObject>> = unsafe { msg_send![&*tile, contents] };
+            let at = contents.map_or(0, |c| Retained::as_ptr(&c) as usize);
+            (at, tile.isHidden())
+        })
+        .collect()
+}
+
+/// Frames shown on the plain layer flip which tile shows: a tile's contents
+/// are set once (new contents each frame make the window server take the
+/// surface in again, at about 4 points of a core more in the heavy
+/// dashboard), one tile shows at a time, and a surface the renderer lets go
+/// takes its tile with it.
+#[cfg(target_os = "macos")]
+fn plain_frames_flip_tiles_whose_contents_are_set_once() {
+    let mut window = Window::new(1);
+    window.show();
+    let mut seen = std::collections::BTreeSet::new();
+    for live in 2..12 {
+        window.live.set(live);
+        window.show();
+        let tiles = tiles(&window.host);
+        assert_eq!(
+            tiles.iter().filter(|(_, hidden)| !hidden).count(),
+            1,
+            "frame {live}: one tile shows ({tiles:?})"
+        );
+        assert!(
+            tiles.iter().all(|(at, _)| *at != 0),
+            "a tile without contents: {tiles:?}"
+        );
+        seen.extend(tiles.iter().map(|(at, _)| *at));
+        assert!(
+            tiles.len() <= 3,
+            "frame {live}: a tile per surface, {} tiles",
+            tiles.len()
+        );
+    }
+    // As many contents as surfaces ever shown: none set again.
+    assert!(
+        seen.len() <= 3,
+        "tiles' contents changed: {} seen",
+        seen.len()
+    );
+    // At rest the renderer keeps one surface, and the plain layer one tile.
+    window.gpu.trim();
+    let tiles = tiles(&window.host);
+    assert_eq!(tiles.len(), 1, "at rest: one tile ({tiles:?})");
+    assert!(!tiles[0].1, "at rest the kept tile shows");
+}
+
 fn main() {
     #[cfg(target_os = "macos")]
     {
         scattered_damage_presented_through_surfaces_matches_drawing_whole();
         println!("layer_frames: scattered damage through surfaces matches drawing whole");
+        plain_frames_flip_tiles_whose_contents_are_set_once();
+        println!("layer_frames: plain frames flip tiles whose contents are set once");
     }
 }

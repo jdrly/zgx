@@ -6827,6 +6827,12 @@ impl GpuRenderer {
         } else {
             layer.show(buffer, opaque, present.full_rate);
         }
+        layer.keep(
+            present
+                .buffers
+                .iter()
+                .map(|(buffer, _)| buffer.surface.id()),
+        );
         present.frame += 1;
         let frame = present.frame;
         present.buffers[index].1 = Some(frame);
@@ -7060,6 +7066,7 @@ impl GpuRenderer {
             present.shown = Some(0);
             if let Some(layer) = &mut present.layer {
                 layer.rest(&present.buffers[0].0);
+                layer.keep(std::iter::once(present.buffers[0].0.surface.id()));
             }
         }
         if let Some(mapped) = &mut self.mapped {
