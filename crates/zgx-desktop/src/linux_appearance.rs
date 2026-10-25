@@ -94,6 +94,10 @@ static CURRENT: Mutex<Appearance> = Mutex::new(Appearance {
     overlay_scrolling: None,
     primary_paste: None,
     titlebar_double_click: None,
+    cursor_blink: None,
+    cursor_blink_time: None,
+    cursor_blink_timeout: None,
+    kde_cursor_blink_rate: None,
 });
 
 /// The settings as last read (the default until the portal answers).
