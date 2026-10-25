@@ -19,8 +19,12 @@ from pathlib import Path
 import platform
 import resource
 import subprocess
+import sys
 import tarfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from staging import CWD, stage  # noqa: E402
 
 
 class RusageInfoV0(ctypes.Structure):
@@ -91,7 +95,8 @@ def trial(binary, mode, repeat, args, sample):
         env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(args.seconds),
                    ZGX_INITIAL_TICKS='0')
         with path.with_suffix('.log').open('w') as log:
-            process = subprocess.Popen([str(binary)], env=env, stdout=log, stderr=log)
+            # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
+            process = subprocess.Popen([str(stage(binary))], env=env, cwd=CWD, stdout=log, stderr=log)
             raw['pid'] = process.pid
             while process.poll() is None:
                 elapsed = time.monotonic() - started

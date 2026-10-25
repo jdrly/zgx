@@ -9,6 +9,10 @@ is quiet when nothing known to be heavy runs (compilers and linkers of any
 agent, Linux VMs, Instruments, stress tools, Spotlight indexing, Time
 Machine, software updates) and the processes other than the benchmark's and
 the window server together use less than a threshold of one core.
+A system dialog on screen (a privacy prompt, a crash report) makes it not
+quiet too: it would sit over the windows measured. `dialogs()` only reads
+them; nothing here clicks one (a scripted answer to a privacy prompt once
+wedged macOS's privacy service): the person at the Mac dismisses it.
 `wait_until_quiet()` checks again until it is, logging what it found.
 `state()` records what changes a desktop's own cost between days: displays
 (count, resolution, refresh), a live-wallpaper app, power mode, macOS
@@ -34,6 +38,33 @@ BUSY_ONLY = {'mds_stores': 20.0, 'mds': 20.0, 'mdworker_shared': 20.0}
 # the desktop-alone baseline every run measures).
 EXEMPT = ['WindowServer', 'kernel_task', 'zgx-macsample', 'zgx-framepace']
 RESIDENTS = ['Wallspace', 'Wallpaper Engine', 'Plash']
+# Where system dialogs come from: privacy prompts, crash reports, keychain.
+DIALOGS = ['UserNotificationCenter', 'CoreServicesUIAgent', 'Problem Reporter', 'universalAccessAuthWarn', 'SecurityAgent']
+
+
+def dialogs():
+    """The system dialogs on screen, as their text (read through System
+    Events; never clicked)."""
+    script = '''set found to {}
+tell application "System Events"
+  repeat with n in {%s}
+    if exists process (n as text) then
+      repeat with w in (every window of process (n as text))
+        set texts to ""
+        try
+          repeat with t in (every static text of w)
+            set texts to texts & (value of t as text) & " "
+          end repeat
+        end try
+        set end of found to (n as text) & ": " & texts
+      end repeat
+    end if
+  end repeat
+end tell
+set AppleScript's text item delimiters to linefeed
+found as text''' % ', '.join(f'"{n}"' for n in DIALOGS)
+    out = subprocess.run(['osascript', '-e', script], capture_output=True, text=True).stdout
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
 def cpu_times():
@@ -76,8 +107,9 @@ def quiet(seconds=3.0, threshold=75.0, ignore=()):
         'busiest': [f'{name} {cpu:.1f}%' for name, _, cpu in others[:6] if cpu >= 0.5],
         'window_server_percent': round(sum(u[2] for u in usage if u[0] == 'WindowServer'), 1),
         'residents': [f'{name} {cpu:.1f}%' for name, _, cpu in usage if name in RESIDENTS],
+        'dialogs': dialogs(),
     }
-    return not heavy and load < threshold, findings
+    return not heavy and not findings['dialogs'] and load < threshold, findings
 
 
 def wait_until_quiet(log=print, threshold=75.0, patience=1800, ignore=()):
@@ -89,8 +121,12 @@ def wait_until_quiet(log=print, threshold=75.0, patience=1800, ignore=()):
             log(f'preflight: quiet (others {findings["other_cpu_percent"]}% of a core; busiest '
                 f'{", ".join(findings["busiest"]) or "none"})')
             return findings
-        log(f'preflight: waiting (above {threshold:g}%): heavy {findings["heavy"] or "none"}, others '
-            f'{findings["other_cpu_percent"]}% ({", ".join(findings["busiest"])})')
+        if findings['dialogs']:
+            log('preflight: waiting for a system dialog to be dismissed (not clicking it): '
+                + ' | '.join(findings['dialogs']))
+        else:
+            log(f'preflight: waiting (above {threshold:g}%): heavy {findings["heavy"] or "none"}, others '
+                f'{findings["other_cpu_percent"]}% ({", ".join(findings["busiest"])})')
         if time.monotonic() - started > patience:
             raise SystemExit('preflight: the machine stayed busy; not measuring')
         time.sleep(10)

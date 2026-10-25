@@ -72,6 +72,14 @@ scene in a window for 15 s: run it on a quiet desktop), then `use` (into
 for a CPU, GPU and memory column beside the main run, written to
 `latest-macos-<scene>-pgo-<date>-<commit>`.
 
+### Apps run from /tmp, never from ~/Documents
+
+Every macOS runner (`run_macos_comparison.py`, `trace_macos_gpu.py`, `windowserver_pair.py`, `macos_resource_probe.py`, PGO training) launches a copy of each app staged under `/tmp/zgx-staged/<content hash>/`, with `/tmp` as its working directory (`scripts/staging.py`). macOS protects `~/Documents` (privacy, TCC). An unsigned GUI app is its own responsible process, and each ad-hoc build of it is a new identity, so an app launched from a checkout under `~/Documents`, or with its working directory there, can stop mid-run to ask for access to the folder. The dialog sits over the window being measured.
+
+Never answer such a dialog from a script. On 2026-10-25 a scripted "Don't Allow" wedged the privacy service: every new file access under `~/Documents` blocked for 53 minutes, until the Mac was restarted. The preflight (`scripts/perf/preflight.py`) reads the system dialogs on screen (privacy prompts, crash reports) and waits, logging their text, until a person dismisses them.
+
+Two probes read the checkout by design and launch their app as a direct child: `macos_native_validation.py` (examples run in the repository root) and `macos_accessibility_probe.py` (zgx-run opens the example scripts). If a prompt appears during one of them, stop and dismiss it by hand.
+
 ### Why idle is sampled 20–35 s after launch
 
 Any process that has used the GPU lately holds about 180 MB of Metal driver

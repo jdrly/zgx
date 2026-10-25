@@ -18,6 +18,10 @@ import statistics
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from staging import CWD, stage  # noqa: E402
 
 # Each heavy window is 1280 points wide: these places don't overlap (a
 # covered window costs the window server less).
@@ -56,7 +60,8 @@ def launch(app, mode, parity, seconds):
     own, path = app.split(':', 1) if ':' in app else (mode, app)
     env = {'HOME': os.environ['HOME'], 'PATH': os.environ['PATH'], 'ZGX_MODE': own,
            'ZGX_SECONDS': str(seconds + 12), 'ZGX_PARITY': parity}
-    return subprocess.Popen([path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
+    return subprocess.Popen([str(stage(path))], env=env, cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def trial(server, seconds, mode, even_app, odd_app):

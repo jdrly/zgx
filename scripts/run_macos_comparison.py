@@ -69,7 +69,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/perf'))
+sys.path.insert(0, str(ROOT / 'scripts'))
 import preflight  # noqa: E402
+from staging import CWD, stage  # noqa: E402
 REQUESTED, WARMUP, SAMPLED, INTERVAL = 20, 5, 15, 0.05
 # Idle is sampled 20-35 s after launch, five times: until the Metal driver
 # gives back the memory it holds for any process that used the GPU lately
@@ -157,7 +159,8 @@ def environment():
 def launch(binary, mode, seconds, log):
     env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds))
     with log.open('w') as handle:
-        process = subprocess.Popen([str(binary)], stdout=handle, stderr=subprocess.STDOUT, env=env)
+        # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
+        process = subprocess.Popen([str(stage(binary))], stdout=handle, stderr=subprocess.STDOUT, env=env, cwd=CWD)
     time.sleep(0.5)
     # Bring the window forward: covered windows may stop presenting.
     subprocess.run(['osascript', '-e', f'tell application "System Events" to set frontmost of (first process whose unix id is {process.pid}) to true'], capture_output=True)

@@ -58,7 +58,8 @@ def train():
             for binary, mode in binaries.items():
                 print(f'training {framework} {binary} ({mode})', file=sys.stderr)
                 env = {'HOME': os.environ['HOME'], 'PATH': os.environ['PATH'], 'ZGX_MODE': mode, 'ZGX_SECONDS': '15'}
-                app = subprocess.Popen([str(WORK / framework / 'generate' / 'dist' / binary)], env=env,
+                # Built under /tmp, run in /tmp: nothing under ~/Documents (scripts/staging.py).
+                app = subprocess.Popen([str(WORK / framework / 'generate' / 'dist' / binary)], env=env, cwd='/tmp',
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     app.wait(timeout=30)
