@@ -1315,6 +1315,34 @@ impl From<&Measurement> for ProbeSize {
         }
     }
 }
+/// `Scene::relevant` for `node`, whose `reads_bits` are `bits`.
+#[inline(always)]
+fn relevant_to(node: &Node, bits: u8, mut constraints: Constraints) -> Constraints {
+    if bits & OWN_PERCENT_WIDTH == 0 {
+        constraints.percent_width = None;
+    }
+    if bits & OWN_PERCENT_HEIGHT == 0 {
+        constraints.percent_height = None;
+    }
+    // Scroll content is as large as its content along an axis nothing
+    // sizes it on: the viewport's room does not fit it (it scrolls),
+    // so nothing in it shrinks or wraps to the viewport there.
+    if node.scroll_copy {
+        if node.style.width.is_none() && node.style.width_percent.is_none() {
+            constraints.width = None;
+        }
+        if node.style.height.is_none() && node.style.height_percent.is_none() {
+            constraints.height = None;
+        }
+    }
+    if constraints.force_width.is_some() || bits & READS_WIDTH == 0 {
+        constraints.width = constraints.force_width;
+    }
+    if constraints.force_height.is_some() || bits & READS_HEIGHT == 0 {
+        constraints.height = constraints.force_height;
+    }
+    constraints
+}
 /// Put `evicted` (most recent first) ahead of `sizes`' older entries, each
 /// constraint kept once, at most `PROBE_SIZES`.
 fn keep_sizes(sizes: &mut Vec<ProbeSize>, evicted: Vec<ProbeSize>) {
@@ -4790,34 +4818,20 @@ impl Scene {
     /// a forced one overrides, percentage bases it has no percentages
     /// against, and available sizes a leaf never reads (text lays out at
     /// its available width only when it wraps).
-    fn relevant(&self, id: NodeId, mut constraints: Constraints) -> Constraints {
+    fn relevant(&self, id: NodeId, constraints: Constraints) -> Constraints {
         // Every probe asks, cache hits too: the answers are cached together.
-        let bits = self.reads_bits(id);
-        if bits & OWN_PERCENT_WIDTH == 0 {
-            constraints.percent_width = None;
-        }
-        if bits & OWN_PERCENT_HEIGHT == 0 {
-            constraints.percent_height = None;
-        }
-        // Scroll content is as large as its content along an axis nothing
-        // sizes it on: the viewport's room does not fit it (it scrolls),
-        // so nothing in it shrinks or wraps to the viewport there.
-        let node = self.node(id);
-        if node.scroll_copy {
-            if node.style.width.is_none() && node.style.width_percent.is_none() {
-                constraints.width = None;
-            }
-            if node.style.height.is_none() && node.style.height_percent.is_none() {
-                constraints.height = None;
-            }
-        }
-        if constraints.force_width.is_some() || bits & READS_WIDTH == 0 {
-            constraints.width = constraints.force_width;
-        }
-        if constraints.force_height.is_some() || bits & READS_HEIGHT == 0 {
-            constraints.height = constraints.force_height;
-        }
-        constraints
+        relevant_to(self.node(id), self.reads_bits(id), constraints)
+    }
+    /// `relevant` for `id`'s node, already in hand: one lookup for
+    /// `measured`, which reads the node too.
+    #[inline(always)]
+    fn relevant_in(&self, id: NodeId, node: &Node, constraints: Constraints) -> Constraints {
+        let cached = node.reads.get();
+        let bits = match cached & READS_KNOWN {
+            0 => self.reads_bits(id),
+            _ => cached,
+        };
+        relevant_to(node, bits, constraints)
     }
     /// The room `id`'s border takes in layout (`QuadStyle::layout_border`).
     pub(super) fn layout_border(&self, id: NodeId) -> Insets {
@@ -5024,8 +5038,8 @@ impl Scene {
             self.measure_calls += 1;
         }
         self.visit(id);
-        let constraints = self.relevant(id, constraints);
         let node = self.node(id);
+        let constraints = self.relevant_in(id, node, constraints);
         let pass = self.layout_pass;
         let clean = node.dirty & LAYOUT == 0;
         // The pass first: a changed node's older results never serve.
