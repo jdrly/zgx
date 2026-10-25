@@ -43,7 +43,7 @@ records the Go version, the flags, and MyGo's version, commit and license.
   placed by the scroll offset, as the GPUI Fast adapter does.
 - `lab`: the performance lab. Its list is the same application-level
   fixed-height virtualization as the other adapters', which the wheel
-  scrolls too. It asks for DejaVu Sans as the others do.
+  scrolls too.
 - `animate`: the view asks for every display frame (`AnimationFrame`),
   its clock at the frame's time (`Context.Now`). It counts frames by
   their time, since one frame can build the view more than once. The
@@ -56,6 +56,16 @@ records the Go version, the flags, and MyGo's version, commit and license.
   through a `ScrollState` (`TrackScroll`), as an app scrolling a list by
   pixels does. A jump calls `ListState.ScrollTo(row, ui.Start)`. At the
   end, the scroll wraps back to the top.
+
+Every scene draws its text in the one font file of `../fonts`, which the
+runner passes as `ZGX_FONT_FILE`: the adapters register it with
+`ui.RegisterFont` as the family `DejaVu Sans`, the only family their text
+names, and print `font_family=DejaVu Sans font_file_fnv64=…` at start.
+
+`ZGX_MODE=probe` runs vlist's probe instead of a trial: each of
+`ProbeRows` is put at the top (`ScrollTo`), given four frames, and the
+height the list laid it out at (`Element.LayoutBounds`) is kept. Then it
+prints `row_heights=<row>:<h>,… list_width=… text_width=688.0` and exits.
 
 Every adapter asks for a frame only when a tick changed what it shows
 (`Window.Invalidate`): idle draws nothing after its first frames, and a

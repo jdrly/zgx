@@ -60,15 +60,21 @@ const (
 	VScroll VMode = iota
 	VFling
 	VJump
+	// VProbe shows each of ProbeRows at the top in turn, lets it lay out,
+	// reports the heights the list measured (ProbeReport) and exits: the
+	// runner checks that every framework's heights agree.
+	VProbe
 )
 
-// VModeFromEnv reads ZGX_MODE: scroll (the default), fling or jump.
+// VModeFromEnv reads ZGX_MODE: scroll (the default), fling, jump or probe.
 func VModeFromEnv() VMode {
 	switch Env("ZGX_MODE") {
 	case "fling":
 		return VFling
 	case "jump":
 		return VJump
+	case "probe":
+		return VProbe
 	}
 	return VScroll
 }
@@ -112,8 +118,11 @@ func Text(row int) string {
 // Delta is the scroll a tick adds (every mode; a jump's tick lands on its
 // row instead).
 func Delta(mode VMode, tick uint64) float32 {
-	if mode == VFling {
+	switch mode {
+	case VFling:
 		return Fling.Velocity * powi(Fling.Decay, int32(tick%Fling.Every))
+	case VProbe:
+		return 0
 	}
 	// Jump scrolls between its jumps too.
 	return ScrollStep
@@ -125,4 +134,41 @@ func Jump(tick uint64) (int, bool) {
 		return int(Hash(tick^0x1234_5678) % VRows), true
 	}
 	return 0, false
+}
+
+// ProbeRows is the rows the probe measures: for every line count, the first
+// row with it and no image; for 1, 4 and 8 lines the first with an image;
+// and two far rows.
+func ProbeRows() []int {
+	first := func(lines int, image bool) int {
+		for r := range VRows {
+			if Lines(r) == lines && HasImage(r) == image {
+				return r
+			}
+		}
+		panic("no such row")
+	}
+	var rows []int
+	for n := 1; n <= 8; n++ {
+		rows = append(rows, first(n, false))
+	}
+	for _, n := range []int{1, 4, 8} {
+		rows = append(rows, first(n, true))
+	}
+	return append(rows, 54_321, 99_999)
+}
+
+// ProbeReport is how a probe reports: row_heights=…, the list's and the
+// text's widths.
+func ProbeReport(rows []int, heights []float32, listWidth float32) string {
+	var b strings.Builder
+	b.WriteString("row_heights=")
+	for i, row := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%d:%.1f", row, heights[i])
+	}
+	fmt.Fprintf(&b, " list_width=%.1f text_width=%.1f", listWidth, VTextWidth)
+	return b.String()
 }
