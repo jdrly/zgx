@@ -12,7 +12,8 @@ keys in `text_selection`'s editors:
   the editor;
 - Windows' emoji panel (Win+.) opens under the caret, for carets at two
   places: Windows places it from the caret area zgx gives input methods,
-  where their candidate windows show.
+  where their candidate windows show; and the emoji Enter chooses in it is
+  typed at the caret, through the input method's path (IMM32).
 
 Selections are read through UI Automation (`windows_uia_dump.ps1`). The
 user's clipboard is saved first and restored after, and what the smoke puts
@@ -27,6 +28,7 @@ import ctypes
 import pathlib
 import re
 import subprocess
+import sys
 import threading
 import time
 import winreg
@@ -160,13 +162,16 @@ def press(window, x, y):
     win.click(window, x, y)
 
 
-def changed_box(before, after, threshold=40):
-    """The box (left, top, right, bottom) of the pixels that differ."""
+def changed_box(before, after, threshold=40, ignore=None):
+    """The box (left, top, right, bottom) of the pixels that differ, but for
+    those in `ignore` (left, top, right, bottom): the caret, which blinks."""
     width, height, a = before
     b = after[2]
     xs, ys = [], []
     for y in range(0, height, 2):
         for x in range(0, width, 2):
+            if ignore and ignore[0] <= x <= ignore[2] and ignore[1] <= y <= ignore[3]:
+                continue
             i = (y * width + x) * 4
             if max(abs(a[i] - b[i]), abs(a[i + 1] - b[i + 1]), abs(a[i + 2] - b[i + 2])) > threshold:
                 xs.append(x)
@@ -174,15 +179,19 @@ def changed_box(before, after, threshold=40):
     return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
-def emoji_panel(binary, offset):
+def emoji_panel(binary, offset, insert=False):
     """Where Windows' emoji panel (Win+.) opens over a fresh window whose
     caret is `offset` points into the line: the box of pixels it changes.
     Windows places it from the caret area zgx gives the input method
     (`ImmSetCandidateWindow`), as an input method places its candidates;
     without that area it opens away from the window. The pointer is moved
     off first, so following the pointer cannot pass, and closing the window
-    closes the panel."""
-    proc = subprocess.Popen([str(binary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    closes the panel. With `insert`, Enter then chooses the panel's first
+    emoji, and the editors' text as the window closes is returned too."""
+    proc = subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8")
+    lines = []
+    threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True).start()
     try:
         window = win.wait_window(proc)
         time.sleep(1)
@@ -196,20 +205,28 @@ def emoji_panel(binary, offset):
         before = win.capture(window)
         win.key("win+.")
         time.sleep(1.2)
-        box = changed_box(before, win.capture(window))
+        column = (caret[0] - 3 * scale, y, caret[0] + 3 * scale, y + h)
+        box = changed_box(before, win.capture(window), ignore=column)
+        if insert:
+            win.key("enter")
+            time.sleep(0.6)
         win.close(window)
         proc.wait(timeout=10)
+        time.sleep(0.2)
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    return caret, (x, y, w, h), box
+    report = next((line for line in lines if line.startswith("TEXT ")), "")
+    return caret, (x, y, w, h), box, report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary", type=pathlib.Path)
     args = parser.parse_args()
+    # The emoji the panel types, printed whatever the console's code page.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     interval = user32.GetDoubleClickTime() / 1000
     box = (user32.GetSystemMetricsForDpi(36, 96), user32.GetSystemMetricsForDpi(37, 96))  # SM_CX/CYDOUBLECLK
     proc = subprocess.Popen([str(args.binary)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -302,12 +319,19 @@ def main():
     # The emoji panel opens under the caret, wherever the caret is.
     panels = []
     for offset in (45, 120):
-        caret, (x, y, w, h), panel = emoji_panel(args.binary, offset)
+        caret, (x, y, w, h), panel, report = emoji_panel(args.binary, offset, insert=offset == 45)
         assert panel, f"the emoji panel did not open over the window (caret at {caret})"
         left, top = panel[:2]
         assert abs(left - caret[0]) <= 24 and y <= top <= y + h + 30, \
             f"the emoji panel opened at {(left, top)}, not under the caret at {caret} in the editor {(x, y, w, h)}"
         panels.append((caret[0], left))
+        if offset == 45:
+            # The panel's emoji typed at the caret, after "select".
+            words = report.split("words=")[1].split(" lines=")[0] if "words=" in report else report
+            inserted = words.strip('"')
+            assert inserted.startswith("select ") and not inserted[7].isascii() and inserted.endswith(
+                "these words"), f"the emoji panel's choice reached the editor as {words}"
+            results.append(f"emoji panel's choice inserted at the caret: {words}")
     results.append("emoji panel under the caret: " + ", ".join(f"caret x {c:.0f}, panel x {p}" for c, p in panels))
     for line in results:
         print(f"  {line}")

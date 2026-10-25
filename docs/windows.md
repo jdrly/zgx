@@ -525,7 +525,8 @@ python scripts/windows_contrast_smoke.py target/debug/examples/text_selection.ex
   editor; Windows' emoji panel (Win+.) opens under the caret, for carets at
   two places. Windows places the panel from the caret area zgx gives input
   methods (`ImmSetCandidateWindow`), where their candidate windows show:
-  without it, the panel opens away from the window. Selections are read
+  without it, the panel opens away from the window. The emoji Enter chooses
+  in the panel is typed at the caret, through the input method's path. Selections are read
   through UI Automation. It saves the user's
   clipboard and restores it after, keeps what it puts there out of clipboard
   history, and skips the copy and paste checks while cloud clipboard sync is
