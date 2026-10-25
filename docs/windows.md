@@ -189,7 +189,11 @@ with the pointer without drawing again. It goes from one of the app's
 windows to another (their destinations hear it, a tab torn off past them
 hears `on_drag_outside`), exactly between windows on monitors of different
 scales: their places are compared in the screen's pixels, each window's
-points its scale apart (`popup_window::global_scale`).
+points its scale apart (`popup_window::global_scale`). A drag that moves its
+window (`View::drag_moves_window`, a window's only tab) moves it with the
+pointer at once (`SetWindowPos`), the grab point staying under it; what is
+beneath is found down the z-order past the moving window and drag previews,
+skipping cloaked and click-through windows, as `WindowFromPoint` does.
 
 A drag carrying what other apps take (`View::drag_export`) becomes Windows'
 as it leaves the app's windows (`native_drag/win32.rs`): `DoDragDrop` with
@@ -490,6 +494,12 @@ python scripts/windows_window_smoke.py target/debug/examples
   window but its own and the target's: it checks the way is clear before each
   drag, and cancels with Escape if another window covers the target.
 
+- `windows_tab_smoke.py` (`tab_windows`, and `drop_target_probe` as a
+  test-owned backdrop): a tab torn off opens in a window of its own with the
+  tab under the pointer; that window's only tab moves the window, following
+  the pointer to the pixel; dropped on the other window's strip it merges
+  there. It lays the windows out from the work area, so it fits at any
+  scale (checked at 100% and 150%).
 - `windows_window_smoke.py` (`window_probe`): a second window opens a step
   on from the first (`CW_USEDEFAULT`); a window with `frame_autosave` moved and
   closed reopens there at its size, left maximized reopens maximized, and at a
