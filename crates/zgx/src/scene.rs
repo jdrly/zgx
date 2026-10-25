@@ -4180,7 +4180,72 @@ impl Scene {
             self.damage_grid = Some(grid);
         }
     }
+    /// `id`'s box in the viewport, its effects as its ancestors combine
+    /// them, and the clip it paints within. One walk up: each ancestor that
+    /// clips does so at its box translated by its own and its ancestors'
+    /// translations, summed from it upwards as ever. Translations are +0.0
+    /// or nonzero (`set_transform`), and so is every sum of them, so adding
+    /// the zero ones changes nothing: only the others are kept to sum.
     fn world(&self, id: NodeId) -> (Rect, Effects, Option<Rect>) {
+        const ROOM: usize = 16;
+        let node = self.node(id);
+        let mut transform = node.transform;
+        let mut effects = node.effects;
+        if !own_visible(&node.style) {
+            effects.opacity = 0.;
+        }
+        // Nonzero translations from `id` up, and each clipping node with how
+        // many of them lie below it.
+        let mut moves = [Transform::default(); ROOM];
+        let mut moved = 0;
+        let mut clipping = [(node, 0); ROOM];
+        let mut clips = 0;
+        let mut current = node;
+        loop {
+            if clip_axes(&current.style) != (false, false) {
+                if clips == ROOM {
+                    return self.world_walk(id);
+                }
+                clipping[clips] = (current, moved);
+                clips += 1;
+            }
+            if current.transform != Transform::default() {
+                if moved == ROOM {
+                    return self.world_walk(id);
+                }
+                moves[moved] = current.transform;
+                moved += 1;
+            }
+            let Some(parent) = current.parent else {
+                break;
+            };
+            let ancestor = self.node(parent);
+            transform.x += ancestor.transform.x;
+            transform.y += ancestor.transform.y;
+            effects.opacity *= if own_visible(&ancestor.style) {
+                ancestor.effects.opacity
+            } else {
+                0.
+            };
+            current = ancestor;
+        }
+        let bounds = node.bounds.translated(transform);
+        let mut clip = Some(self.viewport);
+        for &(ancestor, below) in &clipping[..clips] {
+            let mut offset = Transform::default();
+            for shift in &moves[below..moved] {
+                offset.x += shift.x;
+                offset.y += shift.y;
+            }
+            clip = clipped_bounds(clip, ancestor.bounds.translated(offset), &ancestor.style);
+        }
+        (bounds, effects, clip)
+    }
+    /// `world` walking the ancestors again for each that clips: for chains
+    /// past the room `world` keeps.
+    #[cold]
+    #[inline(never)]
+    fn world_walk(&self, id: NodeId) -> (Rect, Effects, Option<Rect>) {
         let node = self.node(id);
         let mut transform = node.transform;
         let mut effects = node.effects;
@@ -9148,6 +9213,65 @@ mod damage_grid_tests {
             }
             done
         }
+    }
+    #[test]
+    fn world_sums_each_clip_offset_as_the_walk_up_does() {
+        // Translations with fractions that round differently when summed in
+        // another order, zero ones between them, clips at every few levels,
+        // and chains deeper than `world` keeps room for.
+        let mut scene = Scene::new(800., 600.);
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut random = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut nodes = vec![scene.root()];
+        for _ in 0..340 {
+            // Chains of up to 14 below the root (within `world`'s room),
+            // and from node 300 on one of 40 (past it).
+            let parent = match nodes.len() {
+                300.. => *nodes.last().unwrap(),
+                count => loop {
+                    let parent = nodes[(random() % count as u64) as usize];
+                    if scene.depth(parent) < 14 {
+                        break parent;
+                    }
+                },
+            };
+            let style = Style {
+                width: Some(300. + (random() % 3000) as f32 / 7.),
+                height: Some(200. + (random() % 3000) as f32 / 9.),
+                clip: random() % 3 == 0,
+                ..Default::default()
+            };
+            let id = scene.append(parent, NodeKind::Container(Layout::Column), style);
+            if random() % 4 != 0 {
+                let scale = [0.001, 0.1, 1., 10.][(random() % 4) as usize];
+                let shift = |value: u64| ((value % 2000) as f32 / 9.7 - 100.) * scale;
+                let transform = Transform {
+                    x: shift(random()),
+                    y: shift(random()),
+                };
+                scene.set_transform(id, transform);
+            }
+            nodes.push(id);
+        }
+        scene.flush();
+        let deepest = nodes.iter().map(|id| scene.depth(*id)).max().unwrap();
+        assert!(deepest > 16, "some chain passes world's room: {deepest}");
+        let mut cut = 0;
+        for id in nodes {
+            let (bounds, effects, clip) = scene.world(id);
+            cut += usize::from(clip.is_some_and(|clip| clip != scene.viewport));
+            let (walked_bounds, walked_effects, walked_clip) = scene.world_walk(id);
+            let bits = |rect: Rect| [rect.x, rect.y, rect.width, rect.height].map(f32::to_bits);
+            assert_eq!(bits(bounds), bits(walked_bounds));
+            assert_eq!(clip.map(bits), walked_clip.map(bits));
+            assert_eq!(effects, walked_effects);
+        }
+        assert!(cut > 100, "clips that cut the viewport: {cut}");
     }
     #[test]
     fn a_grid_of_bits_marks_touches_and_joins_cells_as_one_of_flags() {
