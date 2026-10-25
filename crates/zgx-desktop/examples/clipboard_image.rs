@@ -45,42 +45,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let status = cx
                 .ui
                 .signal(String::from("Copy an image anywhere, then Paste."));
+            // Each a task: the image is read (and written) off the UI thread.
             let paste = {
                 let (platform, pasted, status) = (platform.clone(), pasted.clone(), status.clone());
                 move || {
-                    let image = platform
-                        .borrow()
-                        .as_ref()
-                        .and_then(|p| p.0.clipboard_image());
-                    match &image {
-                        Some(image) => {
-                            println!(
-                                "PASTED {}x{} {:016x} first={:?}",
-                                image.width(),
-                                image.height(),
-                                digest(image.pixels()),
-                                &image.pixels()[..4]
-                            );
-                            status.set(format!("Pasted {} × {}", image.width(), image.height()));
+                    let reading = platform.borrow().as_ref().map(|p| p.0.clipboard_image());
+                    let (pasted, status) = (pasted.clone(), status.clone());
+                    async move {
+                        let image = match reading {
+                            Some(reading) => reading.await,
+                            None => None,
+                        };
+                        match &image {
+                            Some(image) => {
+                                println!(
+                                    "PASTED {}x{} {:016x} first={:?}",
+                                    image.width(),
+                                    image.height(),
+                                    digest(image.pixels()),
+                                    &image.pixels()[..4]
+                                );
+                                status.set(format!(
+                                    "Pasted {} × {}",
+                                    image.width(),
+                                    image.height()
+                                ));
+                            }
+                            None => {
+                                println!("PASTED none");
+                                status.set("No image on the clipboard".into());
+                            }
                         }
-                        None => {
-                            println!("PASTED none");
-                            status.set("No image on the clipboard".into());
-                        }
+                        pasted.set(image.map(Arc::new));
                     }
-                    pasted.set(image.map(Arc::new));
                 }
             };
             let copy = {
                 let (platform, status) = (platform.clone(), status.clone());
                 move || {
-                    let image = gradient();
-                    let written = platform
+                    let image = Arc::new(gradient());
+                    let writing = platform
                         .borrow()
                         .as_ref()
-                        .is_some_and(|p| p.0.set_clipboard_image(&image));
-                    println!("COPIED written={written} {:016x}", digest(image.pixels()));
-                    status.set(format!("Copied a 64 × 48 gradient: {written}"));
+                        .map(|p| p.0.set_clipboard_image(image.clone()));
+                    let status = status.clone();
+                    async move {
+                        let written = match writing {
+                            Some(writing) => writing.await,
+                            None => false,
+                        };
+                        println!("COPIED written={written} {:016x}", digest(image.pixels()));
+                        status.set(format!("Copied a 64 × 48 gradient: {written}"));
+                    }
                 }
             };
             let shown = pasted.clone();
@@ -96,8 +112,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .child(
                         row()
                             .gap(8.)
-                            .child(button().child("Paste image").on_click(paste.clone()))
-                            .child(button().child("Copy image").on_click(copy.clone())),
+                            .child(button().child("Paste image").on_click({
+                                let (tasks, paste) = (cx.tasks.clone(), paste.clone());
+                                move || tasks.spawn(paste())
+                            }))
+                            .child(button().child("Copy image").on_click({
+                                let (tasks, copy) = (cx.tasks.clone(), copy.clone());
+                                move || tasks.spawn(copy())
+                            })),
                     )
                     .child(text_signal(move || status.get()))
                     .child(
@@ -112,9 +134,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let window = cx.window.clone();
                 cx.tasks.spawn(async move {
                     zgx::timer::sleep(std::time::Duration::from_millis(500)).await;
-                    paste();
+                    paste().await;
                     if copies {
-                        copy();
+                        copy().await;
                     }
                     zgx::timer::sleep(std::time::Duration::from_millis(300)).await;
                     window.close();

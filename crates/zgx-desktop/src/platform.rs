@@ -1,11 +1,29 @@
 //! The desktop's `zgx::platform::Platform`: the native clipboard and the
 //! window's file dialogs, provided to what a window renders.
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use zgx::platform::{FilePicker, Pending, Platform};
 
 pub(crate) struct Desktop {
     pub(crate) clipboard: Rc<RefCell<Option<crate::clipboard::Clipboard>>>,
     pub(crate) dialogs: crate::FileDialogs,
+}
+
+impl Desktop {
+    fn takes_images(&self) -> bool {
+        self.clipboard
+            .borrow()
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.takes_images())
+    }
+}
+
+/// `work` on a thread of its own, its result later (none if it panicked):
+/// decoding or encoding a large image for the clipboard takes tens of
+/// milliseconds, a frame or more on the UI thread.
+fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Pending<Option<T>> {
+    let (tell, mut heard) = zgx::task::latest::<T>();
+    std::thread::spawn(move || tell.send(work()));
+    Box::pin(async move { heard.recv().await })
 }
 
 fn options(picker: &FilePicker) -> crate::FileDialogOptions {
@@ -56,14 +74,25 @@ impl Platform for Desktop {
             .as_mut()
             .is_some_and(|clipboard| clipboard.set_rich_text(text, html).is_ok())
     }
-    fn clipboard_image(&self) -> Option<zgx::image::ImageData> {
-        self.clipboard.borrow_mut().as_mut()?.get_image().ok()
+    fn clipboard_image(&self) -> Pending<Option<zgx::image::ImageData>> {
+        let takes = self.takes_images();
+        Box::pin(async move {
+            if !takes {
+                return None;
+            }
+            off_thread(|| crate::clipboard::read_image().ok())
+                .await
+                .flatten()
+        })
     }
-    fn set_clipboard_image(&self, image: &zgx::image::ImageData) -> bool {
-        self.clipboard
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|clipboard| clipboard.set_image(image).is_ok())
+    fn set_clipboard_image(&self, image: Arc<zgx::image::ImageData>) -> Pending<bool> {
+        let takes = self.takes_images();
+        Box::pin(async move {
+            takes
+                && off_thread(move || crate::clipboard::write_image(&image).is_ok())
+                    .await
+                    .unwrap_or(false)
+        })
     }
     fn open_files(&self, picker: FilePicker) -> Pending<Result<Vec<PathBuf>, String>> {
         let dialogs = self.dialogs.clone();

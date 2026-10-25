@@ -96,41 +96,12 @@ impl Clipboard {
         Ok(())
     }
 
-    /// The clipboard's image, decoded from what the platform's apps put
-    /// there (on Windows a PNG, else a DIB: what Paint, browsers and
-    /// screenshots copy). None on Wayland yet.
-    pub(crate) fn get_image(&mut self) -> Result<zgx::image::ImageData> {
-        match &mut self.backend {
-            Backend::Native(clipboard) => {
-                #[cfg(windows)]
-                if let Some(image) = windows_dib() {
-                    return Ok(image);
-                }
-                let image = clipboard.get_image()?;
-                Ok(zgx::image::ImageData::new(
-                    image.width.try_into()?,
-                    image.height.try_into()?,
-                    image.bytes.into_owned(),
-                )?)
-            }
-            #[cfg(target_os = "linux")]
-            Backend::Wayland(_) => Err("no images on the Wayland clipboard yet".into()),
-        }
-    }
-
-    /// Put `image` on the clipboard: on Windows as a PNG and a DIB, which
-    /// apps that take either paste. Not on Wayland yet.
-    pub(crate) fn set_image(&mut self, image: &zgx::image::ImageData) -> Result<()> {
-        match &mut self.backend {
-            Backend::Native(clipboard) => clipboard.set_image(arboard::ImageData {
-                width: image.width() as usize,
-                height: image.height() as usize,
-                bytes: image.pixels().into(),
-            })?,
-            #[cfg(target_os = "linux")]
-            Backend::Wayland(_) => return Err("no images on the Wayland clipboard yet".into()),
-        }
-        Ok(())
+    /// Whether images go through it: arboard's clipboards do, which a
+    /// worker thread reaches with one of its own (`read_image`), while this
+    /// one, kept for the app's life, keeps X11's selection served. Not yet
+    /// Wayland's data worker.
+    pub(crate) fn takes_images(&self) -> bool {
+        matches!(self.backend, Backend::Native(_))
     }
 
     /// The primary selection (X11, Wayland): the text last selected
@@ -164,6 +135,34 @@ impl Clipboard {
         }
         Ok(())
     }
+}
+
+/// The clipboard's image, decoded on the calling thread (a worker's: a
+/// large one takes tens of milliseconds) from what the platform's apps put
+/// there: on Windows a PNG, else a DIB (what Paint, browsers and
+/// screenshots copy).
+pub(crate) fn read_image() -> Result<zgx::image::ImageData> {
+    #[cfg(windows)]
+    if let Some(image) = windows_dib() {
+        return Ok(image);
+    }
+    let image = arboard::Clipboard::new()?.get_image()?;
+    Ok(zgx::image::ImageData::new(
+        image.width.try_into()?,
+        image.height.try_into()?,
+        image.bytes.into_owned(),
+    )?)
+}
+
+/// Put `image` on the clipboard, encoded on the calling thread: on Windows
+/// as a PNG and a DIB, which apps that take either paste.
+pub(crate) fn write_image(image: &zgx::image::ImageData) -> Result<()> {
+    arboard::Clipboard::new()?.set_image(arboard::ImageData {
+        width: image.width() as usize,
+        height: image.height() as usize,
+        bytes: image.pixels().into(),
+    })?;
+    Ok(())
 }
 
 /// The clipboard's DIB on Windows, decoded by `dib`; none where a PNG is

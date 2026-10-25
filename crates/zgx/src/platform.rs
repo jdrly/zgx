@@ -2,7 +2,7 @@
 //! HTML and images) and the file dialogs. A desktop host provides it to the components it renders
 //! (`compose::provide`, as `Context::try_service::<PlatformService>()`);
 //! headless runs have none, and tests provide a fake.
-use std::{future::Future, path::PathBuf, pin::Pin, rc::Rc};
+use std::{future::Future, path::PathBuf, pin::Pin, rc::Rc, sync::Arc};
 
 /// Work a dialog finishes later.
 pub type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -61,15 +61,18 @@ pub trait Platform {
         self.set_clipboard_text(text)
     }
     /// The clipboard's image, if it holds one: a screenshot, an image
-    /// editor's copy, a browser's Copy Image. None reads none.
-    fn clipboard_image(&self) -> Option<crate::image::ImageData> {
-        None
+    /// editor's copy, a browser's Copy Image. Later, as decoding a large one
+    /// takes a frame or more: a desktop host reads it off the UI thread.
+    /// None reads none.
+    fn clipboard_image(&self) -> Pending<Option<crate::image::ImageData>> {
+        Box::pin(async { None })
     }
     /// Put `image` on the clipboard in the formats the platform's apps paste
-    /// (its transform left out); whether it took it. None takes none.
-    fn set_clipboard_image(&self, image: &crate::image::ImageData) -> bool {
+    /// (its transform left out), encoded off the UI thread as reading is;
+    /// whether it took it. None takes none.
+    fn set_clipboard_image(&self, image: Arc<crate::image::ImageData>) -> Pending<bool> {
         let _ = image;
-        false
+        Box::pin(async { false })
     }
     /// The files the user picks to open: none if they cancel.
     fn open_files(&self, picker: FilePicker) -> Pending<Result<Vec<PathBuf>, String>>;

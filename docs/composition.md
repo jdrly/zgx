@@ -179,7 +179,9 @@ press does nothing in an editor, as in GTK's.
 The clipboard takes images too: `Platform::clipboard_image` gives the one
 there as an `ImageData` (straight RGBA, ready for `image`) and
 `set_clipboard_image` puts one there, on macOS, Windows and X11 (not yet on
-Wayland). On Windows an image is copied as a PNG and a DIB with its alpha, and
+Wayland). Both finish later (`Pending`): the desktop host decodes and encodes
+on a thread of its own, as a 4K image took 15 to 70 ms to read and 130 ms to
+write on Windows. On Windows an image is copied as a PNG and a DIB with its alpha, and
 pasted from a PNG where one is there, else from the DIB another app copied
 (`clipboard_image` shows both ways).
 
