@@ -23,5 +23,14 @@ lto = false
 debug = false
 incremental = false
 
+# What the comparison builds: Rune's perf profile at its strongest, as the
+# other frameworks' `dist` (fat LTO, one codegen unit). Rune's bench scripts
+# insist on perf by path, to keep incremental release builds out; this is
+# not incremental either.
+[profile.dist]
+inherits = "perf"
+lto = "fat"
+codegen-units = 1
+
 [profile.release]
 codegen-units = 16

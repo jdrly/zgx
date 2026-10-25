@@ -12,8 +12,11 @@ ZGX_MODE=both ZGX_SECONDS=10 bin/heavy
 ```
 
 `build.sh` checks Rune out into `rune-src/`, applies the patch, and builds
-with Rune's own benchmark profile, `--profile perf` (release, opt-level 3,
-16 codegen units, no LTO, not incremental), which its bench scripts require.
+with `dist`: Rune's own benchmark profile, `perf` (release, opt-level 3, not
+incremental), at its strongest, with fat LTO and one codegen unit, as the
+other frameworks' `dist`. Rune's bench scripts insist on `perf` by path, to
+keep incremental release builds out; `dist` isn't incremental either.
+`RUNE_PROFILE=perf ./build.sh` builds Rune's own.
 `Cargo.lock` starts from Rune's own, so the adapters build the dependency
 versions Rune pins.
 
