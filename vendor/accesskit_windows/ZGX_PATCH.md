@@ -28,7 +28,18 @@ WebView2 set it. 0.35.1 and upstream main still leave it out.
    check boxes, links, menu items and radio buttons, so a zgx grid's cells,
    whose text is a child, had no UIA Name: Narrator's table navigation read
    them as blank. Tested by `src/tests/cell_name.rs`.
-4. Events a client listens for, and no others. UIA tells a fragment root
+4. A form field's error (`aria-invalid`, `aria-errormessage`), from the
+   vendored accesskit_consumer (vendor/accesskit_consumer/ZGX_PATCH.md):
+   `IsDataValidForForm` is false while the field is invalid; its error
+   message's text follows the description in `FullDescription`, so
+   Narrator reads it with the field ("Email, edit, An email is required,
+   Invalid"), and `DescribedBy` gives the nodes that describe it
+   (`src/node.rs`, `description`, `is_data_valid_for_form`, the
+   `DescribedBy` property). Not `ControllerFor`, as Edge gives
+   `aria-errormessage`: Narrator reads an edit's `ControllerFor` as a
+   suggestion list ("Suggestions available"). The crate's `accesskit_consumer` dependency
+   is the vendored one (`path`), so it builds alone too.
+5. Events a client listens for, and no others. UIA tells a fragment root
    which events clients add handlers for (`IRawElementProviderAdviseEvents`,
    in `src/node.rs`), and the context counts them (`Context::advise`).
    After a tree update, events no client listens for are dropped
@@ -46,18 +57,6 @@ WebView2 set it. 0.35.1 and upstream main still leave it out.
    - Tested by `context::tests`. A client that subscribes later receives
      what it subscribed to: a native one counting name changes on that
      dashboard received 2458 in 3 s, against 2489 before the patch.
-
-4. A form field's error (`aria-invalid`, `aria-errormessage`), from the
-   vendored accesskit_consumer (vendor/accesskit_consumer/ZGX_PATCH.md):
-   `IsDataValidForForm` is false while the field is invalid; its error
-   message's text follows the description in `FullDescription`, so
-   Narrator reads it with the field ("Email, edit, An email is required,
-   Invalid"), and `DescribedBy` gives the nodes that describe it
-   (`src/node.rs`, `description`, `is_data_valid_for_form`, the
-   `DescribedBy` property). Not `ControllerFor`, as Edge gives
-   `aria-errormessage`: Narrator reads an edit's `ControllerFor` as a
-   suggestion list ("Suggestions available"). The crate's `accesskit_consumer` dependency
-   is the vendored one (`path`), so it builds alone too.
 
 Run the crate's tests on Windows with
 `cargo test --manifest-path vendor/accesskit_windows/Cargo.toml --locked`.
