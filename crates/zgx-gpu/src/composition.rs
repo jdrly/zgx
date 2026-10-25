@@ -66,8 +66,10 @@ impl GpuRenderer {
             size.height,
             context,
         )?;
-        target.commit();
+        // Configured now, its alpha as made (the visual's, translucent),
+        // and committed (`configure`).
         renderer.composition = Some(target);
+        renderer.ensure_configured();
         renderer.set_scale_factor(scale);
         Ok(renderer)
     }
@@ -84,8 +86,8 @@ impl GpuRenderer {
         let target = Target { visual, device };
         let surface = target.surface(&context.inner.instance)?;
         let mut renderer = Self::create_on(None, Some(surface), 1, 1, context)?;
-        target.commit();
         renderer.composition = Some(target);
+        renderer.ensure_configured();
         renderer.set_scale_factor(scale);
         Ok(renderer)
     }

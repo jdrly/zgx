@@ -1861,6 +1861,17 @@ pub struct GpuRenderer {
     /// DXGI's account of shown presents (`ZGX_PRESENT_LOG`).
     #[cfg(windows)]
     dxgi_stats: dxgi::PresentStats,
+    /// Windows: the surface is configured at the first frame, not when made,
+    /// so that its swap chain is opaque under an opaque background (set by
+    /// then, `set_background`): DXGI keeps a swap chain's alpha mode for its
+    /// life, and the compositor blended a premultiplied one over what lies
+    /// behind every frame, opaque or not (7 to 14% more of its GPU time).
+    #[cfg(windows)]
+    unconfigured: bool,
+    /// The alpha mode where the background lets what is behind show, and
+    /// whether the surface can be opaque.
+    #[cfg(windows)]
+    alpha: (wgpu::CompositeAlphaMode, bool),
     /// The caller's visual the surface presents into (composition.rs).
     #[cfg(all(windows, feature = "composition"))]
     composition: Option<composition::Target>,
@@ -2137,11 +2148,13 @@ impl GpuRenderer {
         }
         let width = width.max(1);
         let height = height.max(1);
+        let mut opaque_alpha = false;
         let config = surface.as_ref().map(|s| {
             let mut c = s
                 .get_default_config(adapter, width, height)
                 .expect("supported surface");
             let caps = s.get_capabilities(adapter);
+            opaque_alpha = caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque);
             c.alpha_mode = [
                 wgpu::CompositeAlphaMode::PreMultiplied,
                 wgpu::CompositeAlphaMode::PostMultiplied,
@@ -2187,9 +2200,13 @@ impl GpuRenderer {
             {
                 c.usage |= wgpu::TextureUsages::COPY_DST;
             }
+            // Windows configures at the first frame (`ensure_configured`).
+            #[cfg(not(windows))]
             s.configure(&device, &c);
             c
         });
+        #[cfg(not(windows))]
+        let _ = opaque_alpha;
         let copy_present = config
             .as_ref()
             .is_some_and(|c| c.usage.contains(wgpu::TextureUsages::COPY_DST));
@@ -2262,6 +2279,15 @@ impl GpuRenderer {
             context: context.clone(),
             #[cfg(windows)]
             dxgi_stats: Default::default(),
+            #[cfg(windows)]
+            unconfigured: config.is_some(),
+            #[cfg(windows)]
+            alpha: (
+                config
+                    .as_ref()
+                    .map_or(wgpu::CompositeAlphaMode::Auto, |c| c.alpha_mode),
+                opaque_alpha,
+            ),
             #[cfg(all(windows, feature = "composition"))]
             composition: None,
             scene_identity: None,
@@ -2415,7 +2441,44 @@ impl GpuRenderer {
             layer_bytes: self.layers.values().map(|l| l.bytes).sum(),
         }
     }
-    /// The colour the target clears to where nothing is drawn.
+    /// Configure the surface if it is not yet (Windows does at the first
+    /// frame): opaque where the background is and the surface can be, and
+    /// for a composition visual of the caller's (a web view's window, an
+    /// overlay) as made, with what lies behind it showing.
+    #[cfg(windows)]
+    fn ensure_configured(&mut self) {
+        if !std::mem::take(&mut self.unconfigured) {
+            return;
+        }
+        let (translucent, can_be_opaque) = self.alpha;
+        #[cfg(feature = "composition")]
+        let visual = self.composition.is_some();
+        #[cfg(not(feature = "composition"))]
+        let visual = false;
+        let opaque = can_be_opaque && !visual && self.background.3 == 255;
+        if let Some(config) = &mut self.config {
+            config.alpha_mode = if opaque {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                translucent
+            };
+        }
+        surface::SurfaceSource::configure(self);
+    }
+    /// Whether its window's surface presents opaque (the compositor ignores
+    /// its alpha), once configured: Windows configures at the first frame,
+    /// opaque under an opaque background where the surface allows. None
+    /// offscreen or not yet configured.
+    pub fn presents_opaque(&self) -> Option<bool> {
+        #[cfg(windows)]
+        if self.unconfigured {
+            return None;
+        }
+        (self.config.as_ref()).map(|c| c.alpha_mode == wgpu::CompositeAlphaMode::Opaque)
+    }
+    /// The colour the target clears to where nothing is drawn. On Windows,
+    /// whether it is opaque at the first frame decides whether the window's
+    /// swap chain is.
     pub fn set_background(&mut self, color: Color) {
         if self.background != color {
             self.background = color;
@@ -2505,7 +2568,13 @@ impl GpuRenderer {
         if let (Some(s), Some(c)) = (&self.surface, &mut self.config) {
             c.width = width;
             c.height = height;
-            s.configure(&self.device, c);
+            #[cfg(windows)]
+            let configure = !self.unconfigured;
+            #[cfg(not(windows))]
+            let configure = true;
+            if configure {
+                s.configure(&self.device, c);
+            }
         }
         // AppKit shows the resized layer when its transaction commits. A
         // drawable presented outside it lands a frame late, so the window
@@ -8931,6 +9000,8 @@ impl surface::SurfaceSource for GpuRenderer {
     type Frame = wgpu::SurfaceTexture;
     fn acquire(&mut self) -> Result<surface::Acquisition<Self::Frame>, GpuError> {
         use surface::Acquisition;
+        #[cfg(windows)]
+        self.ensure_configured();
         Ok(match self.surface.as_ref().unwrap().get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Acquisition::Frame(frame),
