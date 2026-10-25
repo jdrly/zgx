@@ -1,6 +1,6 @@
 # Changes
 
-zgx is 0.1 and used from git; this lists what changed for apps, newest first.
+zgx is 0.1, used from git until its first release is on crates.io (this section becomes `## 0.1.0` then); this lists what changed for apps, newest first.
 
 ## Unreleased (October 2026)
 
@@ -36,6 +36,23 @@ zgx is 0.1 and used from git; this lists what changed for apps, newest first.
 
 **Escape in a text field** with no composition to cancel goes to the dialog or menu around it, which closes.
 
+**An image, icon, canvas or native surface keeps the size it sets in a flex line too tight for it**, as CSS's `<img>` and `<canvas>` (replaced elements, `Scene::set_replaced`): it overflows its box, centred, where it was squashed (a 15-point icon in a 28-point button with padding drew 4 wide).
+- *Migrate:* where artwork was meant to shrink with its line, give it a percentage or `min_w(0.)` (`min_w = 0`).
+
+**`EditorHandle::value` is a method**, `value()`, returning an `EditorValue`: the editor's `Signal<String>`, or a `Signal<TextValue>` for a long document (below); `get` and `set` read and write it as a string either way.
+- *Migrate:* `handle.value.get()` is `handle.value().get()`; a match on the signal itself matches `EditorValue::String(signal)`.
+
+**A template's dotted name reads a state's field:** `"{user.name}"`, `"{rows.1}"`; a Luau path written in braces (`"{state.status}"`) now names state `state`'s field `status` rather than showing its braces.
+- *Migrate:* text meant literally takes `literal = true`, or keeps its braces out of the template.
+
+**An app id that is not one plain name has no directory:** `ui.persist` saves nothing for an id of `..`, `a/b` or an absolute path (it saved outside the app's own).
+
+**A theme file nests at most 128 deep** (an array or object deeper is an error): one of 100,000 brackets overflowed the stack.
+
+**A Linux title bar's `window_drag` moves its window once the pointer has moved 4 points**, as GTK's and Chromium's do: a press there no longer gives the window manager the pointer, so a double click maximizes.
+
+**`zgx-run` allocates with mimalloc** (`--no-default-features` keeps the system's); a Rust app opts in with `zgx-desktop`'s `mimalloc` feature. **A debug build gives scripts ten times the time budget**, as a debug build runs that much slower.
+
 **The component library is a crate of its own, `zgx-components`.** The data grid, tree, calendar, date picker and time field, combobox, select, tabs, toasts, command palette, segmented control, stepper, disclosure, accordion and separator moved out of `zgx::compose`; the primitives they are made of (text, editors, buttons, checkboxes, sliders, progress, scroll views and virtual lists, menus, popovers, modals and tooltips, selection, drag) stay. zgx-script's `ui.*` for them is unchanged, through its `components` feature (on by default).
 - *Migrate:* add `zgx-components` beside `zgx` and import them from it (`use zgx_components::prelude::*;` beside `zgx::compose::prelude::*`). The local-time hook is `zgx::local_time::set_offset` (zgx-desktop sets it). A component's own semantics are set with the new `NodeHandle::update_semantics`.
 
@@ -51,12 +68,26 @@ zgx is 0.1 and used from git; this lists what changed for apps, newest first.
 - Display text is selectable on opt-in (`selectable`): across nodes, by word and paragraph, with Shift and the arrows, copied as text and HTML, styled as CSS's `::selection`.
 - Editors: spellchecking as you type (`spellcheck`, with the system's checker on each platform), a context menu, undo in runs, the primary selection on Linux, and arrows that move through right-to-left text the way it shows.
 - IME: the clause being converted is underlined and takes the candidate window. Known gap: reconversion is not offered (winit's text input client reports no surrounding text).
+- Long documents: `zgx::text::Text` holds a text in chunks (a clone is a pointer, an edit remakes the chunks it touches), and `TextValue` (a `String` or a `Text`) binds an editor without copying (`text_input_value`, `text_area_value`). An editor over 64 KiB keeps its text so, and lays out only the lines in view: a file of 100,000 lines opens in about 20 ms, a keystroke costs about a millisecond. In scripts a string over 64 KiB in state is held the same way and reads as a string.
+- Luau text areas take a highlighter (`highlight`, a function of a line and what the line before left), `decorations`, `current_line`, `tab`, `on_caret` and `find` (`{ query, case, current, limit, color, current_color }`: a search's matches marked from the text it is bound to); their element selects in bytes (`set_selection_bytes`, `selection_bytes`) and types over the selection in one undo step (`replace_selection`). [The code editor example](crates/zgx-script/examples/code_editor) uses them all.
+- A gutter's line numbers align to its end in any font (they were padded with figure spaces, which some fonts lack).
+- With no font installed (a minimal system, a container), an app draws everything but its text, and takes typing; it drew nothing.
 
 ### Accessibility
 
 - Roles, headings with levels, selection, live regions, descriptions and hidden decoration (`role`, `heading`, `selected`, `live`, `description`, `aria_hidden`). Labels can follow state.
 - Focus groups (`focus_group`; listboxes, toolbars and tab lists without asking) are one Tab stop with arrow keys. A keyboard-navigable list is one stop (`ui.list { keyboard = true }`).
 - VoiceOver finds headings (accesskit_macos is vendored with `AXHeading`). Narrator moves between them by level. Empty text leaves the tree.
+- VoiceOver's table navigation finds a grid's rows (the data grid's, a calendar's), through any containers between them (vendored AccessKit gave a grid none).
+- A canvas with a `label` (a string, state or function, followed) is an image named by it: a chart's summary ("Price, now 143.9, high 150.1"). Without one it is decoration, out of the tree.
+- A name or value given as a function of state (`label = function`, `accessible_label_when`, `value_when`) is worked out only while assistive technology reads the window (`Ui::set_assistive_technology`; a desktop window turns it on when a reader first asks for its tree): with no screen reader on, it costs nothing as the state it reads changes.
+- A long document reads a page at a time: the lines in view and a page each side (or around the caret), a text run a line, as browsers' code editors give one.
+- `scripts/macos_accessibility_probe.py` reads the component catalog and the dashboard as VoiceOver gets them, from live windows.
+
+### Drawing
+
+- Paths know their shape when made as one (`Path::rounded_rect`, `Path::ellipse`, `Path::line`, `Path::rectangle`, a builder's `rounded_rect` and `ellipse`; `ui.path():rect(…)` and `:ellipse(…)`, `c:rect`, `c:circle`, `c:line` in scripts): `Path::shape` says which.
+- A canvas of solid rectangles, circles, axis lines and strokes of lines running one way across (a sparkline's, a chart's) is drawn by the GPU as those shapes, nothing rasterized or uploaded: Sketch's pan or zoom step went from 29 ms to 1.5 ms, the dashboard's sparklines from 24 M instructions a tick to almost none. Anything else in a canvas rasterizes as before ([media](docs/reference/media.md#canvas)).
 
 ### Controls and platforms
 
@@ -68,6 +99,8 @@ zgx is 0.1 and used from git; this lists what changed for apps, newest first.
 - macOS: rubber-band overscroll; Reduce motion, Increase contrast and Reduce transparency reach the themes; popups reach past their window.
 - Windows: Inset and Hidden title bars with snap layouts, Acrylic and Mica glass, WebView2 web views, the system's text size and accent, one instance per application ID, and [shipping notes](docs/windows.md#shipping-a-zgx-app-on-windows).
 - Linux: the desktop's dark or light, high contrast, reduced motion, text size, accent and interface font; KDE's wheel speed; app IDs on Wayland and X11; zenity file dialogs without a portal.
+- Wayland: a menu taller than the output is cut to it and scrolls; a popover the compositor flipped points its arrow at its trigger.
+- A drag preview shown in a window of its own blurs what is behind it, without a menu's shadow round it.
 
 ### Scripting
 
@@ -75,8 +108,17 @@ zgx is 0.1 and used from git; this lists what changed for apps, newest first.
 - `zgx lint` finds slow or wrong patterns, and runs on every reload in debug builds.
 - Long list states are cheap to filter: a filter's rows come back as the state's own.
 - A `ui.computed` read in a handler or `ui.batch`, right after a write it depends on, has the new value (it had its old one until the handler returned).
+- `ui.sorted(list, { by, descending, filter })` is a list state's items kept in order as rows are written: a write re-places the rows it wrote, not all of them (the dashboard's feed tick 253 → 85 M instructions). `zgx lint`'s `computed-sort` points at a computed sorting a whole list.
+- A list state reads one item (`state:at(i)`) and searches the string it holds where it is held (`state:find(query, { case, limit })`, `state:count`), without copying into the script.
+- `ui.args` is what the app was launched with after its script, and `ui.on_open` is handed the files and URLs the system opens it with (Open With, links, a second launch; with an `application_id` in `zgx.json`); `ScriptHost::args` and `ScriptHost::open` from Rust.
+- Plugins: a plugin's files load as source only (never bytecode), make no request or window they were not granted, and open only web links; what their states hold counts against their memory limit.
 
 ### Performance
 
 - Mounting allocates a third as much. A column taller than its window no longer measures every row twice.
 - Text that changes every frame shapes and allocates less. Idle Linux apps' D-Bus threads sleep.
+- Damage scattered over a window is drawn through a stencil of it (macOS): the GPU shades what changed, not the regions around it.
+- A script runs with no interrupt hook until a call's budget or the memory limit needs one (38 instructions an iteration of every loop, before). `ui.each` without a key costs 15% less an update.
+- Removing a large subtree leaves the scene at once and frees its nodes over the following frames (the frame removing 90,000 nodes takes 3.3 ms).
+- On macOS the GPU device is made beside AppKit's launch: a window shows 15-23 ms sooner.
+- An app can be built with profile-guided optimization trained on zgx's scenes (`scripts/perf/pgo.py`, [getting started](docs/getting-started.md)); `ZGX_PROFILE=1` splits frames by phase and a start by milestone.
