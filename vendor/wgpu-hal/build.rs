@@ -1,4 +1,7 @@
 fn main() {
+    // zgx patch: zgx-gpu's build script reads this (`DEP_ZGX_WGPU_HAL_PATCHED`)
+    // to use what this patch adds; with crates.io's wgpu-hal it falls back.
+    println!("cargo:patched=1");
     cfg_aliases::cfg_aliases! {
         native: { not(target_arch = "wasm32") },
         send_sync: { any(

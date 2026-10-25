@@ -16,6 +16,8 @@ name = "wgpu-hal"
 version = "29.0.4"
 authors = ["gfx-rs developers"]
 build = "build.rs"
+# zgx patch: tells zgx-gpu it builds with this wgpu-hal (see ZGX_PATCH.md).
+links = "zgx_wgpu_hal"
 autolib = false
 autobins = false
 autoexamples = false

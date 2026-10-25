@@ -13,6 +13,11 @@ zgx is 0.1 and used from git; this lists what changed for apps, newest first.
 - *Not carried over:* the window frames zgx keeps for an app (Linux and Windows) are kept under zgx's name now, so windows open at their default size once; the Ghostty build cache (`~/Library/Caches/zgx-ghostty`) builds once more.
 <!-- rename-to-zgx: on -->
 
+### An app needs no `[patch]` section
+
+**zgx's forks are crates of their own:** cosmic-text, taffy and mlua, which zgx carries fixes to, are `zgx-cosmic-text`, `zgx-taffy` and `zgx-mlua`, which zgx's crates depend on (under the upstream names: code still reads `cosmic_text::`). An app no longer patches them, and builds against crates.io's winit, wgpu-hal and AccessKit adapters where zgx's repository patches those (Wayland popups then open in their window; [releasing](docs/releasing.md) lists what else differs).
+- *Migrate:* delete the `[patch.crates-io]` lines for `cosmic-text`, `taffy` and `mlua` (they no longer apply). Keep those for winit, wgpu-hal and AccessKit to have their fixes ([getting started](docs/getting-started.md)), or drop them.
+
 ### Changed defaults: what to check in an existing app
 
 **Children stretch across their container**, as in CSS's flexbox (`align-items: stretch`). A `column`'s children are as wide as it, a `row`'s as tall, unless they size themselves on that axis. `div` and zgx-script's `ui.column`, `ui.row` and `ui.div` do the same.

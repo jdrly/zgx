@@ -36,7 +36,7 @@ zgx = { path = "../zgx", version = "0.1.0" }
 # Linux and its kind always build (below).
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "wgsl"] }
 winit = "0.30.13"
-cosmic-text = { version = "0.19.0", features = ["shape-run-cache"] }
+cosmic-text = { package = "zgx-cosmic-text", version = "0.19.0", path = "../../vendor/cosmic-text", features = ["shape-run-cache"] }
 pollster = "0.4"
 bytemuck = { version = "1.25", features = ["derive"] }
 image = { version = "0.25.10", default-features = false }
@@ -60,6 +60,9 @@ wgpu = { version = "29.0.4", default-features = false, features = ["vulkan"] }
 # DXGI frame statistics for ZGX_PRESENT_LOG (dxgi.rs); the version wgpu-hal uses.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", default-features = false, features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Dwm", "Win32_System_Performance"] }
+# wgpu's own (`wgpu::hal`), named so build.rs reads whether it is the
+# repository's (its `links` metadata: `preferred_dx12_adapter`).
+wgpu-hal = { version = "29.0.4", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

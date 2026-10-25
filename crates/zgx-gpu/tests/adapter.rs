@@ -1,7 +1,8 @@
 //! Windows: the shared device is on the adapter DXGI ranks first for low
 //! power, the one wgpu would rank first, found without opening a device on
-//! the others; a GPU always before software (WARP).
-#![cfg(windows)]
+//! the others; a GPU always before software (WARP). With the repository's
+//! wgpu-hal, which exposes it (`zgx_wgpu_hal_patched`, see build.rs).
+#![cfg(all(windows, zgx_wgpu_hal_patched))]
 use windows::Win32::Graphics::Dxgi::*;
 
 /// DXGI's first adapter for `preference`, a GPU before software: its name,

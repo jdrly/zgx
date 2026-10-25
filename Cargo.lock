@@ -713,28 +713,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cosmic-text"
-version = "0.19.0"
-dependencies = [
- "bitflags 2.13.2",
- "fontdb",
- "harfrust",
- "linebender_resource_handle",
- "log",
- "rangemap",
- "rustc-hash 2.1.3",
- "self_cell",
- "skrifa",
- "smol_str 0.3.6",
- "swash",
- "sys-locale",
- "unicode-bidi",
- "unicode-linebreak",
- "unicode-script",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1735,19 +1713,6 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "mlua"
-version = "0.12.2"
-dependencies = [
- "bstr",
- "either",
- "libc",
- "mlua-sys",
- "num-traits",
- "parking_lot",
- "rustc-hash 2.1.3",
 ]
 
 [[package]]
@@ -3159,16 +3124,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "taffy"
-version = "0.9.0"
-dependencies = [
- "arrayvec",
- "grid",
- "serde",
- "slotmap",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4445,9 +4400,9 @@ dependencies = [
  "objc2-core-video",
  "smallvec",
  "stacker",
- "taffy",
  "unicode-linebreak",
  "unicode-segmentation",
+ "zgx-taffy",
 ]
 
 [[package]]
@@ -4456,6 +4411,28 @@ version = "0.1.0"
 dependencies = [
  "zgx",
  "zgx-desktop",
+]
+
+[[package]]
+name = "zgx-cosmic-text"
+version = "0.19.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "fontdb",
+ "harfrust",
+ "linebender_resource_handle",
+ "log",
+ "rangemap",
+ "rustc-hash 2.1.3",
+ "self_cell",
+ "skrifa",
+ "smol_str 0.3.6",
+ "swash",
+ "sys-locale",
+ "unicode-bidi",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -4483,7 +4460,6 @@ dependencies = [
  "blocking",
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
- "cosmic-text",
  "dbus",
  "dbus-crossroads",
  "dispatch2",
@@ -4520,6 +4496,7 @@ dependencies = [
  "x11rb",
  "zgx",
  "zgx-components",
+ "zgx-cosmic-text",
  "zgx-ghostty-sys",
  "zgx-gpu",
  "zgx-run",
@@ -4536,7 +4513,6 @@ name = "zgx-gpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
- "cosmic-text",
  "gif",
  "image",
  "objc2 0.6.4",
@@ -4554,9 +4530,24 @@ dependencies = [
  "tiny-skia",
  "unicode-segmentation",
  "wgpu",
+ "wgpu-hal",
  "windows",
  "winit",
  "zgx",
+ "zgx-cosmic-text",
+]
+
+[[package]]
+name = "zgx-mlua"
+version = "0.12.2"
+dependencies = [
+ "bstr",
+ "either",
+ "libc",
+ "mlua-sys",
+ "num-traits",
+ "parking_lot",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
@@ -4575,7 +4566,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memchr",
- "mlua",
  "pulldown-cmark",
  "serde_json",
  "smallvec",
@@ -4584,6 +4574,17 @@ dependencies = [
  "zgx-components",
  "zgx-desktop",
  "zgx-gpu",
+ "zgx-mlua",
+]
+
+[[package]]
+name = "zgx-taffy"
+version = "0.9.0"
+dependencies = [
+ "arrayvec",
+ "grid",
+ "serde",
+ "slotmap",
 ]
 
 [[package]]

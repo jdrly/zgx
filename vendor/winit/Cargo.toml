@@ -19,6 +19,8 @@ authors = [
     "Pierre Krieger <pierre.krieger1708@gmail.com>",
 ]
 build = "build.rs"
+# zgx patch: tells zgx-desktop it builds with this winit (see ZGX_PATCH.md).
+links = "zgx_winit"
 include = [
     "/build.rs",
     "/docs",

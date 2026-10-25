@@ -1259,7 +1259,13 @@ const POWER: wgpu::PowerPreference = wgpu::PowerPreference::LowPower;
 /// `request_adapter` opens a Direct3D 12 device on every adapter to rank them,
 /// and each driver keeps its memory after the device is released: 20 MiB for
 /// a second adapter (an indirect display's) on an NVIDIA machine.
-#[cfg(windows)]
+/// With crates.io's wgpu-hal, which lacks it (`zgx_wgpu_hal_patched`, see
+/// build.rs), none: `request_adapter` ranks the adapters.
+#[cfg(all(windows, not(zgx_wgpu_hal_patched)))]
+fn preferred_dx12_adapter(_: &wgpu::Instance) -> Option<wgpu::Adapter> {
+    None
+}
+#[cfg(all(windows, zgx_wgpu_hal_patched))]
 fn preferred_dx12_adapter(instance: &wgpu::Instance) -> Option<wgpu::Adapter> {
     // SAFETY: the hal instance is only read (DXGI's adapters listed, one
     // exposed), never destroyed or changed.

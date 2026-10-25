@@ -1,7 +1,9 @@
 # zgx patch to mlua 0.12.2
 
 Vendored from crates.io `mlua` 0.12.2 (MIT, license file unchanged) and
-applied through `[patch.crates-io]` in the workspace `Cargo.toml`. The
+published as `zgx-mlua`, its library still `mlua`, which zgx-script depends
+on by path and version (`mlua = { package = "zgx-mlua", … }`): it builds
+from crates.io with these changes and no `[patch]` section. The
 crate's tests, benchmarks, examples and docs are left out (and their
 targets and dev-dependencies from `Cargo.toml`). Additions are marked
 "zgx patch" in the source; nothing upstream is changed in behaviour.

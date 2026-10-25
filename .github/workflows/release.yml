@@ -1,6 +1,10 @@
 # A release's checks, publishing nothing: on a version tag (`v0.1.0`), or by
-# hand, every published crate is packaged and built from its package, as
-# `cargo publish` would, and nothing is uploaded. See docs/releasing.md.
+# hand, every published crate (zgx's own and its forks) is packaged and built
+# from its package against crates.io, without the workspace's [patch]
+# section, as an app depending on zgx builds it, on each platform (each has
+# fallbacks of its own: Wayland popups, Direct3D 12 adapters). Nothing is
+# uploaded. scripts/release_check.sh; see docs/releasing.md. Not run on pull
+# requests: CI's time is unchanged.
 name: Release dry run
 
 on:
@@ -13,12 +17,20 @@ permissions:
 
 jobs:
   dry-run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux packages
+        if: runner.os == 'Linux'
         timeout-minutes: 10
         run: |
           apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
@@ -33,5 +45,5 @@ jobs:
             echo "the tag $GITHUB_REF_NAME is not v$version, the workspace's version" >&2
             exit 1
           fi
-      - name: Package and verify every published crate (no upload)
-        run: cargo publish --workspace --dry-run --locked
+      - name: Package and build every published crate as crates.io will (no upload)
+        run: scripts/release_check.sh

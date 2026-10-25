@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.65"
-name = "taffy"
+name = "zgx-taffy"
 version = "0.9.0"
 authors = [
     "Alice Cecile <alice.i.cecile@gmail.com>",
@@ -25,13 +25,16 @@ include = [
     "examples/**/*",
     "Cargo.toml",
     "README.md",
+    "LICENSE.md",
+    "ZGX_PATCH.md",
+    "rustfmt.toml",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "A flexible UI layout library "
+description = "taffy 0.9.0 with zgx's flexbox fix (see ZGX_PATCH.md): a flexible UI layout library"
 readme = "README.md"
 keywords = [
     "cross-platform",
@@ -42,7 +45,8 @@ keywords = [
 ]
 categories = ["gui"]
 license = "MIT"
-repository = "https://github.com/DioxusLabs/taffy"
+repository = "https://github.com/zeronsh/zgx"
+homepage = "https://github.com/DioxusLabs/taffy"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -154,3 +158,6 @@ version = "1.0.93"
 [profile.release]
 lto = true
 panic = "abort"
+
+# zgx: its own workspace, outside zgx's (whose crates depend on it by path).
+[workspace]

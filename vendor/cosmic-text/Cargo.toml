@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.89"
-name = "cosmic-text"
+name = "zgx-cosmic-text"
 version = "0.19.0"
 authors = ["Jeremy Soller <jeremy@system76.com>"]
 build = false
@@ -21,11 +21,11 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Pure Rust multi-line text handling"
-documentation = "https://docs.rs/cosmic-text/latest/cosmic_text/"
+description = "cosmic-text 0.19.0 with zgx's shaping fixes (see ZGX_PATCH.md): pure Rust multi-line text handling"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/pop-os/cosmic-text"
+repository = "https://github.com/zeronsh/zgx"
+homepage = "https://github.com/pop-os/cosmic-text"
 
 [package.metadata.docs.rs]
 features = ["vi"]
@@ -180,3 +180,6 @@ version = "0.11.4"
 
 [profile.test]
 opt-level = 1
+
+# zgx: its own workspace, outside zgx's (whose crates depend on it by path).
+[workspace]

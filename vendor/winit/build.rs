@@ -24,4 +24,8 @@ fn main() {
 
     // Winit defined cfgs.
     println!("cargo:rustc-check-cfg=cfg(unreleased_changelogs)");
+
+    // zgx patch: zgx-desktop's build script reads this (`DEP_ZGX_WINIT_PATCHED`)
+    // to use the accessors this patch adds; with crates.io's winit it falls back.
+    println!("cargo:patched=1");
 }

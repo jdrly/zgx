@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 rust-version = "1.88"
-name = "mlua"
+name = "zgx-mlua"
 version = "0.12.2"
 authors = [
     "Aleksandr Orlenko <zxteam@pm.me>",
@@ -25,10 +25,10 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = """
+mlua 0.12.2 with zgx's table walk and userdata fixes (see ZGX_PATCH.md).
 High level bindings to Lua 5.5/5.4/5.3/5.2/5.1 (including LuaJIT) and Luau
 with async/await features and support of writing native Lua modules in Rust.
 """
-documentation = "https://docs.rs/mlua"
 readme = "README.md"
 keywords = [
     "lua",
@@ -42,7 +42,8 @@ categories = [
     "asynchronous",
 ]
 license = "MIT"
-repository = "https://github.com/mlua-rs/mlua"
+repository = "https://github.com/zeronsh/zgx"
+homepage = "https://github.com/mlua-rs/mlua"
 
 [package.metadata.docs.rs]
 features = [
@@ -169,3 +170,6 @@ check-cfg = [
     "cfg(tarpaulin_include)",
     "cfg(force_memory_limit)",
 ]
+
+# zgx: its own workspace, outside zgx's (whose crates depend on it by path).
+[workspace]

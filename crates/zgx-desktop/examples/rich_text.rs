@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smoke = std::env::args().any(|arg| arg == "--smoke-test");
     Application::new()
         .font(FontData::new(std::sync::Arc::<[u8]>::from(
-            &include_bytes!("../../../assets/DejaVuSans.ttf")[..],
+            &include_bytes!("../assets/DejaVuSans.ttf")[..],
         ))?)
         .window(WindowOptions {
             title: "zgx rich text".into(),

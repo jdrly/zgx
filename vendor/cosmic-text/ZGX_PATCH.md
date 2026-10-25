@@ -1,8 +1,10 @@
 # zgx patch to cosmic-text 0.19.0
 
 Vendored from crates.io `cosmic-text` 0.19.0 (MIT OR Apache-2.0, license files
-unchanged) and applied through `[patch.crates-io]` in the workspace
-`Cargo.toml`. Changes are marked "zgx patch" or "zgx:" in the source. The
+unchanged) and published as `zgx-cosmic-text`, its library still
+`cosmic_text`, which zgx's crates depend on by path and version
+(`cosmic-text = { package = "zgx-cosmic-text", … }`): they build from
+crates.io with these changes and no `[patch]` section. Changes are marked "zgx patch" or "zgx:" in the source. The
 crate's tests, benchmarks, fonts, samples and scripts are left out, and
 `check/` is new.
 

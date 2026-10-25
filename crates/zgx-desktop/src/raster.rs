@@ -65,7 +65,7 @@ impl Raster {
             width,
             height,
             font: Font::from_bytes(
-                include_bytes!("../../../assets/DejaVuSans.ttf") as &[u8],
+                include_bytes!("../assets/DejaVuSans.ttf") as &[u8],
                 FontSettings::default(),
             )
             .expect("bundled font"),

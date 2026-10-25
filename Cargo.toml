@@ -57,23 +57,22 @@ codegen-units = 1
 lto = "thin"
 codegen-units = 1
 
+# Text shaping, layout and the Luau bindings are forks published as zgx's own
+# crates (zgx-cosmic-text, zgx-taffy, zgx-mlua), which zgx's crates depend on
+# by path and version, each with its ZGX_PATCH.md. The crates below are
+# patched in this repository alone: a zgx crate from crates.io builds against
+# their releases, without the fixes, where an API a patch adds is detected at
+# build time (`links` metadata) and falls back. See docs/releasing.md.
+#
 # wgpu-hal with a Metal backend patch: command buffers are created lazily and
 # empty ones are never committed. Upstream opens several per submission; each
 # costs a commit, a completion callback and Core Animation frame-pacing IPC.
 # On Windows, a Direct3D 12 adapter can be exposed without opening a device on
 # every other adapter. See vendor/wgpu-hal/ZGX_PATCH.md.
-#
-# cosmic-text with a shaping patch: cached words are looked up without building
-# a key per word, and plain ASCII lines skip bidi analysis. Text shaping is the
-# largest share of CPU when text streams. See vendor/cosmic-text/ZGX_PATCH.md.
 [patch.crates-io]
 wgpu-hal = { path = "vendor/wgpu-hal" }
-cosmic-text = { path = "vendor/cosmic-text" }
-# taffy 0.9.0 with auto margins keeping a flex line's gaps (see
-# vendor/taffy/src/compute/flexbox.rs, "zgx:").
-taffy = { path = "vendor/taffy" }
-# AccessKit 0.26 on macOS with headings VoiceOver finds: see
-# vendor/accesskit_macos/ZGX_PATCH.md.
+# AccessKit 0.26 on macOS with headings VoiceOver finds and grids that give
+# their rows: see vendor/accesskit_macos/ZGX_PATCH.md.
 accesskit_macos = { path = "vendor/accesskit_macos" }
 # AccessKit's Linux adapter (accesskit_unix 0.22, accesskit_atspi_common 0.19)
 # with tables Orca reads and tree items that say they are open: see
@@ -86,7 +85,3 @@ accesskit_windows = { path = "vendor/accesskit_windows" }
 # winit 0.30.13 with a window's `xdg_surface`, the parent of Wayland popups:
 # see vendor/winit/ZGX_PATCH.md.
 winit = { path = "vendor/winit" }
-# mlua 0.12.2 with a table walk that borrows keys and values from the stack
-# and userdata made without a protected call: building a script's interface
-# converted and referenced every key it read. See vendor/mlua/ZGX_PATCH.md.
-mlua = { path = "vendor/mlua" }

@@ -6,7 +6,7 @@ zgx runs on macOS, Windows and Linux. On Linux, install the fontconfig, xkbcommo
 
 ## In Rust
 
-Add the crates (they are not on crates.io yet), and the fixes zgx builds its dependencies with: it carries forks of nine of them (`vendor/` in its repository), and a git dependency doesn't bring its `[patch]` with it, so without these zgx doesn't compile (cosmic-text; winit, which gives zgx-desktop the window's `xdg_surface` for Wayland popups) or behaves differently (layout margins, VoiceOver headings, Orca's tables, Metal's command buffers, slower Luau scripts):
+Add the crates. Until zgx's first release is on crates.io, from its repository:
 
 ```toml
 [dependencies]
@@ -14,17 +14,27 @@ zgx = { git = "https://github.com/zeronsh/zgx" }
 zgx-desktop = { git = "https://github.com/zeronsh/zgx" }
 # The component library (a data grid, a tree, tabs, toasts…), if you use it.
 zgx-components = { git = "https://github.com/zeronsh/zgx" }
+```
 
+Once it is released, from crates.io, with nothing else:
+
+```toml
+[dependencies]
+zgx = "0.1"
+zgx-desktop = "0.1"
+zgx-components = "0.1"
+```
+
+That builds as it is: zgx's own forks (of cosmic-text, taffy and mlua) come with it as crates of their own. A few more of its dependencies are patched in zgx's repository alone (winit, wgpu-hal, the AccessKit adapters), and an app gets their releases instead, which zgx builds with, short of those fixes: Wayland popups open in their window, Metal frames take more command buffers, VoiceOver misses headings and grid rows ([releasing](releasing.md) lists them). To have them too, add the patches your app's build then takes from zgx's repository (a dependency's `[patch]` never reaches an app):
+
+```toml
 [patch.crates-io]
-cosmic-text = { git = "https://github.com/zeronsh/zgx" }
-taffy = { git = "https://github.com/zeronsh/zgx" }
 wgpu-hal = { git = "https://github.com/zeronsh/zgx" }
+winit = { git = "https://github.com/zeronsh/zgx" }
 accesskit_macos = { git = "https://github.com/zeronsh/zgx" }
 accesskit_windows = { git = "https://github.com/zeronsh/zgx" }
 accesskit_unix = { git = "https://github.com/zeronsh/zgx" }
 accesskit_atspi_common = { git = "https://github.com/zeronsh/zgx" }
-winit = { git = "https://github.com/zeronsh/zgx" }
-mlua = { git = "https://github.com/zeronsh/zgx" }
 ```
 
 The first build compiles the stack once (about a minute on an Apple M-series Mac, release); later ones take seconds.

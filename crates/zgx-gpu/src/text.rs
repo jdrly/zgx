@@ -1300,7 +1300,7 @@ mod rich_tests {
     // aliases, so selection and feature tests never depend on host font installs.
     fn bundled_test_fonts() -> FontSystem {
         let mut db = cosmic_text::fontdb::Database::new();
-        db.load_font_data(include_bytes!("../../../assets/DejaVuSans.ttf").to_vec());
+        db.load_font_data(include_bytes!("../../zgx-desktop/assets/DejaVuSans.ttf").to_vec());
         let face = db.faces().next().expect("bundled font").clone();
         for family in ["zgx test first", "zgx test second"] {
             let mut alias = face.clone();
@@ -1361,7 +1361,7 @@ mod rich_tests {
         use zgx::text_layout::{FontFamily, TextAlign, TextLayout};
         assert!(FontData::new(Arc::<[u8]>::from(&b"invalid"[..])).is_err());
         let data = FontData::new(Arc::<[u8]>::from(
-            &include_bytes!("../../../assets/DejaVuSans.ttf")[..],
+            &include_bytes!("../../zgx-desktop/assets/DejaVuSans.ttf")[..],
         ))
         .unwrap();
         assert!(data.families().iter().any(|name| name == "DejaVu Sans"));
@@ -1562,7 +1562,7 @@ mod variation_axis_tests {
 
     /// The bundled font, given an `fvar` table with one `tag` axis.
     fn with_axis(tag: &[u8; 4], min: f32, default: f32, max: f32) -> Vec<u8> {
-        let font: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
+        let font: &[u8] = include_bytes!("../../zgx-desktop/assets/DejaVuSans.ttf");
         let u16_at = |at: usize| usize::from(u16::from_be_bytes([font[at], font[at + 1]]));
         let u32_at = |at: usize| u32::from_be_bytes(font[at..at + 4].try_into().unwrap()) as usize;
         // Version 1.0, axes at 16, one 20-byte axis, no named instances.

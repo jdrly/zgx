@@ -53,7 +53,6 @@ use wayland_protocols::{
 use winit::{
     dpi::LogicalPosition,
     event::{MouseButton, MouseScrollDelta, TouchPhase},
-    platform::wayland::WindowExtWayland,
     raw_window_handle::{HasDisplayHandle, RawDisplayHandle, RawWindowHandle, WaylandWindowHandle},
     window::Window,
 };
@@ -126,8 +125,24 @@ fn with_client<T>(window: &Window, then: impl FnOnce(&mut Client) -> Option<T>) 
     })
 }
 
+/// `window`'s `xdg_surface`, and where its window geometry sits on it: from
+/// the vendored winit (`WindowExtWayland`, see vendor/winit/ZGX_PATCH.md),
+/// detected at build time (`zgx_winit_patched`, from its `links` metadata).
+/// A winit from crates.io gives neither: there are no native popups, and
+/// popups open in the window (`available` is false).
+#[cfg(zgx_winit_patched)]
+fn xdg_surface(window: &Window) -> Option<(std::ptr::NonNull<std::ffi::c_void>, (i32, i32))> {
+    use winit::platform::wayland::WindowExtWayland;
+    let origin = window.xdg_window_geometry_origin().unwrap_or((0, 0));
+    Some((window.xdg_surface()?, origin))
+}
+#[cfg(not(zgx_winit_patched))]
+fn xdg_surface(_: &Window) -> Option<(std::ptr::NonNull<std::ffi::c_void>, (i32, i32))> {
+    None
+}
+
 fn connect(window: &Window) -> Option<Client> {
-    window.xdg_surface()?;
+    xdg_surface(window)?;
     let display = window.display_handle().ok()?.as_raw();
     let RawDisplayHandle::Wayland(handle) = display else {
         return None;
@@ -539,18 +554,15 @@ fn show(
     let (parent_xdg, (gx, gy)) = match &of {
         Some((_, xdg, rect)) => (xdg.clone(), (rect.x.round() as i32, rect.y.round() as i32)),
         None => {
+            let (surface, origin) = xdg_surface(parent)?;
             // SAFETY: winit's live xdg_surface on this display, which
             // `parent` holds for this call; the proxy made of it goes when
             // this returns (`get_popup` takes it as an argument only).
-            let xdg = unsafe {
-                ObjectId::from_ptr(
-                    XdgSurface::interface(),
-                    parent.xdg_surface()?.as_ptr().cast(),
-                )
-            }
-            .ok()
-            .and_then(|id| XdgSurface::from_id(&client.connection, id).ok())?;
-            (xdg, parent.xdg_window_geometry_origin().unwrap_or((0, 0)))
+            let xdg =
+                unsafe { ObjectId::from_ptr(XdgSurface::interface(), surface.as_ptr().cast()) }
+                    .ok()
+                    .and_then(|id| XdgSurface::from_id(&client.connection, id).ok())?;
+            (xdg, origin)
         }
     };
     let width = rect.width.ceil().max(1.) as i32;
