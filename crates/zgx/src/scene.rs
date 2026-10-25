@@ -5764,28 +5764,32 @@ impl Scene {
         {
             node.alternates.insert(0, previous);
         }
-        // Results from before a node changed are stale; of the rest, all of
-        // this pass's and the most recent few of earlier ones.
-        // Earlier results past the few kept whole keep their sizes.
-        let mut earlier = 0;
-        let mut evicted = Vec::new();
-        node.alternates.retain(|m| {
-            let valid = m.constraints != constraints && (m.pass == pass || !dirty);
-            let whole = m.pass == pass || earlier < MEASUREMENT_ALTERNATES;
-            earlier += usize::from(valid && whole && m.pass != pass);
-            if valid && !whole {
-                evicted.push(ProbeSize::from(m));
-            }
-            valid && whole
-        });
-        evicted.extend(
-            node.alternates
-                .drain(PASS_RESULTS.min(node.alternates.len())..)
-                .map(|m| ProbeSize::from(&m)),
-        );
-        node.sizes
-            .retain(|m| m.constraints != constraints && (m.pass == pass || !dirty));
-        keep_sizes(&mut node.sizes, evicted);
+        // Most nodes keep no other results (a box changing alone): nothing
+        // to sort out.
+        if !node.alternates.is_empty() || !node.sizes.is_empty() {
+            // Results from before a node changed are stale; of the rest, all of
+            // this pass's and the most recent few of earlier ones.
+            // Earlier results past the few kept whole keep their sizes.
+            let mut earlier = 0;
+            let mut evicted = Vec::new();
+            node.alternates.retain(|m| {
+                let valid = m.constraints != constraints && (m.pass == pass || !dirty);
+                let whole = m.pass == pass || earlier < MEASUREMENT_ALTERNATES;
+                earlier += usize::from(valid && whole && m.pass != pass);
+                if valid && !whole {
+                    evicted.push(ProbeSize::from(m));
+                }
+                valid && whole
+            });
+            evicted.extend(
+                node.alternates
+                    .drain(PASS_RESULTS.min(node.alternates.len())..)
+                    .map(|m| ProbeSize::from(&m)),
+            );
+            node.sizes
+                .retain(|m| m.constraints != constraints && (m.pass == pass || !dirty));
+            keep_sizes(&mut node.sizes, evicted);
+        }
         let overfull = node.alternates.len() == MEASUREMENT_ALTERNATES + 1;
         node.arrange_dirty = true;
         node.measurement = Some(Measurement {
