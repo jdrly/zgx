@@ -6,6 +6,7 @@ on exit. This checks native behavior, not hardware GPU performance.
 """
 import argparse
 import contextlib
+import ctypes
 import json
 import os
 import pathlib
@@ -75,9 +76,65 @@ def wait_for_wm(env, seconds=20):
         if check.startswith("0x") and "_NET_WM_NAME" in prop("-id", check, "_NET_WM_NAME") \
                 and "_NET_ACTIVE_WINDOW" in prop("-root", "_NET_SUPPORTED"):
             settle_keyboard(env, deadline)
+            start_keep_awake(env, check)
             return
         time.sleep(.05)
     raise RuntimeError("the window manager did not start")
+
+
+def start_keep_awake(env, check):
+    """`keep_awake` on `env`'s display, whose window manager's check window
+    is `check`, in a process of its own, which ends with the display or
+    this process."""
+    code = f"import sys; sys.path.insert(0, {str(pathlib.Path(__file__).resolve().parent)!r}); " \
+           f"import os, platform_smoke; platform_smoke.keep_awake(os.environ, {check!r}, {os.getpid()})"
+    subprocess.Popen([sys.executable, "-c", code], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+class _ClientMessage(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int), ("data", ctypes.c_long * 5), ("pad", ctypes.c_long * 12)]
+
+
+def keep_awake(env, check, parent, period=.5):
+    """Wake the window manager every `period` seconds while its display
+    lives, from a process of its own (`start_keep_awake`): Xlib exits the
+    process its display goes from. Openbox 3.6 keeps a queue of X events
+    of its own (obt/xqueue.c) beside Xlib's, filled when it looks ahead for
+    an event (managing a window, a timer), but its main loop's source asks
+    only XPending, Xlib's:
+    events left in its own queue wait for the next X traffic to wake it. On
+    a probe's idle desktop that is never, and a request the probe made (a
+    window to map, a key to close it, a desktop count) went unanswered: 10
+    stuck requests in 1,200 loaded starts were each answered as soon as an
+    unrelated root property changed. The wake is a client message of a type
+    no one knows (`_ZGX_WAKE`) sent to the root window for its substructure
+    redirect, which only the window manager selects: nothing else hears it,
+    and Openbox does nothing with it but wake."""
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [ctypes.c_char_p], ctypes.c_void_p
+    x11.XDefaultRootWindow.argtypes, x11.XDefaultRootWindow.restype = [ctypes.c_void_p], ctypes.c_ulong
+    x11.XInternAtom.argtypes, x11.XInternAtom.restype = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int], ctypes.c_ulong
+    x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long,
+                               ctypes.POINTER(_ClientMessage)]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    # The display's number may be another's by now: this one's window
+    # manager, or none.
+    found = subprocess.run(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"], env=env, capture_output=True, text=True)
+    display = x11.XOpenDisplay(env["DISPLAY"].encode())
+    if not display or found.stdout.rsplit("# ", 1)[-1].strip() != check:
+        return
+    root = x11.XDefaultRootWindow(display)
+    event = _ClientMessage(type=33, send_event=1, display=display, window=root,  # ClientMessage
+                           message_type=x11.XInternAtom(display, b"_ZGX_WAKE", 0), format=32)
+    substructure_redirect = 1 << 20
+    # Until the display goes, when Xlib exits this process, or the probe.
+    while os.getppid() == parent:
+        x11.XSendEvent(display, root, 0, substructure_redirect, ctypes.byref(event))
+        x11.XFlush(display)
+        time.sleep(period)
 
 
 def settle_keyboard(env, deadline):
@@ -88,10 +145,10 @@ def settle_keyboard(env, deadline):
     meanwhile reached the app instead of Openbox's Close, and the app stayed
     open (one probe run in thirty, under load). The window manager handles X
     events in order, so once it has answered a request sent after the key,
-    it has rebound: a desktop added and taken away. Openbox, already
-    showing its 4 desktops, left the request for 5 unanswered in 4 of 900
-    loaded starts (and the probe failed): one unanswered is sent again each
-    half second, and any it answers was sent after the key."""
+    it has rebound: a desktop added and taken away. A request left in
+    Openbox's own queue (`keep_awake`) is sent again each half second, which
+    wakes it; any it answers was sent after the key. The desktop count it
+    settled on, or None without one."""
     def desktops():
         found = subprocess.run(["xprop", "-root", "_NET_NUMBER_OF_DESKTOPS"], env=env, capture_output=True,
                                text=True).stdout.rsplit("=", 1)[-1].strip()
@@ -99,7 +156,7 @@ def settle_keyboard(env, deadline):
     subprocess.run(["xdotool", "key", "shift"], env=env, check=True)
     count = desktops()
     if count is None:
-        return
+        return None
     for want in (count + 1, count):
         asked = 0.
         while (shown := desktops()) != want:
@@ -113,6 +170,7 @@ def settle_keyboard(env, deadline):
                 subprocess.run(["xdotool", "set_num_desktops", str(want)], env=env, check=True)
                 asked = time.monotonic()
             time.sleep(.02)
+    return count
 
 
 def dump_display(env, output, pid=None):
