@@ -416,12 +416,13 @@ impl Popups {
                 let revision = scene.layer_revision(*root);
                 if full || popup.revision != Some(revision) {
                     popup.revision = Some(revision);
-                    zgx_gpu::present_log::log(|| format!("popup draw {root:?}"));
                     popup.renderer.set_popup(*root, *bounds);
                     popup.renderer.repaint_all();
-                    if popup.renderer.render(scene, &[]).is_ok() {
-                        let _ = popup.renderer.present();
-                    }
+                    let status = popup
+                        .renderer
+                        .render(scene, &[])
+                        .and_then(|_| popup.renderer.present_with_status());
+                    zgx_gpu::present_log::log(|| format!("popup draw {root:?} {status:?}"));
                 }
                 client.state.targets.insert(
                     popup.surface.id(),
