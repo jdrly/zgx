@@ -3,7 +3,7 @@
 //! crate check themselves against (comparisons/mygo/workload).
 //!
 //!     cargo run -p zgx-workload --example golden > comparisons/mygo/workload/testdata/golden.txt
-use zgx_workload::{animation, heavy, row_label, Mode, Workload};
+use zgx_workload::{animation, heavy, row_label, vlist, Mode, Workload};
 
 fn main() {
     let mut lab = Workload {
@@ -39,13 +39,23 @@ fn main() {
         if tick % 29 != 0 {
             continue;
         }
-        println!("heavy {tick} live {live} scroll {} rows {:?}", work.scroll, work.row_range());
+        println!(
+            "heavy {tick} live {live} scroll {} rows {:?}",
+            work.scroll,
+            work.row_range()
+        );
         println!("log {:?}", work.visible_log());
         for tile in 0..heavy::TILES {
-            println!("tile {tile} {} {}", heavy::tile_label(tile), heavy::tile_value(tile, live));
+            println!(
+                "tile {tile} {} {}",
+                heavy::tile_label(tile),
+                heavy::tile_value(tile, live)
+            );
         }
         for card in [0, 7, 19, 29] {
-            let bars: Vec<String> = (0..heavy::BARS).map(|b| format!("{:.3}", heavy::bar_height(card, b, live))).collect();
+            let bars: Vec<String> = (0..heavy::BARS)
+                .map(|b| format!("{:.3}", heavy::bar_height(card, b, live)))
+                .collect();
             println!(
                 "card {card} {} {} {:.3} {:?} {}",
                 heavy::card_title(card),
@@ -74,7 +84,28 @@ fn main() {
             .map(|i| format!("{:.4}", animation::dot_opacity(i, seconds)))
             .collect();
         let count = animation::SHIMMER.chars().count();
-        let shimmer: Vec<String> = (0..count).step_by(3).map(|i| animation::shimmer_alpha(i, count, seconds).to_string()).collect();
+        let shimmer: Vec<String> = (0..count)
+            .step_by(3)
+            .map(|i| animation::shimmer_alpha(i, count, seconds).to_string())
+            .collect();
         println!("animate {frame} {} {}", dots.join(","), shimmer.join(","));
+    }
+    for row in (0..40).chain([999, 54_321, 99_999]) {
+        println!(
+            "vlist {row} {} {} {} {} {:?}",
+            vlist::lines(row),
+            vlist::has_image(row),
+            vlist::author(row),
+            vlist::time(row),
+            vlist::text(row)
+        );
+    }
+    for tick in 0..200 {
+        println!(
+            "vtick {tick} {} {} {:?}",
+            vlist::delta(vlist::Mode::Scroll, tick),
+            vlist::delta(vlist::Mode::Fling, tick),
+            vlist::jump(tick)
+        );
     }
 }
