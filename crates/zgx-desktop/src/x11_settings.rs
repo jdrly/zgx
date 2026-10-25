@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn the_double_click_time_and_drag_threshold_are_read_past_the_rest() {
+    fn the_double_click_time_drag_threshold_and_caret_blink_are_read_past_the_rest() {
         for big in [false, true] {
             let data = encode(
                 big,
@@ -262,6 +262,9 @@ mod tests {
                     ("Net/DndDragThreshold", Value::Int(14)),
                     ("Gtk/OverlayScrolling", Value::Int(0)),
                     ("Gtk/EnablePrimaryPaste", Value::Int(0)),
+                    ("Net/CursorBlink", Value::Int(1)),
+                    ("Net/CursorBlinkTime", Value::Int(1000)),
+                    ("Gtk/CursorBlinkTimeout", Value::Int(7)),
                 ],
             );
             assert_eq!(
@@ -274,6 +277,9 @@ mod tests {
                     primary_paste: Some(false),
                     font: Some("Noto Sans".into()),
                     titlebar_double_click: Some(crate::window_chrome::TitlebarAction::Minimize),
+                    cursor_blink: Some(true),
+                    cursor_blink_time: Some(1000),
+                    cursor_blink_timeout: Some(7),
                 },
                 "big endian: {big}"
             );
