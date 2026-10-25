@@ -133,6 +133,7 @@ impl NativeHost {
         &mut self,
         window: std::sync::Arc<winit::window::Window>,
         context: Option<&zgx_gpu::GpuContext>,
+        transparent: bool,
     ) -> Result<zgx_gpu::GpuRenderer, zgx_gpu::GpuError> {
         // A window takes one target: the last one goes first.
         #[cfg(all(windows, feature = "webview2"))]
@@ -166,10 +167,7 @@ impl NativeHost {
                 }
             }
         }
-        match context {
-            Some(context) => zgx_gpu::GpuRenderer::for_window_with_context(window, context),
-            None => zgx_gpu::GpuRenderer::for_window(window),
-        }
+        zgx_gpu::GpuRenderer::for_window_with_transparency(window, context, transparent)
     }
     /// Whether this window has native views to keep up (now or last frame).
     pub fn active(&self) -> bool {

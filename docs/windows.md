@@ -216,10 +216,11 @@ transient materials, Mica for window and page backgrounds, Mica Alt for title
 bars (see [window controls](window-controls.md)). Presentation through the visual
 measured the same as a window's own swap chain: every frame shown, the same
 keystroke latency and idle cost. Only transparent and glass windows present
-with alpha: an opaque window's swap chain is opaque, made at its first frame
-once the background is set (DXGI keeps a swap chain's alpha for its life),
-so the compositor copies its frames instead of blending them over what lies
-behind. With alpha everywhere, the Desktop Window Manager spent 7 to 14% more
+with alpha: an opaque window's swap chain is opaque from the start
+(`GpuRenderer::for_window_with_transparency`), so the compositor copies its
+frames instead of blending them over what lies behind. One made opaque whose
+first frame's background lets what is behind show is made again with alpha
+(DXGI keeps a swap chain's alpha for its life). With alpha everywhere, the Desktop Window Manager spent 7 to 14% more
 GPU time a frame on a zgx window than on an opaque one, more than on GPUI's
 (`windows_compare.py` reads the compositor's share).
 `scripts/windows_chrome_smoke.py` checks the buttons and the resize bands.

@@ -2104,15 +2104,18 @@ impl Host {
             }
             self.context.windows.gpu_contexts.borrow_mut().push(context);
         }
+        // Opaque unless it may show what is behind: on Windows the
+        // compositor then copies its frames instead of blending them.
+        let transparent = self.options.is_transparent();
         let contexts = self.context.windows.gpu_contexts.borrow().clone();
         for context in contexts {
-            match self.native.renderer_for(window.clone(), Some(&context)) {
+            match (self.native).renderer_for(window.clone(), Some(&context), transparent) {
                 Ok(renderer) => return Ok(renderer),
                 Err(error) if error.is_surface_incompatible() => continue,
                 Err(error) => return Err(error.into()),
             }
         }
-        let renderer = self.native.renderer_for(window.clone(), None)?;
+        let renderer = (self.native).renderer_for(window.clone(), None, transparent)?;
         for font in self.context.windows.fonts.iter() {
             font.install(&mut renderer.text_system().borrow_mut());
         }
