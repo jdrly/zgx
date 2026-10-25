@@ -91,6 +91,15 @@ fn placement(start: Option<i16>, count: Option<u16>, full: bool) -> t::Line<t::G
 }
 fn style(style: &Style, layout: Layout, leaf: bool) -> t::Style {
     let options = style.layout_options.as_deref().copied().unwrap_or_default();
+    style_with(style, options, layout, leaf)
+}
+/// `style`, with `options` in place of `style`'s own.
+fn style_with(
+    style: &Style,
+    options: crate::layout::LayoutOptions,
+    layout: Layout,
+    leaf: bool,
+) -> t::Style {
     let pad = style.padding_edges.unwrap_or(Insets::all(style.padding));
     let mut output = t::Style {
         display: match options.display.unwrap_or_default() {
@@ -544,16 +553,20 @@ impl Scene {
         if self.relative_count > 0 {
             ids.retain(|child| !self.escapes(*child));
         }
-        let live: std::collections::HashSet<_> = ids.iter().copied().collect();
-        let removed: Vec<_> = cache
-            .nodes
-            .keys()
-            .filter(|id| !live.contains(id))
-            .copied()
-            .collect();
-        for removed in removed {
-            let key = cache.nodes.remove(&removed).unwrap();
-            cache.tree.remove(key).expect("owned retained layout child");
+        // The tree holds the children it was last laid out with (`order`):
+        // the same ones, none of its leaves has gone.
+        if cache.order != ids {
+            let live: std::collections::HashSet<_> = ids.iter().copied().collect();
+            let removed: Vec<_> = cache
+                .nodes
+                .keys()
+                .filter(|id| !live.contains(id))
+                .copied()
+                .collect();
+            for removed in removed {
+                let key = cache.nodes.remove(&removed).unwrap();
+                cache.tree.remove(key).expect("owned retained layout child");
+            }
         }
         let children: Vec<_> = ids
             .iter()
@@ -597,15 +610,13 @@ impl Scene {
                 .expect("retained children");
             cache.order.clone_from(&ids);
         }
-        let mut mapping_style = root_style.clone();
         let mut mapping_options = root_options;
         mapping_options.padding = Default::default();
         mapping_options.min_width = None;
         mapping_options.max_width = None;
         mapping_options.min_height = None;
         mapping_options.max_height = None;
-        mapping_style.layout_options = Some(Arc::new(mapping_options));
-        let mut mapped = style(&mapping_style, layout, false);
+        let mut mapped = style_with(&root_style, mapping_options, layout, false);
         mapped.position = t::Position::Relative;
         mapped.margin = taffy::style_helpers::zero();
         mapped.inset = t::Rect::auto();
