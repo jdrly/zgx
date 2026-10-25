@@ -428,6 +428,8 @@ pub(crate) fn sync(ui: &zgx::widgets::Ui) {
     if let Some(interval) = double_click_time() {
         ui.input.set_double_click_time(interval);
     }
+    #[cfg(windows)]
+    ui.input.set_drag_threshold(windows_drag_threshold());
     // On X11 the session's XSETTINGS come first, as GTK takes them there.
     #[cfg(target_os = "linux")]
     {
@@ -486,6 +488,29 @@ fn linux_drag_threshold(setting: Option<u32>) -> f32 {
     setting.map_or(8., |pixels| pixels as f32)
 }
 
+/// Windows' drag threshold (`SM_CXDRAG`, `SM_CYDRAG`: how far the pointer
+/// moves from a press before a drag begins, 4 by default, raised in the
+/// registry's `DragWidth`/`DragHeight`), at 96 DPI: in points. The larger
+/// of the two, as zgx measures a distance.
+#[cfg(windows)]
+fn windows_drag_threshold() -> f32 {
+    use windows::Win32::UI::{
+        HiDpi::GetSystemMetricsForDpi,
+        WindowsAndMessaging::{SM_CXDRAG, SM_CYDRAG},
+    };
+    // SAFETY: reads two system settings.
+    let (x, y) = unsafe {
+        (
+            GetSystemMetricsForDpi(SM_CXDRAG, 96),
+            GetSystemMetricsForDpi(SM_CYDRAG, 96),
+        )
+    };
+    match x.max(y) {
+        pixels if pixels > 0 => pixels as f32,
+        _ => f32::NAN,
+    }
+}
+
 /// Windows' "Text size" (Settings, Accessibility): 1 to 2.25, scaling text
 /// alone, as WinUI's text follows it.
 #[cfg(windows)]
@@ -530,5 +555,19 @@ pub(crate) fn display_options_changed() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         false
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// A window's drag threshold is Windows' own (`SM_CXDRAG`), in points,
+    /// not zgx's default.
+    #[test]
+    fn the_drag_threshold_is_the_systems() {
+        let ui = zgx::widgets::Ui::new(100., 100.);
+        super::sync(&ui);
+        let system = super::windows_drag_threshold();
+        assert!(system >= 1., "{system}");
+        assert_eq!(ui.input.drag_threshold(), system);
     }
 }

@@ -6,10 +6,10 @@ On macOS a zgx app's menus, drags and windows behave as AppKit's do, past the ed
 | --- | --- | --- |
 | Menus, popovers, selects, tooltips past the window | as before: `menu`, `popover`, `.tooltip`; `open_over` for a pop-up button | macOS, Windows, X11, Wayland |
 | A popover's arrow at its trigger | `View::arrow` / Luau `arrow` | everywhere (drawn in the window where popups stay in it) |
-| A drag's preview over every window and app | any drag with a `drag_preview` | macOS, X11 |
+| A drag's preview over every window and app | any drag with a `drag_preview` | macOS, Windows, X11 |
 | Drag out to other apps | `View::drag_export` / Luau `drag_export` | macOS, Windows, X11, Wayland |
-| Drags between the app's windows | any drag and drop; `DragEvent::visiting` | macOS, X11, Wayland |
-| Tear a tab off into a window of its own | `View::on_drag_outside`, `WindowOptions::under_pointer` | macOS, X11; Windows and Wayland place the new window |
+| Drags between the app's windows | any drag and drop; `DragEvent::visiting` | macOS, Windows, X11, Wayland |
+| Tear a tab off into a window of its own | `View::on_drag_outside`, `WindowOptions::under_pointer` | macOS, Windows, X11; Wayland places the new window |
 | A window's only tab moves the window | `View::drag_moves_window` | macOS, X11; Wayland moves it, without merging into another window's strip |
 | Window menu, ⌘`, AppKit tabs | `WindowOptions::{tabbing, tabbing_identifier}` | macOS |
 | New windows cascading from the front one | a window with no position | macOS, Windows, X11 |
@@ -163,4 +163,6 @@ Luau also has `on_drag_outside` and `drag_moves_window` ([events](reference/even
 | `window_probe` | the Window menu, the cascade, the autosave, and what ⌘` cycles |
 | `corners_probe` | a menu as its window moves (it follows), minimizes (it closes), on another display (it opens there), with a dozen windows in the Window menu; `--fullscreen` takes the screen into fullscreen and back |
 
-Each probe posts synthetic AppKit events to its own windows and never moves the user's pointer. None of them drags anything that carries an export out of a window: AppKit's drag session follows the real pointer and would drop on whatever app is under it. ⌘` is a system hotkey, so it can only be checked by hand; it was, on macOS 26: it cycles `tab_windows`' windows.
+On Windows the same examples drive Python smokes ([windows.md](windows.md#smoke-checks)): `windows_popup_smoke.py` (`popup_probe`), `windows_drag_smoke.py` (`drag_probe` out onto a test-owned OLE drop target, and its tabs between windows and torn off), `windows_tab_smoke.py` (`tab_windows`: torn off under the pointer, moved by its only tab, merged back) and `windows_window_smoke.py` (`window_probe`: the cascade, saved frames, `under_pointer`). They take the real pointer, check its way lies over the test's own windows before each drag, and never let go over another app's.
+
+Each macOS probe posts synthetic AppKit events to its own windows and never moves the user's pointer. None of them drags anything that carries an export out of a window: AppKit's drag session follows the real pointer and would drop on whatever app is under it. ⌘` is a system hotkey, so it can only be checked by hand; it was, on macOS 26: it cycles `tab_windows`' windows.

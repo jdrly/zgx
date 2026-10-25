@@ -735,8 +735,9 @@ impl InputDispatcher {
     }
     /// How far, in points, the pointer moves from a press before it is a
     /// drag rather than a click (`EventContext::drag_threshold`): the
-    /// system's, which the desktop host gives (GNOME's and KDE's setting),
-    /// and which people whose hands shake raise; 4 until it does. Held
+    /// system's, which the desktop host gives (GNOME's and KDE's setting,
+    /// Windows' `SM_CXDRAG`), and which people whose hands shake raise; 4
+    /// until it does. Held
     /// between 1 and 100; NaN leaves it as it was.
     pub fn set_drag_threshold(&self, points: f32) {
         if points.is_nan() {
