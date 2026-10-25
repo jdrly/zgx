@@ -81,12 +81,24 @@ REQUESTED, WARMUP, SAMPLED, INTERVAL = 20, 5, 15, 0.05
 # in each idle trial's raw data, prefixed `early_`. See docs/benchmarking.md.
 IDLE_SETTLE, IDLE_REPEATS = 20, 5
 PACING_SECONDS, PACING_REPEATS = 8, 8
+# The suite's protocol (`--suite`, scripts/run_macos_suite.py): shorter
+# trials, fewer pacing captures and idle launches, and more repeats only for
+# cells whose trials disagree. Checked against the full protocol's ranges on
+# the heavy dashboard (docs/benchmarking.md).
+SUITE = {'REQUESTED': 13, 'WARMUP': 3, 'SAMPLED': 10, 'IDLE_REPEATS': 3, 'PACING_REPEATS': 2}
+# A cell whose CPU or GPU work spreads more than this share of its median
+# over its trials gets EXTRA more (the suite).
+SPREAD, EXTRA = 0.10, 2
+# Blank-row captures (vlist): after the warm-up, this long, this often.
+BLANK_SECONDS, BLANK_RATE = 8, 10
 MODES = ['idle', 'stream', 'scroll', 'both']
+MYGO = ROOT / 'comparisons/mygo/bin'
 SCENES = {
     'lab': {
         'modes': MODES,
         'binaries': {
             'zgx': ROOT / 'target/dist/examples/component_workload',
+            'mygo': MYGO / 'lab',
             'gpui': ROOT / 'comparisons/gpui/target/dist/zgx-compare-gpui',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/zgx-compare-gpui-fast',
             'quickgui': ROOT / 'comparisons/quickgui/target/dist/zgx-compare-quickgui',
@@ -98,6 +110,7 @@ SCENES = {
             'zgx': ROOT / 'target/dist/examples/heavy_workload',
             'gpui': ROOT / 'comparisons/gpui/target/dist/heavy',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/heavy',
+            'mygo': MYGO / 'heavy',
         },
     },
     'animate': {
@@ -106,10 +119,22 @@ SCENES = {
             'zgx': ROOT / 'target/dist/examples/animation_workload',
             'gpui': ROOT / 'comparisons/gpui/target/dist/animate',
             'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/animate',
+            'mygo': MYGO / 'animate',
+        },
+    },
+    # Variable-height rows in each framework's own list (zgx_workload::vlist).
+    'vlist': {
+        'modes': ['scroll', 'fling', 'jump'],
+        'binaries': {
+            'zgx': ROOT / 'target/dist/examples/vlist_workload',
+            'gpui-fast': ROOT / 'comparisons/gpui-fast/target/dist/vlist',
+            'mygo': MYGO / 'vlist',
         },
     },
 }
-SAMPLER, PACER = Path('/tmp/zgx-macsample'), Path('/tmp/zgx-framepace')
+# The suite's frameworks: zgx, the stronger GPUI, and MyGo.
+SUITE_FRAMEWORKS = ['zgx', 'gpui-fast', 'mygo']
+SAMPLER, PACER, BLANK = Path('/tmp/zgx-macsample'), Path('/tmp/zgx-framepace'), Path('/tmp/zgx-blankprobe')
 # What the binaries are built from, including vendored patches.
 SOURCES = ['crates', 'comparisons', 'scripts', 'vendor', 'Cargo.toml', 'Cargo.lock']
 METRICS = ['cpu_percent_one_core', 'cpu_watts', 'instructions', 'cycles', 'gpu_percent',
@@ -118,7 +143,7 @@ METRICS = ['cpu_percent_one_core', 'cpu_watts', 'instructions', 'cycles', 'gpu_p
            'mean_footprint_bytes', 'peak_footprint_bytes', 'mean_rss_bytes', 'peak_rss_bytes',
            'workload_ticks', 'wall_seconds']
 POWER = ['package_mw', 'cpu_mw', 'gpu_mw']
-FIELDS = ['framework', 'mode', 'repeat', 'wall_seconds', 'cpu_seconds', 'cpu_percent_one_core', 'cpu_energy_joules',
+FIELDS = ['framework', 'mode', 'repeat', 'ran_seconds', 'requested_seconds', 'wall_seconds', 'cpu_seconds', 'cpu_percent_one_core', 'cpu_energy_joules',
           'cpu_watts', 'instructions', 'cycles', 'gpu_seconds', 'gpu_percent', 'gpu_mcycles_per_second',
           'gpu_active_mhz', 'gpu_system_watts', 'windowserver_cpu_percent',
           'windowserver_gpu_percent', 'gpu_utilization_percent', 'mean_footprint_bytes', 'peak_footprint_bytes',
@@ -135,10 +160,29 @@ def run(cmd, **kw):
 def build(scene, frameworks):
     example = SCENES[scene]['binaries']['zgx'].name
     run(['cargo', 'build', '--profile', 'dist', '--locked', '-p', 'zgx-desktop', '--example', example], cwd=ROOT)
-    for name in [f for f in frameworks if f != 'zgx']:
+    for name in [f for f in frameworks if f not in ('zgx', 'mygo')]:
         run(['cargo', 'build', '--profile', 'dist', '--locked'], cwd=ROOT / 'comparisons' / name)
+    if 'mygo' in frameworks:
+        # Its release build (comparisons/mygo/build.sh: go build -trimpath, stripped).
+        run([str(ROOT / 'comparisons/mygo/build.sh')], cwd=ROOT / 'comparisons/mygo')
+    tools()
+
+
+def tools():
     run(['swiftc', '-O', str(ROOT / 'scripts/macsample.swift'), '-o', str(SAMPLER), '-lIOReport'])
     run(['swiftc', '-O', str(ROOT / 'scripts/framepace.swift'), '-o', str(PACER)])
+    run(['swiftc', '-O', str(ROOT / 'scripts/blankprobe.swift'), '-o', str(BLANK)])
+
+
+def toolchains(frameworks):
+    """How each framework's binaries were built, for the record."""
+    found = {'rust': run(['rustc', '--version']), 'rust_profile': 'dist (release, lto = "fat", codegen-units = 1)'}
+    if 'mygo' in frameworks:
+        manifest = ROOT / 'comparisons/mygo/build.json'
+        found['go'] = run(['go', 'version'])
+        if manifest.exists():
+            found['mygo'] = json.loads(manifest.read_text())
+    return found
 
 
 def environment():
@@ -157,7 +201,11 @@ def environment():
 
 
 def launch(binary, mode, seconds, log):
-    env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds))
+    # The variables under their names from before the rename too: a build
+    # from before it reads only those, and would otherwise run its default
+    # length against the sampler's window (each trial checks the length).
+    env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds),
+               ZGUI_MODE=mode, ZGUI_SECONDS=str(seconds))  # rename-to-zgx: keep
     with log.open('w') as handle:
         # A copy outside ~/Documents, run in /tmp (see scripts/staging.py).
         process = subprocess.Popen([str(stage(binary))], stdout=handle, stderr=subprocess.STDOUT, env=env, cwd=CWD)
@@ -200,6 +248,7 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
         process = subprocess.Popen(['/bin/sleep', str(REQUESTED)])
     else:
         process = launch(SCENES[scene]['binaries'][framework], mode, requested, log)
+    launched = time.monotonic()
     # Idle: the 5-20 s window too, alongside the settled one, for the record.
     early = subprocess.Popen([str(SAMPLER), str(process.pid), str(WARMUP - 0.5), str(SAMPLED), str(INTERVAL)],
                              stdout=subprocess.PIPE, text=True) if idle else None
@@ -224,6 +273,9 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
         if 'error' not in pace:
             paced.append(pace)
     exit_code, terminated = finish(process, requested)
+    # How long the app ran: it should end as asked (an app that read
+    # another length would be sampled over the wrong part of its run).
+    ran = time.monotonic() - launched
     text = log.read_text() if log.exists() else ''
     ticks = re.search(r'"ticks":(\d+)|workload_ticks=(\d+)|animation_frames=(\d+)', text)
     fps = re.search(r'fps=([0-9.]+)', text)
@@ -231,9 +283,28 @@ def trial(scene, framework, mode, repeat, out, power, paced=None):
            'workload_ticks': int(next(g for g in ticks.groups() if g)) if ticks else (0 if framework == 'desktop' else -1),
            'reported_fps': float(fps.group(1)) if fps else '',
            **(power_of(meter) if meter else dict.fromkeys(POWER, '')),
-           'exit_code': exit_code, 'terminated_after_report': terminated}
+           'exit_code': exit_code, 'terminated_after_report': terminated,
+           'ran_seconds': round(ran, 2), 'requested_seconds': requested}
     (out / f'{framework}.{mode}.{repeat}.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
+
+
+def valid(row, scene):
+    """Whether a trial ran as asked: as long as requested (within the launch's
+    and exit's slack), and its ticks what that length makes (60 a second
+    while active, none while idle; animate: frames at a display's rate)."""
+    if row['framework'] == 'desktop':
+        return True
+    if not row['exit_code'] == 0 and not row['terminated_after_report']:
+        return False
+    if abs(row['ran_seconds'] - row['requested_seconds']) > 3:
+        return False
+    ticks, seconds = row['workload_ticks'], row['requested_seconds']
+    if scene == 'animate':
+        return ticks > 0 and row['reported_fps'] not in ('', None) and abs(ticks / seconds - row['reported_fps']) <= 0.15 * row['reported_fps']
+    if row['mode'] == 'idle':
+        return ticks == 0
+    return 58 <= ticks / seconds <= 61
 
 
 def pacing(scene, framework, mode, repeat, out):
@@ -254,6 +325,28 @@ def pacing(scene, framework, mode, repeat, out):
     row = {'framework': framework, 'mode': mode, 'repeat': repeat, **result}
     (out / f'{framework}.{mode}.{repeat}.pacing.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
+
+
+def blank(scene, framework, mode, repeat, out):
+    """How often the window shows unfilled rows (vlist), from captures of it
+    (scripts/blankprobe.swift), in a launch of its own."""
+    seconds = WARMUP + BLANK_SECONDS + 1
+    process = launch(SCENES[scene]['binaries'][framework], mode, seconds, out / f'{framework}.{mode}.{repeat}.blank.log')
+    try:
+        result = json.loads(run([str(BLANK), str(process.pid), str(WARMUP - 0.5), str(BLANK_SECONDS), str(BLANK_RATE)]))
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        result = {'error': str(error)[-300:]}
+    finish(process, seconds)
+    row = {'framework': framework, 'mode': mode, 'repeat': repeat, **result}
+    (out / f'{framework}.{mode}.{repeat}.blank.json').write_text(json.dumps(row, indent=1) + '\n')
+    return row
+
+
+def spread_of(rows, framework, mode, key):
+    values = [float(r[key]) for r in rows if (r['framework'], r['mode']) == (framework, mode) and r.get(key) not in ('', None)]
+    if len(values) < 2 or statistics.median(values) <= 0:
+        return 0.
+    return (max(values) - min(values)) / statistics.median(values)
 
 
 def source_diff_sha256():
@@ -299,12 +392,24 @@ def main():
                         help='skip the frame pacing captures (a CPU, GPU and memory supplement)')
     parser.add_argument('--pgo', action='store_true',
                         help='every framework profile-guided, from target/pgo-compare (scripts/perf/pgo_compare.py)')
+    parser.add_argument('--suite', action='store_true',
+                        help="the suite's protocol: zgx, GPUI Fast and MyGo, short trials, extra repeats where they disagree")
+    parser.add_argument('--out', type=Path, help='where to write the run (default docs/results/latest-macos…)')
     parser.add_argument('--into', type=Path,
                         help="a published run of the scene: replace its cells of --modes with this run's")
     args = parser.parse_args()
     frameworks, modes = list(SCENES[args.scene]['binaries']), SCENES[args.scene]['modes']
+    if args.suite:
+        use_suite()
+        frameworks = [f for f in SUITE_FRAMEWORKS if f in SCENES[args.scene]['binaries']]
+        # Idle once, in heavy: it is the verdict's idle CPU.
+        if args.scene != 'heavy':
+            modes = [m for m in modes if m != 'idle']
     if not args.quickgui:
         frameworks = [f for f in frameworks if f != 'quickgui']
+    if not args.suite and not args.frameworks:
+        # MyGo is the suite's; the full protocol's runs keep their frameworks.
+        frameworks = [f for f in frameworks if f != 'mygo']
     if args.quick:
         frameworks = [f for f in frameworks if f in ('zgx', 'gpui-fast')]
     if args.frameworks:
@@ -320,10 +425,11 @@ def main():
         missing = [f for f in frameworks if not SCENES[args.scene]['binaries'][f].exists()]
         assert not missing, f'no PGO build of {missing}: run scripts/perf/pgo_compare.py'
         args.skip_build = True
-        run(['swiftc', '-O', str(ROOT / 'scripts/macsample.swift'), '-o', str(SAMPLER), '-lIOReport'])
-        run(['swiftc', '-O', str(ROOT / 'scripts/framepace.swift'), '-o', str(PACER)])
+        tools()
     if not args.skip_build:
         build(args.scene, frameworks)
+    elif not BLANK.exists():
+        tools()
     commit = run(['git', 'rev-parse', 'HEAD'], cwd=ROOT)
     found = None if args.no_preflight else preflight.wait_until_quiet(
         log=lambda line: print(line, flush=True), threshold=args.preflight_threshold)
@@ -333,6 +439,11 @@ def main():
     finally:
         if hidden:
             show(args.hide)
+
+
+def use_suite():
+    """The suite's protocol, for this run."""
+    globals().update(SUITE)
 
 
 def hide(app):
@@ -350,10 +461,11 @@ def measure(args, frameworks, modes, repeats, commit, found):
     started = datetime.datetime.now(datetime.timezone.utc)
     scene = '' if args.scene == 'lab' else f'-{args.scene}'
     tag = ('-quick' if args.quick else '') + ('-pgo' if args.pgo else '')
-    out = args.into or ROOT / 'docs/results' / f'latest-macos{scene}{tag}-{started:%Y-%m-%d}-{commit[:7]}'
+    out = args.into or args.out or ROOT / 'docs/results' / f'latest-macos{scene}{tag}-{started:%Y-%m-%d}-{commit[:7]}'
     out.mkdir(parents=True, exist_ok=True)
     rows, paced = [], []
     idle_repeats = min(IDLE_REPEATS, repeats) if args.quick else IDLE_REPEATS
+    extended = []
     rerun = list(modes)
     if args.into:
         # The run's earlier trials of these modes stay, apart: they are what
@@ -377,6 +489,28 @@ def measure(args, frameworks, modes, repeats, commit, found):
                   f"footprint {row['mean_footprint_bytes'] / 2**20:6.1f} MiB ticks {row['workload_ticks']}", flush=True)
             rows.append(row)
             time.sleep(2)
+    if args.suite:
+        # Cells whose trials disagree get more of them, alternating with the
+        # cell's own (so a slow drift does not pick one side).
+        wide = [(f, m) for m in modes if m != 'idle' for f in frameworks
+                if max(spread_of(rows, f, m, 'cpu_percent_one_core'), spread_of(rows, f, m, 'gpu_mcycles_per_second')) > SPREAD]
+        for extra in range(EXTRA):
+            for framework, mode in wide:
+                row = trial(args.scene, framework, mode, repeats + extra, out, args.powermetrics)
+                print(f"{framework:8} {mode:8} {repeats + extra}: cpu {row['cpu_percent_one_core']:6.2f}% "
+                      f"gpu {row['gpu_mcycles_per_second']:5.1f} Mcyc/s (extra: wide spread)", flush=True)
+                rows.append(row)
+                time.sleep(2)
+        extended = [f'{f}/{m}' for f, m in wide]
+    blanks = []
+    if args.scene == 'vlist' and not args.no_pacing:
+        for framework in frameworks:
+            for mode in modes:
+                row = blank(args.scene, framework, mode, 0, out)
+                print(f"{framework:8} {mode:8}: blank {row.get('blank_captures', '?')}/{row.get('captures', '?')} captures, "
+                      f"longest {row.get('longest_blank_points', '?')} pt", flush=True)
+                blanks.append(row)
+                time.sleep(2)
     for repeat in range(0 if args.quick or args.no_pacing else PACING_REPEATS):
         order = frameworks[repeat % len(frameworks):] + frameworks[:repeat % len(frameworks)]
         for mode in [m for m in modes if m != 'idle']:
@@ -397,6 +531,9 @@ def measure(args, frameworks, modes, repeats, commit, found):
         paced = list(csv.DictReader((out / 'pacing.csv').open()))
         modes = SCENES[args.scene]['modes']
     write_csv(out / 'current.csv', FIELDS, rows)
+    if blanks:
+        write_csv(out / 'blank.csv', ['framework', 'mode', 'repeat', 'captures', 'blank_captures', 'blank_fraction',
+                                      'longest_blank_points', 'error'], blanks)
     if not args.into:
         write_csv(out / 'pacing.csv', ['framework', 'mode', 'repeat', 'display_hz', 'frames', *PACING, 'long_intervals'], paced)
     groups = [group(rows, METRICS + POWER, 'desktop', 'baseline')]
@@ -406,16 +543,21 @@ def measure(args, frameworks, modes, repeats, commit, found):
         # What the idle cells read over 5-20 s, as runs before October 24 sampled them.
         early = [group(rows, [f'early_{k}' for k in METRICS], f, 'idle') for f in frameworks]
         (out / 'idle-5-20s.json').write_text(json.dumps({'groups': early}, indent=1) + '\n')
-    (out / 'summary.json').write_text(json.dumps({'groups': groups, 'pacing': pacing_groups}, indent=1) + '\n')
+    blank_groups = [group(blanks, ['blank_fraction', 'longest_blank_points'], f, m) for f in frameworks for m in modes] if blanks else []
+    (out / 'summary.json').write_text(json.dumps({'groups': groups, 'pacing': pacing_groups,
+                                                  **({'blank': blank_groups} if blanks else {})}, indent=1) + '\n')
     apps = [r for r in rows if r['framework'] != 'desktop']
     if args.scene == 'animate':
         active = [r['reported_fps'] for r in apps if r['reported_fps'] != '']
         gated = all(r['workload_ticks'] > 0 for r in apps)
     else:
-        active = [r['workload_ticks'] / REQUESTED for r in apps if r['mode'] != 'idle']
+        active = [r['workload_ticks'] / float(r.get('requested_seconds') or REQUESTED) for r in apps if r['mode'] != 'idle']
         gated = (all(58 <= t <= 61 for t in active)
                  and all(r['workload_ticks'] == 0 for r in apps if r['mode'] == 'idle'))
     accepted = gated and all(r['exit_code'] == 0 or r['terminated_after_report'] for r in apps)
+    # Every trial as long as asked, its ticks what that length makes.
+    invalid = [f"{r['framework']}/{r['mode']}/{r['repeat']}" for r in apps if 'ran_seconds' in r and not valid(r, args.scene)]
+    accepted = accepted and not invalid
     binaries = {name: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}
                 for name, path in SCENES[args.scene]['binaries'].items() if name in frameworks}
     audit = {'accepted': accepted, 'trials': len(rows), 'samples': sum(r['samples'] for r in rows),
@@ -429,6 +571,7 @@ def measure(args, frameworks, modes, repeats, commit, found):
              'source_diff_sha256': source_diff_sha256(),
              'started_utc': started.isoformat(), 'finished_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
              'environment': environment(), 'preflight': found, 'binaries': binaries,
+             'toolchains': toolchains(frameworks), 'invalid_trials': invalid,
              'protocol': {'requested_seconds': REQUESTED, 'warmup_seconds': WARMUP, 'sampled_seconds': SAMPLED,
                           'interval_seconds': INTERVAL, 'repeats': repeats, 'idle_repeats': idle_repeats,
                           'idle_window_seconds': [IDLE_SETTLE, IDLE_SETTLE + SAMPLED],
@@ -437,7 +580,10 @@ def measure(args, frameworks, modes, repeats, commit, found):
                           'pacing_seconds': PACING_SECONDS,
                           'pacing_repeats': 0 if args.no_pacing else repeats if args.quick else PACING_REPEATS,
                           'pacing_during_trials': args.quick,
-                          'acceptance_updates_per_second': [58, 61]}}
+                          'acceptance_updates_per_second': [58, 61],
+                          'suite': args.suite, 'spread_for_extra_trials': SPREAD if args.suite else None,
+                          'extra_trials': EXTRA if args.suite else 0, 'extended_cells': extended,
+                          **({'blank_seconds': BLANK_SECONDS, 'blank_rate': BLANK_RATE} if blanks else {})}}
     if args.into:
         # The published run's own record, with this one's as the idle cells'.
         published = json.loads((out / 'audit.json').read_text())
