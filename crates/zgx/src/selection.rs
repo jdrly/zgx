@@ -1508,12 +1508,23 @@ impl Ui {
                     (lo, hi)
                 }
             };
-            // Rows the list has mounted copy as they show (selected or not:
-            // an end at a row's start shows none of it), from the scene.
-            let on_screen: std::collections::HashSet<usize> = scene
+            // A mounted row an end lies in copies as it shows, which may be
+            // none of it (the selection collapsed there, or ending at its
+            // start); one between the ends that shows no text (drawn, not
+            // written) takes its row text.
+            let in_row = |end: &End| match end {
+                End::Live(point) => row_of(rows, &scene, point.node)
+                    .filter(|(list, _)| list == content)
+                    .map(|(_, index)| index),
+                End::Parked(row, _) if row.content == *content => Some(row.index),
+                _ => None,
+            };
+            let ends = [in_row(&start), in_row(&end)];
+            let mounted_ends: std::collections::HashSet<usize> = scene
                 .children(*content)
                 .iter()
                 .filter_map(|row| rows.get(row).map(|index| index.with_untracked(|i| *i)))
+                .filter(|index| ends.contains(&Some(*index)))
                 .collect();
             // The rows shown here (mounted), by index.
             let mounted: Vec<(usize, usize)> = shown
@@ -1539,7 +1550,7 @@ impl Ui {
             };
             let mut index = lo;
             while index <= hi {
-                if !on_screen.contains(&index) {
+                if !mounted_ends.contains(&index) && !mounted.iter().any(|(_, m)| *m == index) {
                     let row = match (cut(&start, index), cut(&end, index)) {
                         (Some((row, from)), Some((_, to))) if from <= to && to <= row.len() => {
                             row[from..to].to_owned()
