@@ -8,7 +8,7 @@ use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -18,7 +18,8 @@ use crate::utils::Lazy;
 
 use windows_sys::Win32::Devices::HumanInterfaceDevice::MOUSE_MOVE_RELATIVE;
 use windows_sys::Win32::Foundation::{
-    GetLastError, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_FAILED, WPARAM,
+    GetLastError, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_FAILED, WAIT_OBJECT_0,
+    WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, RedrawWindow, ScreenToClient,
@@ -26,8 +27,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::Ole::RevokeDragDrop;
 use windows_sys::Win32::System::Threading::{
-    CreateWaitableTimerExW, GetCurrentThreadId, SetWaitableTimer,
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
+    CreateEventW, CreateWaitableTimerExW, GetCurrentThreadId, SetEvent, SetWaitableTimer,
+    WaitForSingleObject, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
 };
 use windows_sys::Win32::UI::Controls::{HOVER_DEFAULT, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::Input::Ime::{GCS_COMPSTR, GCS_RESULTSTR, ISC_SHOWUICOMPOSITIONWINDOW};
@@ -160,6 +161,64 @@ pub struct EventLoop<T: 'static> {
     // It is created lazily in case if we have `ControlFlow::WaitUntil`.
     // Keep it as a field to avoid recreating it on every `ControlFlow::WaitUntil`.
     high_resolution_timer: Option<OwnedHandle>,
+    // zgx patch: how a proxy wakes the loop while it waits (`ProxyWake`).
+    proxy_wake: Option<Arc<ProxyWake>>,
+}
+
+/// zgx patch: an event a proxy sets, in place of posting a message, while the
+/// loop is parked in its wait. A message wake costs the sending thread a
+/// `PostMessageW` and the loop a `PeekMessageW` and a dispatch to take it, on
+/// every user event: an app animating from another thread's clock pays them
+/// each frame (about 3% of an animated frame's CPU). The loop waits on the
+/// event beside its message queue and, woken by it, takes the user events as
+/// the message would have. Away from the wait (handling events, or in a
+/// modal loop of the system's: a live resize, a menu, `DoDragDrop`, which
+/// pump messages but never wait on this event), proxies post as before.
+struct ProxyWake {
+    event: OwnedHandle,
+    /// The loop is in (or entering) its wait, and will see the event.
+    parked: AtomicBool,
+    /// User events sent by the event since the loop last took it: one
+    /// event may stand for several sends.
+    pending: AtomicUsize,
+}
+
+impl ProxyWake {
+    fn new() -> Option<Self> {
+        // An auto-reset event, unset.
+        let event = unsafe { CreateEventW(ptr::null(), FALSE, FALSE, ptr::null()) };
+        (event != 0).then(|| Self {
+            event: unsafe { OwnedHandle::from_raw_handle(event as *mut c_void) },
+            parked: AtomicBool::new(false),
+            pending: AtomicUsize::new(0),
+        })
+    }
+
+    /// Wake the loop by the event if it waits on it: false if it does not,
+    /// and the caller posts. Set while the loop leaves its wait, the event is
+    /// still seen there (`taken`); if the loop left before setting, both wake
+    /// it, which costs one look at an empty channel.
+    fn wake(&self) -> bool {
+        if !self.parked.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        unsafe { SetEvent(self.event.as_raw_handle() as HANDLE) };
+        self.parked.load(Ordering::SeqCst)
+    }
+
+    /// After the wait: the user events the event was set for (consuming it).
+    fn taken(&self, returned_for_it: bool) -> usize {
+        self.parked.store(false, Ordering::SeqCst);
+        let set = returned_for_it
+            || unsafe { WaitForSingleObject(self.event.as_raw_handle() as HANDLE, 0) }
+                == WAIT_OBJECT_0;
+        if set {
+            self.pending.swap(0, Ordering::SeqCst)
+        } else {
+            0
+        }
+    }
 }
 
 pub(crate) struct PlatformSpecificEventLoopAttributes {
@@ -219,6 +278,7 @@ impl<T: 'static> EventLoop<T> {
             },
             msg_hook: attributes.msg_hook.take(),
             high_resolution_timer: None,
+            proxy_wake: ProxyWake::new().map(Arc::new),
         })
     }
 
@@ -255,11 +315,13 @@ impl<T: 'static> EventLoop<T> {
                     // mpsc channel and ready to be pulled
                     let event = match event.map_nonuser_event() {
                         Ok(non_user_event) => non_user_event,
-                        Err(_user_event_placeholder) => Event::UserEvent(
-                            user_event_receiver
-                                .try_recv()
-                                .expect("user event signaled but not received"),
-                        ),
+                        // zgx patch: a user event woken for by both the
+                        // loop's event and a message (`ProxyWake::wake`)
+                        // was taken by the first; the second finds none.
+                        Err(_user_event_placeholder) => match user_event_receiver.try_recv() {
+                            Ok(user_event) => Event::UserEvent(user_event),
+                            Err(_) => return,
+                        },
                     };
                     event_handler(event, event_loop_windows_ref)
                 });
@@ -316,11 +378,11 @@ impl<T: 'static> EventLoop<T> {
                 runner.set_event_handler(move |event| {
                     let event = match event.map_nonuser_event() {
                         Ok(non_user_event) => non_user_event,
-                        Err(_user_event_placeholder) => Event::UserEvent(
-                            user_event_receiver
-                                .recv()
-                                .expect("user event signaled but not received"),
-                        ),
+                        // zgx patch: as in `run_on_demand`.
+                        Err(_user_event_placeholder) => match user_event_receiver.try_recv() {
+                            Ok(user_event) => Event::UserEvent(user_event),
+                            Err(_) => return,
+                        },
                     };
                     event_handler(event, event_loop_windows_ref)
                 });
@@ -380,9 +442,18 @@ impl<T: 'static> EventLoop<T> {
         // `MsgWaitForMultipleObjectsEx`.
         //
         runner.prepare_wait();
-        wait_for_messages_impl(&mut self.high_resolution_timer, runner.control_flow(), timeout);
+        let woken = wait_for_messages_impl(
+            &mut self.high_resolution_timer,
+            self.proxy_wake.as_deref(),
+            runner.control_flow(),
+            timeout,
+        );
         // Before we potentially exit, make sure to consistently emit an event for the wake up
         runner.wakeup();
+        // zgx patch: a proxy's event, taken as its posted messages would have been.
+        for _ in 0..woken {
+            runner.send_event(Event::UserEvent(UserEventPlaceholder));
+        }
     }
 
     /// Dispatch all queued messages via `PeekMessageW`
@@ -439,6 +510,7 @@ impl<T: 'static> EventLoop<T> {
         EventLoopProxy {
             target_window: self.window_target.p.thread_msg_target,
             event_send: self.user_event_sender.clone(),
+            wake: self.proxy_wake.clone(),
         }
     }
 
@@ -683,11 +755,13 @@ unsafe fn set_high_resolution_timer(timer: RawHandle, timeout: Duration) -> Resu
 ///
 /// Does actual system-level waiting and doesn't process any messages itself,
 /// including winits internal notifications about waiting and new messages arrival.
+/// The user events a proxy's event woke the wait for (zgx patch: `ProxyWake`).
 fn wait_for_messages_impl(
     high_resolution_timer: &mut Option<OwnedHandle>,
+    proxy_wake: Option<&ProxyWake>,
     control_flow: ControlFlow,
     timeout: Option<Duration>,
-) {
+) -> usize {
     let timeout = {
         let control_flow_timeout = match control_flow {
             ControlFlow::Wait => None,
@@ -700,7 +774,7 @@ fn wait_for_messages_impl(
         let timeout = min_timeout(timeout, control_flow_timeout);
         if timeout == Some(Duration::ZERO) {
             // Do not wait if we don't have time.
-            return;
+            return 0;
         }
         // Now we decided to wait so need to do some clamping
         // to avoid problems with overflow and calling WinAPI with invalid parameters.
@@ -744,12 +818,23 @@ fn wait_for_messages_impl(
         //  2. We failed to get and set high resolution timer and we need something instead of it.
         let wait_duration_ms = timeout.map(dur2timeout).unwrap_or(INFINITE);
 
-        let (num_handles, raw_handles) =
-            if use_timer { (1, [high_resolution_timer.unwrap()]) } else { (0, [ptr::null_mut()]) };
+        let mut raw_handles: [RawHandle; 2] = [ptr::null_mut(); 2];
+        let mut num_handles = 0;
+        if use_timer {
+            raw_handles[num_handles] = high_resolution_timer.unwrap();
+            num_handles += 1;
+        }
+        // zgx patch: a proxy's event (`ProxyWake`), after the timer.
+        let wake_index = proxy_wake.map(|wake| {
+            raw_handles[num_handles] = wake.event.as_raw_handle();
+            num_handles += 1;
+            wake.parked.store(true, Ordering::SeqCst);
+            num_handles - 1
+        });
 
         // We must use `QS_ALLINPUT` to wake on accessibility messages.
         let result = MsgWaitForMultipleObjectsEx(
-            num_handles,
+            num_handles as u32,
             raw_handles.as_ptr() as *const _,
             wait_duration_ms,
             QS_ALLINPUT,
@@ -759,6 +844,10 @@ fn wait_for_messages_impl(
             // Well, nothing smart to do in such case.
             // Treat it as spurious wake up.
             tracing::warn!("Failed to MsgWaitForMultipleObjectsEx: error code {}", GetLastError(),);
+        }
+        match (proxy_wake, wake_index) {
+            (Some(wake), Some(index)) => wake.taken(result == WAIT_OBJECT_0 + index as u32),
+            _ => 0,
         }
     }
 }
@@ -816,12 +905,18 @@ type ThreadExecFn = Box<Box<dyn FnMut()>>;
 pub struct EventLoopProxy<T: 'static> {
     target_window: HWND,
     event_send: Sender<T>,
+    // zgx patch: the loop's event, set in place of a post while it waits.
+    wake: Option<Arc<ProxyWake>>,
 }
 unsafe impl<T: Send + 'static> Send for EventLoopProxy<T> {}
 
 impl<T: 'static> Clone for EventLoopProxy<T> {
     fn clone(&self) -> Self {
-        Self { target_window: self.target_window, event_send: self.event_send.clone() }
+        Self {
+            target_window: self.target_window,
+            event_send: self.event_send.clone(),
+            wake: self.wake.clone(),
+        }
     }
 }
 
@@ -830,7 +925,10 @@ impl<T: 'static> EventLoopProxy<T> {
         self.event_send
             .send(event)
             .map(|result| {
-                unsafe { PostMessageW(self.target_window, USER_EVENT_MSG_ID.get(), 0, 0) };
+                // zgx patch: the loop's event while it waits, else a message.
+                if !self.wake.as_ref().is_some_and(|wake| wake.wake()) {
+                    unsafe { PostMessageW(self.target_window, USER_EVENT_MSG_ID.get(), 0, 0) };
+                }
                 result
             })
             .map_err(|e| EventLoopClosed(e.0))

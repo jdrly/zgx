@@ -70,3 +70,28 @@ for nothing.
    draws a frame in 2.43 million cycles where it took 2.67 (GPUI 2.69);
    the Windows pacing, latency, resize, drag, popup, window, desktop and
    touch probes pass as before.
+
+## Windows: user events woken for by an event while the loop waits
+
+A user event sent from another thread (`EventLoopProxy::send_event`) woke
+the loop with a posted message: the sending thread paid a `PostMessageW`,
+and the loop a `PeekMessageW` and a dispatch to take it. zgx's compositor
+clock sends one each refresh, so an animating window paid them every
+frame (2.3% and 4.3% of its CPU in `NtUserPostMessage` and
+`NtUserPeekMessage`).
+
+8. The event loop waits on an event of its own beside its message queue
+   (`ProxyWake` in `src/platform_impl/windows/event_loop.rs`). A proxy
+   sets it instead of posting while the loop is parked in its wait, and
+   counts the user events it stands for; the loop, woken by it, hands the
+   runner that many placeholders, as the messages would have. Away from
+   the wait (handling events, or inside the system's modal loops: a live
+   resize, a menu, `DoDragDrop`, which pump messages but never wait on the
+   event), proxies post as before. A send racing the loop out of its wait
+   may wake it both ways; a placeholder that then finds the channel empty
+   does nothing, where it panicked (or, in `pump_events`, blocked).
+   `animation_workload`: 2.400 million cycles a frame where it took 2.495
+   (medians of 6 alternating runs); the pacing, latency, drag (62 frames
+   in the second Windows had the drag) and resize probes as before. Tested
+   by `crates/zgx-desktop/tests/proxy_wake.rs`: 2000 user events from
+   another thread, in bursts and pauses, each arrives once and in order.
