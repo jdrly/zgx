@@ -437,6 +437,7 @@ fn push_draw(
     split: bool,
     polylines: bool,
     scale: f32,
+    glyphs: Option<Shading>,
 ) {
     let split = split
         && draw.blur.is_none()
@@ -444,6 +445,11 @@ fn push_draw(
         && !matches!(draw.shading, Shading::Fill(_));
     if !(split || polylines) || draw.end <= draw.start {
         draws.push(draw);
+        return;
+    }
+    // Quads of one shading, known already (a text's glyphs): one run.
+    if let Some(shading) = glyphs.filter(|_| split && !polylines) {
+        draws.push(Draw { shading, ..draw });
         return;
     }
     // A polyline stroke's quad holds its point count in `mask.z`.
@@ -3648,7 +3654,15 @@ impl GpuRenderer {
                         bounds: culled.unwrap_or_else(|| quad_bounds(quads)),
                         image: None,
                     };
-                    push_draw(draws, quads, draw, self.split_shading, false, self.scale);
+                    push_draw(
+                        draws,
+                        quads,
+                        draw,
+                        self.split_shading,
+                        false,
+                        self.scale,
+                        None,
+                    );
                 }
             }
         }
@@ -3947,6 +3961,9 @@ impl GpuRenderer {
             let mut canvas_clip = None;
             // And its polyline strokes, if any, drawn apart (`push_draw`).
             let mut polylines = false;
+            // And a text whose quads are its glyphs alone (no selection, no
+            // decorations): drawn with one shading (`push_draw`).
+            let mut glyphs_alone = false;
             match item.kind {
                 NodeKind::Canvas(canvas) => {
                     if bounds.width <= 0. || bounds.height <= 0. {
@@ -4728,6 +4745,7 @@ impl GpuRenderer {
                     {
                         // (A twin's, placed in this atlas already.)
                         place(&mut quads, &shaped.quads);
+                        glyphs_alone = highlight.is_none() && shaped.decorations.is_empty();
                         shaped.last_used = self.frame;
                         self.shaped_bytes += shaped.bytes();
                         self.shapes.insert(item.id, shaped);
@@ -4737,6 +4755,7 @@ impl GpuRenderer {
                         && shaped.atlas_epoch == self.atlas_epoch
                     {
                         place(&mut quads, &shaped.quads);
+                        glyphs_alone = highlight.is_none() && shaped.decorations.is_empty();
                         shaped.last_used = self.frame;
                     } else {
                         let mut shaped = match fresh {
@@ -4802,6 +4821,7 @@ impl GpuRenderer {
                         }
                         let visible = std::mem::take(&mut self.visible_glyphs);
                         place(&mut quads, if partial { &visible } else { &shaped.quads });
+                        glyphs_alone = highlight.is_none() && shaped.decorations.is_empty();
                         self.visible_glyphs = visible;
                         shaped.last_used = self.frame;
                         let bytes = shaped.bytes();
@@ -4871,7 +4891,16 @@ impl GpuRenderer {
                     },
                 };
                 let split = self.split_shading;
-                push_draw(&mut draws, &quads, draw, split, polylines, self.scale);
+                // A glyph's quad (`glyph_quad`) is plain unless faded or in a
+                // clip region, and textured: one shading for all of them.
+                let glyphs =
+                    glyphs_alone.then_some(match item.effects.edge_fade != 0. || region > 0. {
+                        true => Shading::Full,
+                        false => Shading::Basic,
+                    });
+                push_draw(
+                    &mut draws, &quads, draw, split, polylines, self.scale, glyphs,
+                );
             }
         }
         if MODE == PATCH {

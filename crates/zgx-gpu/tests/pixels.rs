@@ -5153,6 +5153,23 @@ fn split_shading_matches_the_full_shader() {
                     .children((0..5).map(|i| text(format!("faded row {i}")).text_size(11.))),
             )
             .child(text("rotated").text_size(12.).opacity(0.6))
+            // A text's glyphs alone draw with one shading: faded at its
+            // edges, in a rounded clip, or underlined, each as the full
+            // shader draws it.
+            .child(
+                row()
+                    .gap(6.)
+                    .child(text("edge faded").text_size(12.).edge_fade(5.))
+                    .child(
+                        div()
+                            .w(70.)
+                            .h(16.)
+                            .rounded(7.)
+                            .overflow_hidden()
+                            .child(text("in a rounded clip").text_size(12.)),
+                    )
+                    .child(text("underlined").text_size(12.).text_underline(true)),
+            )
     };
     let render = |split: bool| {
         let mut gpu = GpuRenderer::new(600, 520).unwrap();
