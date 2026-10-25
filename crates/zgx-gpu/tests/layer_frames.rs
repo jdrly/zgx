@@ -1,8 +1,9 @@
 //! Frames presented through a window's own surfaces (`LayerPresent`), each
-//! brought up to date from the one shown around what a frame draws: the
-//! regions a frame draws are drawn whole, never through a stencil of the
-//! damage inside them (which left the rest of each region as the surface
-//! held it frames before: stale patches in windows).
+//! brought up to date from the one shown around what a frame draws: what
+//! they show is what drawing the scene whole shows. The copies bringing a
+//! surface up to date once read their rectangles 32 bytes apart from 128-byte
+//! quads, and a stamped frame left the rest of its regions as the surface
+//! held them frames before: stale patches in windows.
 //!
 //! Its own binary without the test harness: layer presentation runs on the
 //! main thread, which the harness keeps for itself.
@@ -93,30 +94,29 @@ impl Window {
 }
 
 #[cfg(target_os = "macos")]
-fn scattered_damage_presented_through_surfaces_draws_whole_regions() {
-    // The same frames through surfaces, one renderer allowed to draw
-    // through a stencil of the damage and one not.
-    let (mut stenciled, mut plain) = (Window::new(1), Window::new(1));
-    plain.gpu.debug_stencil(false);
-    assert!(stenciled.show() == plain.show(), "the first frame differs");
+fn scattered_damage_presented_through_surfaces_matches_drawing_whole() {
+    let mut window = Window::new(1);
+    assert!(
+        window.show() == Window::new(1).show(),
+        "the first frame differs"
+    );
     for live in 2..16 {
-        stenciled.live.set(live);
-        plain.live.set(live);
+        window.live.set(live);
         assert!(
-            stenciled.show() == plain.show(),
-            "frame {live}: the surface shown differs from one drawn without a stencil"
+            window.show() == Window::new(live).show(),
+            "frame {live}: the surface shown differs from the scene drawn whole"
         );
     }
     // Presenting through surfaces, no frame is drawn through a stencil:
     // each surface is brought up to date around the regions a frame draws,
     // whole. (A headless renderer, drawing into one target, does stamp.)
-    assert_eq!(stenciled.gpu.debug_stamped_frames(), 0, "a frame stamped");
+    assert_eq!(window.gpu.debug_stamped_frames(), 0, "a frame stamped");
 }
 
 fn main() {
     #[cfg(target_os = "macos")]
     {
-        scattered_damage_presented_through_surfaces_draws_whole_regions();
-        println!("layer_frames: scattered damage through surfaces draws whole regions");
+        scattered_damage_presented_through_surfaces_matches_drawing_whole();
+        println!("layer_frames: scattered damage through surfaces matches drawing whole");
     }
 }

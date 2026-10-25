@@ -1067,13 +1067,13 @@ impl Library {
         let descriptor = MTLRenderPipelineDescriptor::new();
         descriptor.setVertexFunction(Some(&*function(vertex)?));
         descriptor.setFragmentFunction(Some(&*function(fragment)?));
-        // Per-instance quads, 128 bytes each: eight vec4s, as `Quad`; the
-        // stamp's rectangles, a vec4 each.
-        let attributes = match self.kind {
-            _ if stencil == Some(Stencil::Stamp) => 2,
-            Kind::Quads | Kind::Effects => 8,
-            Kind::Copies => 2,
-            Kind::Blur => 0,
+        // Per-instance quads, 128 bytes each: eight vec4s, as `Quad` (a
+        // copy reads its first two); the stamp's rectangles, two vec4s each.
+        let (attributes, stride) = match self.kind {
+            _ if stencil == Some(Stencil::Stamp) => (2, 32),
+            Kind::Quads | Kind::Effects => (8, 128),
+            Kind::Copies => (2, 128),
+            Kind::Blur => (0, 0),
         };
         if attributes > 0 {
             let vertices = MTLVertexDescriptor::vertexDescriptor();
@@ -1086,7 +1086,7 @@ impl Library {
                     attribute.setBufferIndex(VERTICES);
                 }
                 let layout = vertices.layouts().objectAtIndexedSubscript(VERTICES);
-                layout.setStride(16 * attributes);
+                layout.setStride(stride);
                 layout.setStepFunction(MTLVertexStepFunction::PerInstance);
                 layout.setStepRate(1);
             }
