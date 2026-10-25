@@ -53,3 +53,20 @@ turned to another app, need not take the focus. winit set none.
    from `event_processor.rs`), and each press sets it on its window.
 6. A new window carries it before it maps (`window.rs`); before any press,
    none, so an app's first window is focused as it launches.
+
+## Windows: a wake without a second message round
+
+The event loop's message-only window asked itself for an internal
+`WM_PAINT` (`RedrawWindow(RDW_INTERNALPAINT)`) on every message it got,
+a leftover of loops that learned their queue was empty from that paint.
+0.30's loop learns it from `PeekMessage` (`dispatch_peeked_messages`), and
+the window's `WM_PAINT` only validates and passes on. So each user event
+(zgx's animation frame wakes, one a refresh) paid a `RedrawWindow` call and
+a second message round (`PeekMessage`, `DispatchMessage`, `DefWindowProc`)
+for nothing.
+
+7. `thread_event_target_callback` no longer calls `RedrawWindow`
+   (`src/platform_impl/windows/event_loop.rs`). zgx's `animation_workload`
+   draws a frame in 2.43 million cycles where it took 2.67 (GPUI 2.69);
+   the Windows pacing, latency, resize, drag, popup, window, desktop and
+   touch probes pass as before.

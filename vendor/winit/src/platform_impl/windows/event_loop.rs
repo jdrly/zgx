@@ -2487,9 +2487,11 @@ unsafe extern "system" fn thread_event_target_callback(
     }
     let userdata = unsafe { Box::from_raw(userdata_ptr) };
 
-    if msg != WM_PAINT {
-        unsafe { RedrawWindow(window, ptr::null(), 0, RDW_INTERNALPAINT) };
-    }
+    // zgx patch: no internal `WM_PAINT` asked of this window for every
+    // message it gets. The loop learns its queue is empty from `PeekMessage`
+    // (`dispatch_peeked_messages`), and this window's `WM_PAINT` only
+    // validates: each user event (an animation frame's wake) paid a
+    // `RedrawWindow` and a second message round for nothing.
 
     let mut userdata_removed = false;
 
