@@ -4922,7 +4922,8 @@ impl Scene {
         let node = self.node(id);
         let pass = self.layout_pass;
         let clean = node.dirty & LAYOUT == 0;
-        let usable = |m: &Measurement| m.constraints == constraints && (clean || m.pass == pass);
+        // The pass first: a changed node's older results never serve.
+        let usable = |m: &Measurement| (clean || m.pass == pass) && m.constraints == constraints;
         if let Some(current) = &node.measurement
             && usable(current)
         {
@@ -4943,7 +4944,7 @@ impl Scene {
             && let Some(kept) = node
                 .sizes
                 .iter()
-                .find(|m| m.constraints == constraints && (clean || m.pass == pass))
+                .find(|m| (clean || m.pass == pass) && m.constraints == constraints)
         {
             return kept.size;
         }
