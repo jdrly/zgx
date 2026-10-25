@@ -1,0 +1,25 @@
+[package]
+name = "zgx-compare-rune"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+exclude = ["rune-src"]
+[dependencies]
+# anomalyco/rune at the dev rev build.sh checks out into rune-src/, with PATCH.md's
+# Tx::wheel applied (MIT; see README.md).
+rune = { path = "rune-src/crates/rune" }
+zgx-workload = { path = "../workload" }
+
+# Rune's own benchmark profile (its bench scripts refuse other builds), as
+# its workspace defines it.
+[profile.perf]
+inherits = "release"
+opt-level = 3
+codegen-units = 16
+lto = false
+debug = false
+incremental = false
+
+[profile.release]
+codegen-units = 16
