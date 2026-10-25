@@ -124,6 +124,9 @@ thread_local! {
     /// The theme of the canvas drawing now (`draw_in`), whose tokens its
     /// colours name.
     static SCOPE: RefCell<Option<Rc<ThemeScope>>> = const { RefCell::new(None) };
+    /// The tokens this drawing has resolved: a drawing names a few, many
+    /// times over (a grid's thousand dots in `"$border"`).
+    static RESOLVED: RefCell<Vec<(Box<str>, Color)>> = const { RefCell::new(Vec::new()) };
 }
 /// Run `f`, a canvas's draw, with `$token` colours resolved in `scope`.
 pub(crate) fn draw_in<R>(scope: Rc<ThemeScope>, f: impl FnOnce() -> R) -> R {
@@ -134,9 +137,31 @@ pub(crate) fn draw_in<R>(scope: Rc<ThemeScope>, f: impl FnOnce() -> R) -> R {
         }
     }
     let _restore = Restore(SCOPE.with(|s| s.borrow_mut().replace(scope)));
+    // Resolved in this scope only (a nested canvas's theme may differ).
+    let resolved = RESOLVED.with(|r| r.take());
+    struct Forget(Option<Vec<(Box<str>, Color)>>);
+    impl Drop for Forget {
+        fn drop(&mut self) {
+            RESOLVED.with(|r| *r.borrow_mut() = self.0.take().unwrap_or_default());
+        }
+    }
+    let _forget = Forget(Some(resolved));
     f()
 }
 fn token_color(name: &str) -> mlua::Result<Color> {
+    if let Some(color) = RESOLVED.with(|r| {
+        r.borrow()
+            .iter()
+            .find(|(token, _)| &**token == name)
+            .map(|(_, color)| *color)
+    }) {
+        return Ok(color);
+    }
+    let color = resolve_token(name)?;
+    RESOLVED.with(|r| r.borrow_mut().push((name.into(), color)));
+    Ok(color)
+}
+fn resolve_token(name: &str) -> mlua::Result<Color> {
     let scope = SCOPE.with(|s| s.borrow().clone()).ok_or_else(|| {
         mlua::Error::runtime(format!(
             "`${name}`: theme colours resolve while a canvas draws (call this in `draw`)"
@@ -148,8 +173,19 @@ fn token_color(name: &str) -> mlua::Result<Color> {
         .ok_or_else(|| mlua::Error::runtime(format!("`${name}` is not a colour token")))
 }
 fn color(v: &mlua::Value) -> mlua::Result<Color> {
+    // A string read where it is, without copying it.
+    if let mlua::Value::String(s) = v {
+        let bytes = s.as_bytes();
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            return Err(mlua::Error::runtime("bad color: not text"));
+        };
+        if let Some(name) = text.strip_prefix('$') {
+            return token_color(name);
+        }
+        return parse_color(text)
+            .ok_or_else(|| mlua::Error::runtime(format!("bad color `{text}`")));
+    }
     let text = match v {
-        mlua::Value::String(s) => s.to_string_lossy(),
         mlua::Value::Integer(n) => format!("#{n:06x}"),
         mlua::Value::Number(n) => format!("#{:06x}", *n as u32),
         other => {

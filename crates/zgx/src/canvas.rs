@@ -3,7 +3,7 @@ use crate::{
     affine::Affine,
     scene::{Color, Rect},
 };
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// A point in the canvas's local logical coordinates, y down.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -61,19 +61,64 @@ pub enum Shape {
 }
 
 /// An immutable vector path, cheap to clone. Its coordinates are finite.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Path {
-    segments: Arc<[Segment]>,
+    /// A shape's are made when first asked for: a renderer drawing it as
+    /// the shape never needs them (a canvas of thousands of rectangles
+    /// allocates none).
+    segments: OnceLock<Arc<[Segment]>>,
     shape: Option<Shape>,
 }
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.shape, other.shape) {
+            // A shape's segments are its shape's.
+            (Some(a), Some(b)) => a == b,
+            _ => self.shape == other.shape && self.segments() == other.segments(),
+        }
+    }
+}
 impl Path {
+    /// The path that is `shape` alone, if its coordinates are finite.
+    fn of_shape(shape: Shape) -> Result<Self, &'static str> {
+        let finite = |values: &[f32]| values.iter().all(|v| v.is_finite());
+        let ok = match shape {
+            Shape::Rect { rect, .. } | Shape::Ellipse { rect } => {
+                finite(&[rect.x, rect.y, rect.x + rect.width, rect.y + rect.height])
+            }
+            Shape::Line { from, to } => finite(&[from.x, from.y, to.x, to.y]),
+        };
+        if !ok {
+            return Err("path coordinates must be finite");
+        }
+        Ok(Self {
+            segments: OnceLock::new(),
+            shape: Some(shape),
+        })
+    }
     /// Start building a path.
     pub fn builder() -> PathBuilder {
         PathBuilder::default()
     }
     /// Its segments, in order.
     pub fn segments(&self) -> &[Segment] {
-        &self.segments
+        self.segments.get_or_init(|| {
+            let mut builder = PathBuilder::default();
+            match self.shape {
+                Some(Shape::Rect { rect, radius }) => {
+                    builder.rounded_rect(rect, radius);
+                }
+                Some(Shape::Ellipse { rect }) => {
+                    builder.ellipse(rect);
+                }
+                Some(Shape::Line { from, to }) => {
+                    builder.move_to(from.x, from.y).line_to(to.x, to.y);
+                }
+                // Made with its segments.
+                None => {}
+            }
+            builder.segments.into()
+        })
     }
     /// The simple shape it is, if it was made as one.
     pub fn shape(&self) -> Option<Shape> {
@@ -86,24 +131,28 @@ impl Path {
     /// The outline of `rect` with corners rounded by `radius` (at most half
     /// its shorter side), or an error unless both are finite.
     pub fn rounded_rect(rect: Rect, radius: f32) -> Result<Self, &'static str> {
-        let mut path = Self::builder();
-        path.rounded_rect(rect, radius);
-        path.build()
+        Self::of_shape(Shape::Rect {
+            rect,
+            radius: clamp_radius(rect, radius),
+        })
     }
     /// The ellipse inscribed in `rect`, or an error unless it is finite.
     pub fn ellipse(rect: Rect) -> Result<Self, &'static str> {
-        let mut path = Self::builder();
-        path.ellipse(rect);
-        path.build()
+        Self::of_shape(Shape::Ellipse { rect })
     }
     /// A straight line from `from` to `to`, or an error unless they are
     /// finite.
     pub fn line(from: Point, to: Point) -> Result<Self, &'static str> {
-        let mut path = Self::builder();
-        path.move_to(from.x, from.y).line_to(to.x, to.y);
-        path.shape = Some(Shape::Line { from, to });
-        path.build()
+        Self::of_shape(Shape::Line { from, to })
     }
+}
+/// A corner radius as a rectangle takes it: at least 0, at most half its
+/// shorter side.
+fn clamp_radius(rect: Rect, radius: f32) -> f32 {
+    radius
+        .max(0.)
+        .min(rect.width.abs() / 2.)
+        .min(rect.height.abs() / 2.)
 }
 /// Builds a [`Path`] segment by segment; [`PathBuilder::build`] checks it.
 #[derive(Default)]
@@ -152,10 +201,7 @@ impl PathBuilder {
     /// is that shape (`Path::shape`).
     pub fn rounded_rect(&mut self, rect: Rect, radius: f32) -> &mut Self {
         let first = self.segments.is_empty();
-        let radius = radius
-            .max(0.)
-            .min(rect.width.abs() / 2.)
-            .min(rect.height.abs() / 2.);
+        let radius = clamp_radius(rect, radius);
         let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
         if radius > 0. {
             use std::f32::consts::{FRAC_PI_2, PI};
@@ -291,6 +337,10 @@ impl PathBuilder {
                 Err("path coordinates must be finite")
             }
         };
+        // A shape alone is kept as the shape, its segments made if asked.
+        if let Some(shape) = shape {
+            return Path::of_shape(shape);
+        }
         let segments = self
             .segments
             .into_iter()
@@ -305,7 +355,7 @@ impl PathBuilder {
             })
             .collect::<Result<Vec<_>, &'static str>>()?;
         Ok(Path {
-            segments: segments.into(),
+            segments: OnceLock::from(Arc::<[Segment]>::from(segments)),
             shape,
         })
     }
@@ -511,5 +561,51 @@ impl Canvas {
     /// The commands, in order.
     pub fn commands(&self) -> &[Draw] {
         &self.commands
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The segments `f` gives a builder.
+    fn built(f: impl FnOnce(&mut PathBuilder)) -> Vec<Segment> {
+        let mut builder = PathBuilder::default();
+        f(&mut builder);
+        builder.segments
+    }
+
+    #[test]
+    fn a_shape_paths_segments_are_made_when_asked_and_are_the_builders() {
+        let rect = Rect::new(2., 3., 40., 20.);
+        let rounded = Path::rounded_rect(rect, 30.).unwrap();
+        assert!(rounded.segments.get().is_none(), "none made yet");
+        // The radius clamps to half the shorter side, as the builder's.
+        assert_eq!(rounded.shape(), Some(Shape::Rect { rect, radius: 10. }));
+        assert_eq!(
+            rounded.segments(),
+            built(|b| {
+                b.rounded_rect(rect, 30.);
+            })
+        );
+        let ellipse = Path::ellipse(rect).unwrap();
+        assert_eq!(
+            ellipse.segments(),
+            built(|b| {
+                b.ellipse(rect);
+            })
+        );
+        let (from, to) = (Point::new(1., 2.), Point::new(5., 9.));
+        assert_eq!(
+            Path::line(from, to).unwrap().segments(),
+            [Segment::Move(from), Segment::Line(to)]
+        );
+        // A builder given the shape alone makes the same path.
+        let mut builder = Path::builder();
+        builder.rounded_rect(rect, 30.);
+        assert_eq!(builder.build().unwrap(), rounded);
+        assert_ne!(Path::rounded_rect(rect, 2.).unwrap(), rounded);
+        assert!(Path::rounded_rect(Rect::new(f32::NAN, 0., 1., 1.), 0.).is_err());
+        assert!(Path::ellipse(Rect::new(0., 0., f32::INFINITY, 1.)).is_err());
     }
 }
