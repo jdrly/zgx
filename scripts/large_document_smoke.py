@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 
-from platform_smoke import release_mounts, stop, use_ibus_engine, wait_for_ibus_xim, wait_for_wm
+from platform_smoke import release_mounts, stop, use_ibus_engine, wait_for_ibus_xim, wait_for_wm, wait_for_exit
 
 LINES = 100_000
 REPORT = re.compile(
@@ -175,7 +175,7 @@ def main():
                 # Closed as a user closes it (Openbox's Alt+F4), not by the
                 # app's own timer, which a quick run would wait out.
                 xdo("windowactivate", "--sync", window, "key", "alt+F4")
-                app.wait(timeout=25)
+                wait_for_exit(app, env, args.output, 25)
             assert app.returncode == 0, log_path.read_text()[-4000:]
             result = dict(passed=True, backend="owned X11/Xvfb/Openbox, IBus libpinyin over XIM", lines=LINES,
                           bytes=document.stat().st_size, open_ms=opened["open_ms"], resident_kb=opened["resident_kb"],

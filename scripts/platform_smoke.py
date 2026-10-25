@@ -173,6 +173,19 @@ def settle_keyboard(env, deadline):
     return count
 
 
+def wait_for_exit(app, env, output, seconds):
+    """Wait `seconds` for `app` to exit, as one closed should. One that is
+    still running is a hang on the way out: its threads' stacks and the
+    display go to `output`/display.log before the timeout is raised (one
+    native-ime run on CI printed its last words, its window closed, and
+    did not exit within 25 s)."""
+    try:
+        return app.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        dump_display(env, output, app.pid)
+        raise
+
+
 def dump_display(env, output, pid=None):
     """What the display shows, for a probe that cannot find its window: the
     window tree, the root's properties, the pid's windows and a screenshot."""
