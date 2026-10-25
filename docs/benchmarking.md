@@ -48,6 +48,60 @@ of all scenes, five runs each, showed every scene within its spread. Time
 Profiler helpers and their use are in `scripts/perf/README.md`. The
 windowed comparison below stays the evidence for time, GPU and memory.
 
+## The macOS suite: every scene in under an hour
+
+`python3 scripts/run_macos_suite.py` measures zgx against GPUI Fast and MyGo
+on four scenes, one after another, into
+`docs/results/suite-macos-<date>-<commit>/<scene>/`:
+
+- `heavy`: the live dashboard (idle, stream, scroll, both);
+- `lab`: streaming text beside a 100,000-row list (stream, scroll, both);
+- `animate`: dots and a shimmer redrawn every display refresh;
+- `vlist`: 100,000 chat rows of wrapped text, 1 to 8 lines, some with an image,
+  in each framework's own variable-height list, moved by a steady scroll, flings,
+  and a scroll with a jump every 30 ticks.
+
+The frameworks: GPUI Fast, the faster of the two GPUI configurations and one
+apps ship with (`gpui = { package = "gpui-fast" }`); MyGo (egoist/mygo) through
+its native UI; and zgx, through its Rust virtual list in vlist and, once
+`ui.list` measures its rows, through Luau too. `comparisons/README.md` is the
+contract each adapter keeps (environment, report, window, build).
+
+Its protocol (`run_macos_comparison.py --suite`) is shorter than the full one:
+
+| | Suite | Full |
+| --- | --- | --- |
+| a trial | 5 s warm-up, 10 s sampled | 5 s warm-up, 15 s sampled |
+| repeats | 3, alternating order; 2 more for a cell whose CPU or GPU spreads over 10% of its median | 3 |
+| idle | heavy only, 3 launches sampled 20–30 s after launch | every scene, 5 launches, 20–35 s |
+| frame pacing | 2 captures of 8 s per cell | 8 |
+| blank rows | vlist: one 8 s capture of the window at 10 Hz per cell | none |
+
+Every trial is checked: it must run as long as asked (its exit within 3 s of
+`ZGX_SECONDS`) with the ticks that length makes (58–61 a second while active,
+none while idle; animate's frames matching the rate it reports), or the run is
+rejected. The runner sets each variable under its old `ZGUI_` name too, for a
+build from before the rename.
+
+**Read a run only within itself.** Two checks on the heavy dashboard, with
+the same binaries (`docs/results/suite-protocol-check-2026-10-25/`):
+
+- A 3 s warm-up read 5–10% more CPU for every framework than the full
+  protocol does: startup's own work. The warm-up went back to 5 s.
+- With 5 s, the suite and the full protocol, run in the same quiet window on
+  the same GPUI Fast binary, agree: CPU 18.46 against 17.57–18.32, GPU 22.02
+  against 21.94–22.18, memory 271 MB against 258–275 MB. Both read GPUI Fast's
+  CPU 15% above a run of the same binary a few hours earlier (15.73–15.95):
+  the session differed, not the protocol. A run's frameworks share its session,
+  so their comparison holds; a cell compared across runs may not.
+
+Blank rows (`scripts/blankprobe.swift`): during a capture of the window, a
+run down the rows' left padding that is closer to the window's background
+than to either row colour, longer than 24 points, is a place no row was
+drawn. It needs Screen Recording permission, which it only checks (it never
+asks). Each run also records the agent app's own processes (`preflight.zeron`),
+whose UI drew frames while hidden on 2026-10-25.
+
 ## The macOS comparison, quick and full
 
 `python3 scripts/run_macos_comparison.py --scene heavy --quick` measures zgx

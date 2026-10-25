@@ -107,6 +107,9 @@ def quiet(seconds=3.0, threshold=75.0, ignore=()):
         'busiest': [f'{name} {cpu:.1f}%' for name, _, cpu in others[:6] if cpu >= 0.5],
         'window_server_percent': round(sum(u[2] for u in usage if u[0] == 'WindowServer'), 1),
         'residents': [f'{name} {cpu:.1f}%' for name, _, cpu in usage if name in RESIDENTS],
+        # The agent app's own processes (its UI drew frames while hidden,
+        # 2026-10-25): recorded with every run.
+        'zeron': [f'{name} ({pid}) {cpu:.1f}%' for name, pid, cpu in usage if name in ('zeron', 'Zeron', 'Zeron Engine') and cpu >= 0.5],
         'dialogs': dialogs(),
     }
     return not heavy and not findings['dialogs'] and load < threshold, findings

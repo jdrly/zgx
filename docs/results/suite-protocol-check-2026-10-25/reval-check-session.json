@@ -1,0 +1,43 @@
+{
+ "suite": "/tmp/perf-tools/reval-suite",
+ "full": "/tmp/perf-tools/reval-full",
+ "cells": "gpui-fast:*",
+ "checked": 3,
+ "within_range": 2,
+ "within_allowance": 3,
+ "rows": [
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "cpu",
+   "suite_median": 18.4631,
+   "full_min": 17.572,
+   "full_max": 18.3201,
+   "full_median": 18.1721,
+   "within_range": false,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "gpu",
+   "suite_median": 22.019,
+   "full_min": 21.94,
+   "full_max": 22.177,
+   "full_median": 22.143,
+   "within_range": true,
+   "within_allowance": true
+  },
+  {
+   "framework": "gpui-fast",
+   "mode": "both",
+   "metric": "memory",
+   "suite_median": 270965903.0,
+   "full_min": 257632350.0,
+   "full_max": 275351196.0,
+   "full_median": 263424123.0,
+   "within_range": true,
+   "within_allowance": true
+  }
+ ]
+}
