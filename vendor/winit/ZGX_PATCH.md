@@ -95,3 +95,18 @@ frame (2.3% and 4.3% of its CPU in `NtUserPostMessage` and
    in the second Windows had the drag) and resize probes as before. Tested
    by `crates/zgx-desktop/tests/proxy_wake.rs`: 2000 user events from
    another thread, in bursts and pauses, each arrives once and in order.
+
+## Windows: the app mode read afresh when it changes
+
+A window that follows the system's light or dark mode re-reads it on
+`WM_SETTINGCHANGE` (`try_theme`, uxtheme's `ShouldAppsUseDarkMode`). uxtheme
+answers that from the mode it read when the process first asked, until
+`RefreshImmersiveColorPolicyState` reads it again, which nothing called: a
+window switched in Settings while running kept its title bar and never
+heard `ThemeChanged`, so its content kept its mode too.
+
+9. `WM_SETTINGCHANGE` calls `RefreshImmersiveColorPolicyState` (uxtheme
+   ordinal 104, `dark_mode::refresh_color_policy`) before `try_theme`
+   (`src/platform_impl/windows/{event_loop,dark_mode}.rs`). Checked by
+   `scripts/windows_settings_smoke.py --both`: switched both ways while
+   the window runs, its title bar and its content follow within a second.

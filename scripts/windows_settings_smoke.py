@@ -4,15 +4,17 @@ menu (Alt+Space) is dark in dark mode and light in light mode, and with
 "Always show scrollbars" off a scrollbar hides at rest, shows while the user
 scrolls and hides again after; with it on it shows at rest.
 
-    cargo build -p zgx-desktop --example scrollbars
+    cargo build -p zgx-desktop --example scrollbars --example primary_selection
     python scripts/windows_settings_smoke.py target/debug/examples/scrollbars.exe
 
-Checks the user's current settings. `--both` also runs with each setting the
-other way (the app mode, as Settings switches it, and "Always show
-scrollbars") and restores the user's own after.
+Checks the user's current settings. `--both` also switches the app mode both
+ways while a window runs (its title bar must follow at once), runs with each
+setting the other way (the app mode, as Settings switches it, and "Always
+show scrollbars"), and restores the user's own after.
 """
 import argparse
 import ctypes
+import pathlib
 import subprocess
 import time
 import winreg
@@ -97,6 +99,69 @@ def menu_luminance(window):
     return sum(0.2126 * r + 0.7152 * g + 0.0722 * b for r, g, b in samples) / len(samples)
 
 
+def caption_luminance(window):
+    """Mean luminance of the title bar's middle, away from its title and
+    buttons, as the screen shows it."""
+    rect = wintypes.RECT()
+    user32.GetWindowRect(window, ctypes.byref(rect))
+    scale = win.dpi(window) / 96
+    width = rect.right - rect.left
+    shot = win.capture_rect(rect.left + width * 2 // 5, rect.top + round(10 * scale), width // 5,
+                            round(14 * scale))
+    w, h, _ = shot
+    samples = [win.pixel(shot, x, y) for x in range(0, w, 3) for y in range(0, h, 3)]
+    return sum(0.2126 * r + 0.7152 * g + 0.0722 * b for r, g, b in samples) / len(samples)
+
+
+def client_luminance(window):
+    """Luminance of the window's own background, at its top left."""
+    r, g, b = win.pixel(win.capture(window), 6, 6)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def live(binary):
+    """The app mode switched while the window runs: its title bar
+    (DWMWA_USE_IMMERSIVE_DARK_MODE) and its own content follow, at once and
+    both ways."""
+    if read(r"Software\Microsoft\Windows\DWM", "ColorPrevalence") == 1:
+        print("live: title bars show the accent colour in either mode here; title bar not checked")
+        return
+    mode = read(PERSONALIZE, "AppsUseLightTheme")
+    # An example whose theme follows the system's, built beside `binary`;
+    # without it, the title bar alone is checked.
+    follower = pathlib.Path(binary).with_name("primary_selection.exe")
+    content_follows = follower.exists()
+    proc = subprocess.Popen([str(follower if content_follows else binary)])
+    seen = []
+    try:
+        window = win.wait_window(proc)
+        time.sleep(1.5)
+        win.activate(window)
+        for _ in range(2):
+            dark = not dark_mode()
+            write(PERSONALIZE, "AppsUseLightTheme", 0 if dark else 1, "ImmersiveColorSet")
+            deadline = time.monotonic() + 4
+            while True:
+                luminance = caption_luminance(window)
+                content = client_luminance(window) if content_follows else (40 if dark else 200)
+                if (luminance < 80 and content < 80) if dark else (luminance > 170 and content > 170):
+                    break
+                if time.monotonic() > deadline:
+                    raise AssertionError(f"the title bar (luminance {luminance:.0f}) and content "
+                                         f"({content:.0f}) did not turn {'dark' if dark else 'light'} "
+                                         "while the window ran")
+                time.sleep(0.1)
+            seen.append(f"{'dark' if dark else 'light'} (title bar {luminance:.0f}, content {content:.0f})")
+        win.close(window)
+        proc.wait(timeout=10)
+    finally:
+        write(PERSONALIZE, "AppsUseLightTheme", mode, "ImmersiveColorSet")
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    print(f"PASS: live mode switches, the title bar and content followed each: {', '.join(seen)}")
+
+
 def thumb_pixels(window):
     """Pixels of the accent-coloured thumb in the scroll view's right strip."""
     scale = win.dpi(window) / 96
@@ -150,6 +215,7 @@ def main():
     check(args.binary, dark_mode(), always_show_scrollbars())
     if not args.both:
         return
+    live(args.binary)
     mode = read(PERSONALIZE, "AppsUseLightTheme")
     scrollbars = read(ACCESSIBILITY, "DynamicScrollbars")
     try:

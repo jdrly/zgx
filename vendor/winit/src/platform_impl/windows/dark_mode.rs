@@ -123,6 +123,28 @@ fn set_dark_mode_for_window(hwnd: HWND, is_dark_mode: bool) -> bool {
     }
 }
 
+/// zgx patch: read the app mode afresh. uxtheme answers
+/// `ShouldAppsUseDarkMode` from the mode it read when the process first asked,
+/// until `RefreshImmersiveColorPolicyState` (ordinal 104) reads it again: a
+/// window switched to light or dark in Settings while running kept its old
+/// mode, its title bar and `ThemeChanged` with it.
+pub fn refresh_color_policy() {
+    type RefreshImmersiveColorPolicyState = unsafe extern "system" fn();
+    static REFRESH: Lazy<Option<RefreshImmersiveColorPolicyState>> = Lazy::new(|| unsafe {
+        if !*DARK_MODE_SUPPORTED {
+            return None;
+        }
+        let module = LoadLibraryA("uxtheme.dll\0".as_ptr().cast());
+        if module == 0 {
+            return None;
+        }
+        GetProcAddress(module, 104 as PCSTR).map(|handle| std::mem::transmute(handle))
+    });
+    if let Some(refresh) = *REFRESH {
+        unsafe { refresh() };
+    }
+}
+
 pub fn should_use_dark_mode() -> bool {
     should_apps_use_dark_mode() && !is_high_contrast()
 }

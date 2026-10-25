@@ -2524,6 +2524,8 @@ unsafe fn public_window_callback_inner(
             let preferred_theme = userdata.window_state_lock().preferred_theme;
 
             if preferred_theme.is_none() {
+                // zgx patch: the app mode as it is now, not as first read.
+                super::dark_mode::refresh_color_policy();
                 let new_theme = try_theme(window, preferred_theme);
                 let mut window_state = userdata.window_state_lock();
 
