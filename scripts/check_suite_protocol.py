@@ -10,13 +10,14 @@ full run's other cells measured an older build): `framework:metric`, `*`
 for every metric. Writes protocol-check.json beside the suite run and prints
 a table; exits 1 when a median falls outside its range by more than the
 allowance (the full run's own spread, at least 2% of its median and, for
-CPU, 0.05 points of a core), which is
+CPU, 0.05 points of a core; for GPU power, 2 mW), which is
 how far two sessions of the full protocol differ.
 """
 import argparse, json, statistics, sys
 from pathlib import Path
 
-METRICS = {'cpu': 'cpu_percent_one_core', 'gpu': 'gpu_mcycles_per_second', 'memory': 'mean_footprint_bytes'}
+METRICS = {'cpu': 'cpu_percent_one_core', 'gpu_power': 'gpu_system_watts', 'gpu': 'gpu_mcycles_per_second',
+           'memory': 'mean_footprint_bytes'}
 
 
 def main():
@@ -46,7 +47,9 @@ def main():
                 continue
             median, low, high = g[key]['median'], old[key]['min'], old[key]['max']
             # At least 0.05 points of a core for CPU: idle reads thousandths.
-            allowance = max(high - low, 0.02 * old[key]['median'], 0.05 if name == 'cpu' else 0)
+            # And 2 mW for GPU power: an idle GPU reads under one.
+            floor = {'cpu': 0.05, 'gpu_power': 0.002}.get(name, 0)
+            allowance = max(high - low, 0.02 * old[key]['median'], floor)
             outside = max(low - median, median - high, 0)
             ok = outside <= allowance
             rows.append({'framework': g['framework'], 'mode': g['mode'], 'metric': name, 'suite_median': median,
@@ -59,7 +62,7 @@ def main():
               'within_range': inside, 'within_allowance': len(rows) - len(failed), 'rows': rows}
     (args.suite / 'protocol-check.json').write_text(json.dumps(report, indent=1) + '\n')
     for r in rows:
-        scale = 1e-6 if r['metric'] == 'memory' else 1
+        scale = {'memory': 1e-6, 'gpu_power': 1e3}.get(r['metric'], 1)  # MB, mW
         mark = 'in range' if r['within_range'] else ('near' if r['within_allowance'] else 'OUTSIDE')
         print(f"{r['framework']:9} {r['mode']:7} {r['metric']:6} suite {r['suite_median'] * scale:9.2f}  "
               f"full {r['full_min'] * scale:9.2f}–{r['full_max'] * scale:<9.2f} {mark}")

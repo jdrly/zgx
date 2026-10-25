@@ -551,20 +551,21 @@ def measure(args, frameworks, modes, repeats, commit, found):
             place.mkdir(exist_ok=True)
             row = trial(args.scene, framework, mode, repeat, place, args.powermetrics, paced if args.quick else None)
             print(f"{framework:8} {mode:8} {repeat}: cpu {row['cpu_percent_one_core']:6.2f}% {row['cpu_watts'] * 1000:6.0f} mW "
-                  f"gpu {row['gpu_percent']:5.2f}% {row['gpu_mcycles_per_second']:5.1f} Mcyc/s server cpu {row['windowserver_cpu_percent']:5.1f}% gpu {row['windowserver_gpu_percent']:5.1f}% "
+                  f"gpu {row['gpu_system_watts'] * 1000:5.1f} mW {row['gpu_mcycles_per_second']:5.1f} Mcyc/s server cpu {row['windowserver_cpu_percent']:5.1f}% gpu {row['windowserver_gpu_percent']:5.1f}% "
                   f"footprint {row['mean_footprint_bytes'] / 2**20:6.1f} MiB ticks {row['workload_ticks']}", flush=True)
             rows.append(row)
             time.sleep(2)
     if args.suite:
-        # Cells whose trials disagree get more of them, alternating with the
-        # cell's own (so a slow drift does not pick one side).
+        # Cells whose headline metrics (CPU, GPU power) disagree get more
+        # trials, alternating with the cell's own (so a slow drift does not
+        # pick one side).
         wide = [(f, m) for m in modes if m != 'idle' for f in frameworks
-                if max(spread_of(rows, f, m, 'cpu_percent_one_core'), spread_of(rows, f, m, 'gpu_mcycles_per_second')) > SPREAD]
+                if max(spread_of(rows, f, m, 'cpu_percent_one_core'), spread_of(rows, f, m, 'gpu_system_watts')) > SPREAD]
         for extra in range(EXTRA):
             for framework, mode in wide:
                 row = trial(args.scene, framework, mode, repeats + extra, out, args.powermetrics)
                 print(f"{framework:8} {mode:8} {repeats + extra}: cpu {row['cpu_percent_one_core']:6.2f}% "
-                      f"gpu {row['gpu_mcycles_per_second']:5.1f} Mcyc/s (extra: wide spread)", flush=True)
+                      f"gpu {row['gpu_system_watts'] * 1000:5.1f} mW (extra: wide spread)", flush=True)
                 rows.append(row)
                 time.sleep(2)
         extended = [f'{f}/{m}' for f, m in wide]

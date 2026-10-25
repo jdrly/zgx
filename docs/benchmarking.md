@@ -63,8 +63,8 @@ on four scenes, one after another, into
 
 The frameworks: GPUI Fast, the faster of the two GPUI configurations and one
 apps ship with (`gpui = { package = "gpui-fast" }`); MyGo (egoist/mygo) through
-its native UI; and zgx, through its Rust virtual list in vlist and, once
-`ui.list` measures its rows, through Luau too. `comparisons/README.md` is the
+its native UI; and zgx, through its Rust measured list in vlist and through
+the same list in Luau (`ui.list { measured = true }`, framework `zgx-luau`). `comparisons/README.md` is the
 contract each adapter keeps (environment, report, window, build).
 
 Its protocol (`run_macos_comparison.py --suite`) is shorter than the full one:
@@ -72,7 +72,7 @@ Its protocol (`run_macos_comparison.py --suite`) is shorter than the full one:
 | | Suite | Full |
 | --- | --- | --- |
 | a trial | 5 s warm-up, 10 s sampled | 5 s warm-up, 15 s sampled |
-| repeats | 3, alternating order; 2 more for a cell whose CPU or GPU spreads over 10% of its median | 3 |
+| repeats | 3, alternating order; 2 more for a cell whose CPU or GPU power spreads over 10% of its median | 3 |
 | idle | heavy only, 3 launches sampled 20–30 s after launch | every scene, 5 launches, 20–35 s |
 | frame pacing | 2 captures of 8 s per cell | 8 |
 | blank rows | vlist: one 8 s capture of the window at 10 Hz per cell | none |
@@ -94,6 +94,48 @@ the same binaries (`docs/results/suite-protocol-check-2026-10-25/`):
   CPU 15% above a run of the same binary a few hours earlier (15.73–15.95):
   the session differed, not the protocol. A run's frameworks share its session,
   so their comparison holds; a cell compared across runs may not.
+
+### GPU: the whole GPU's power, not the app's GPU time
+
+The suite's GPU figure is the GPU's power over each trial's sample
+(macsample's `gpu_system_watts`: IOReport's energy model, "GPU Energy"), less
+the desktop alone (each repeat's `desktop` baseline, about 0.6 mW on a quiet
+machine). It is the whole GPU, so it includes the window server compositing
+the app's window: a framework pays for the way it presents frames (an AV
+sample-buffer layer, a plain layer, a `CAMetalLayer`) as well as for drawing
+them. With Zeron or anything else drawing, it counts that too, which is why
+the suite hides Zeron and checks the desktop baseline.
+
+It replaced app GPU time (`gpu_mcycles_per_second`: the process's
+`accumulatedGPUTime` at the GPU's mean active clock), which the suite still
+records and the site shows second. On 2026-10-25 a Metal System Trace of the
+animate scene (speed-of-light, `xctrace record --attach` to staged binaries)
+showed why it misleads for small, frequent frames:
+
+- Per frame, first command start to last end, zgx's GPU executes 46 µs (one
+  command buffer, one render encoder: vertex about 21 µs, fragment about
+  28; 0.11 Mpx damaged, 5.6 draws, 84 instances), GPUI Fast's 318 µs (it
+  draws the whole window).
+- zgx's `accumulatedGPUTime` was 61 ms a second against 6.1 ms executed:
+  about 0.47 ms charged per submission beyond its work, the commit-to-start
+  latency of a GPU waking from idle (about 0.6 ms for both apps). GPUI Fast's
+  charge is 0.1–0.2 ms a frame beyond its work.
+- It moves with the desktop: with Zeron visible, which keeps the GPU awake,
+  zgx read 11.2–11.7 and GPUI Fast 26.1–26.5 million cycles a second, where
+  quiet they read 23.0 and 17.8.
+- GPU power, quiet: zgx 0.116–0.120 W, GPUI Fast 0.130–0.146 W.
+
+What GPU power still charges zgx for: the window server's GPU time for zgx's
+animation is 9.1–9.2% of the GPU against GPUI Fast's 4.9–8.3%
+(`windowserver_gpu_percent`), the compositing of its AV sample-buffer layer.
+GPU power counts that cost, against zgx.
+
+Its noise, across the 2026-10-25 suite's repeats: every cell of heavy, lab and
+vlist within 4% of its median (most within 2%), the desktop 0.5–0.8 mW;
+animate the widest (zgx 114.7–121.2 mW, MyGo 117.0–122.3, GPUI Fast
+127.8–145.6). In animate zgx and MyGo are within each other's range (zgx's
+median 1% above), so the site says it is not a clear lead; the page lists
+every cell where zgx's range reaches a rival's.
 
 Blank rows (`scripts/blankprobe.swift`): during a capture of the window, a
 run down the rows' left padding that is closer to the window's background

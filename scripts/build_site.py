@@ -36,13 +36,17 @@ METRICS = {
     'cpu': ('CPU', '% of one core', 1, 1, 'cpu_percent_one_core', 'all'),
     'server': ('WindowServer CPU', '% of one core: the system compositor, while the app runs', 1, 1,
                'windowserver_cpu_percent', 'all'),
-    'gpu': ('GPU work', 'million GPU cycles a second', 1, 1, 'gpu_mcycles_per_second', 'active'),
+    'gpu': ('GPU power', 'mW, the whole GPU (the window server\'s compositing included), less the desktop alone', 1, 1,
+            'gpu_power_mw', 'active'),
+    'gpu_time': ('App GPU time', 'million GPU cycles a second, the app\'s own; includes per-frame wake latency', 1, 1,
+                 'gpu_mcycles_per_second', 'active'),
     'p99': ('Frame time, 99th percentile', 'ms between frames', 1, 1, 'interval_p99_ms', 'paced'),
     'long': ('Long frames', '% of frames over 25 ms', 1, 100, 'long_interval_fraction', 'paced'),
     'blank': ('Unfilled rows', '% of window captures showing a gap', 1, 100, 'blank_fraction', 'paced'),
     'memory': ('Memory', 'MB, physical footprint', 0, 1e-6, 'mean_footprint_bytes', 'all'),
 }
-TRIAL_KEYS = ['cpu_percent_one_core', 'gpu_mcycles_per_second', 'mean_footprint_bytes', 'windowserver_cpu_percent']
+TRIAL_KEYS = ['cpu_percent_one_core', 'gpu_system_watts', 'gpu_mcycles_per_second', 'mean_footprint_bytes',
+              'windowserver_cpu_percent']
 PACING_KEYS = ['interval_p99_ms', 'long_interval_fraction', 'frames_per_second']
 BLANK_KEYS = ['blank_fraction', 'longest_blank_points']
 
@@ -69,6 +73,8 @@ def load(directory):
     paced = list(csv.DictReader((directory / 'pacing.csv').open()))
     blanks = list(csv.DictReader((directory / 'blank.csv').open())) if (directory / 'blank.csv').exists() else []
     extended = set(protocol.get('extended_cells') or [])
+    # The whole GPU's power with no app running: each repeat's desktop baseline.
+    desktop_gpu = statistics.median(float(t['gpu_system_watts']) for t in trials if t['framework'] == 'desktop')
     cells = []
     for framework in frameworks:
         for mode in modes:
@@ -83,6 +89,8 @@ def load(directory):
                 if values:
                     check(group[key], values, (directory.name, framework, mode, key))
                     cell[key] = spread(values)
+            # What the app adds to the GPU's power, in mW.
+            cell['gpu_power_mw'] = spread([(float(t['gpu_system_watts']) - desktop_gpu) * 1000 for t in rows])
             if mode != 'idle':
                 captures = [p for p in paced if (p['framework'], p['mode']) == (framework, mode)]
                 assert len(captures) == protocol['pacing_repeats'], (directory, framework, mode)
@@ -105,7 +113,7 @@ def load(directory):
     # WindowServer with no app running, each repeat's desktop baseline.
     desktop = [float(t['windowserver_cpu_percent']) for t in trials if t['framework'] == 'desktop']
     return {
-        'desktop_server': statistics.median(desktop),
+        'desktop_server': statistics.median(desktop), 'desktop_gpu_mw': desktop_gpu * 1000,
         'scene': audit['scene'], 'run': str(directory.relative_to(ROOT)), 'commit': audit['commit'],
         'started_utc': audit['started_utc'], 'frameworks': frameworks, 'modes': modes, 'cells': cells,
         'trials': audit['trials'], 'pacing_trials': audit['pacing_trials'], 'protocol': protocol,
@@ -139,14 +147,14 @@ def headline(by):
     active = [(s, m) for s in by.values() for m in s['modes'] if m != 'idle']
     led = {key: sum(all(value(s, 'zgx', m, key) < value(s, r, m, key) for r in rivals if r in s['frameworks'])
                     for s, m in active)
-           for key in ('cpu_percent_one_core', 'gpu_mcycles_per_second')}
+           for key in ('cpu_percent_one_core', 'gpu_power_mw')}
     tests = len(active)
     long_zgx = max(value(s, 'zgx', m, 'long_interval_fraction') for s, m in active)
-    if led['cpu_percent_one_core'] == tests and led['gpu_mcycles_per_second'] == tests:
-        verdict = f'In every test, zgx uses less CPU and less GPU than {named}'
+    if led['cpu_percent_one_core'] == tests and led['gpu_power_mw'] == tests:
+        verdict = f'In every test, zgx uses less CPU and less GPU power than {named}'
     else:
-        verdict = (f'zgx uses the least CPU in {led["cpu_percent_one_core"]} of {tests} tests and the least GPU '
-                   f'in {led["gpu_mcycles_per_second"]}, against {named}')
+        verdict = (f'zgx uses the least CPU in {led["cpu_percent_one_core"]} of {tests} tests and the least GPU power '
+                   f'in {led["gpu_power_mw"]}, against {named}')
     verdict += ', and none of its frames run long.' if long_zgx == 0 else '.'
     heavy = by['heavy']
     against = lambda key, mode: ', '.join(
@@ -156,8 +164,8 @@ def headline(by):
     cards = [
         (f"{fmt(value(heavy, 'zgx', 'both', 'cpu_percent_one_core'), 1)}%", 'CPU, heavy dashboard (both)',
          against('cpu_percent_one_core', 'both')),
-        (f"{fmt(value(heavy, 'zgx', 'both', 'gpu_mcycles_per_second'), 1)} Mcyc/s", 'GPU work, heavy dashboard (both)',
-         against('gpu_mcycles_per_second', 'both')),
+        (f"{fmt(value(heavy, 'zgx', 'both', 'gpu_power_mw'), 0)} mW", 'GPU power, heavy dashboard (both)',
+         against('gpu_power_mw', 'both')),
         (f'{long_zgx * 100:.0f}%' if long_zgx == 0 else f'{long_zgx * 100:.1f}%', 'long frames (over 25 ms), at most',
          f'median of each mode\'s captures, every scene; {named}: up to {long_rivals * 100:.1f}%'),
         (f"{fmt(idle['zgx'], 2)}%", 'CPU while idle', ', '.join(f"{NAMES[r]} {fmt(idle[r], 2)}%" for r in rivals)),
@@ -169,6 +177,8 @@ def chart(scene, metric):
     title, unit, digits, scale, key, applies = METRICS[metric]
     if metric == 'server':
         unit += f' (the desktop alone: {fmt(scene["desktop_server"], 1)})'
+    if metric == 'gpu':
+        unit += f' ({fmt(scene["desktop_gpu_mw"], 1)} mW)'
     modes = [m for m in scene['modes'] if applies == 'all' or m != 'idle']
     rows = [(m, f, c[key]) for m in modes for f in scene['frameworks']
             for c in [cell(scene, f, m)] if key in c]
@@ -222,6 +232,20 @@ def page(by, verdict, cards):
     runs = ''.join(f'<li><a href="{REPO}/tree/main/{by[n]["run"]}"><code>{by[n]["run"]}</code></a> '
                    f'({by[n]["trials"]} trials, {by[n]["pacing_trials"]} pacing captures)</li>' for n in ORDER)
     luau = 'zgx-luau' in by['vlist']['frameworks']
+    # Where GPU power does not clearly favour zgx: a rival lower, or the
+    # trials' ranges overlapping.
+    close = [f'{SCENES[n][0].lower()} ({MODES[m].lower()}) against {NAMES[r]}'
+             for n in ORDER for m in by[n]['modes'] if m != 'idle' for r in by[n]['frameworks'] if not r.startswith('zgx')
+             if cell(by[n], 'zgx', m)['gpu_power_mw']['max'] >= cell(by[n], r, m)['gpu_power_mw']['min']]
+    power_note = (f'<li>GPU power is within the trials&#8217; spread, or higher for zgx, in: {e(", ".join(close))}.</li>'
+                  if close else '')
+    anim = by['animate']
+    animate_time = ', '.join(
+        f"{percent_less(value(anim, 'zgx', 'animate', 'gpu_mcycles_per_second'), value(anim, r, 'animate', 'gpu_mcycles_per_second'))} than {NAMES[r]}"
+        for r in anim['frameworks'] if not r.startswith('zgx'))
+    animate_power = ', '.join(
+        f"{percent_less(value(anim, 'zgx', 'animate', 'gpu_power_mw'), value(anim, r, 'animate', 'gpu_power_mw'))} than {NAMES[r]}"
+        for r in anim['frameworks'] if not r.startswith('zgx'))
     # Where WindowServer works harder for zgx's window than for a rival's.
     active = [(s, m) for s in by.values() for m in s['modes'] if m != 'idle']
     rivals = [f for f in heavy['frameworks'] if not f.startswith('zgx')]
@@ -262,7 +286,8 @@ def page(by, verdict, cards):
 <li><strong>Trials:</strong> each a fresh launch, the first {protocol['warmup_seconds']} s discarded and the next {protocol['sampled_seconds']} s sampled every {int(protocol['interval_seconds'] * 1000)} ms; {protocol['repeats']} trials of each mode, in alternating order, and {protocol['extra_trials']} more of any whose CPU or GPU spread past {protocol['spread_for_extra_trials'] * 100:.0f}% of its median; idle {protocol['idle_repeats']} times in the dashboard, {protocol['idle_window_seconds'][0]}–{protocol['idle_window_seconds'][1]} s after launch. Every trial had to run as long as asked, at 60 updates a second. Medians are shown, the trials' range beside them. Frame timing is {protocol['pacing_repeats']} separate {protocol['pacing_seconds']} s captures of each mode.</li>
 <li><strong>CPU:</strong> the app process's CPU time over the sample, as a percentage of one core (it can exceed 100).</li>
 <li><strong>WindowServer CPU:</strong> the CPU of macOS's compositor, which puts every app's frames on screen, over the same sample: what showing the app costs the system beside the app's own CPU. It includes what WindowServer does anyway (the desktop alone, measured each repeat, is beside each chart's title).</li>
-<li><strong>GPU work:</strong> GPU cycles the app's process used per second, from the GPU's counters.</li>
+<li><strong>GPU power:</strong> the whole GPU's energy over the sample, from the system's energy model (IOReport), in milliwatts, less the desktop alone (measured each repeat; beside each chart's title). It counts everything the GPU does for the app, the window server's compositing of its window included, so a framework is charged for how it presents its frames as well as for drawing them.</li>
+<li><strong>App GPU time</strong> (secondary): the GPU time macOS accounts to the app's process, as cycles at the GPU's mean clock. It includes the time from each submission to the GPU starting it, about half a millisecond after the GPU idles, so an app that draws small frames often reads high: measured with Metal System Trace, zgx's animation frames execute in 46 µs against GPUI Fast's 318 µs, yet this counter charges zgx more. It also moves with whatever else keeps the GPU awake. Kept for comparison with earlier runs.</li>
 <li><strong>Frame time:</strong> the 99th percentile of the intervals between frames shown on screen; at 60 updates a second, 16.7 ms is on time (8.3 ms for the animation, drawn at 120 Hz). <strong>Long frames</strong> are intervals over 25 ms.</li>
 <li><strong>Unfilled rows</strong> (the list): the window captured 10 times a second for {by['vlist']['protocol'].get('blank_seconds', 8)} s per mode; a capture counts when a stretch of the rows' padding over 24 points shows the window's background, where no row was drawn.</li>
 <li><strong>Memory:</strong> the process's physical footprint (what Activity Monitor shows: resident memory plus GPU memory it owns), averaged over the sample.</li>
@@ -275,6 +300,8 @@ def page(by, verdict, cards):
 <li>MyGo is immediate mode: each frame it draws builds and draws its whole window, which is how MyGo apps work.</li>
 {'' if luau else '<li>zgx through Luau is not in the list scene: zgx-script&#8217;s <code>ui.list</code> does not measure its rows yet.</li>'}
 {f'<li>WindowServer spends more CPU on zgx&#8217;s window than on a rival&#8217;s in {server_more} of {len(active)} tests (its chart follows CPU in each scene): showing zgx&#8217;s frames costs the system more than the others&#8217;, a cost zgx has yet to bring down.</li>' if server_more else ''}
+{power_note}
+<li>Until 2026-10-25 these pages' GPU figure was app GPU time; it is now GPU power, which measures what the GPU spends rather than how long it was held (see How this was measured). In the animation, zgx uses {animate_time} on app GPU time and {animate_power} on power.</li>
 <li>Binary size is not compared.</li>
 <li>One machine, one session; a personal Mac in use, other applications kept running (the run waited until the machine was quiet). Windows and Linux are not compared here.</li>
 </ul>
