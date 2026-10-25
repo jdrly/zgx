@@ -24,6 +24,12 @@ was asked and did its work: it must report its ticks (`workload_ticks`,
 second outside `idle`; an invalid run is run again once. Cycles are also
 given per tick or frame, so a run that did less work cannot look cheaper.
 
+The compositor's share is sampled with it, through performance counters
+(`windows_pdh`): `dwm.exe`'s CPU time and its GPU time on the 3D engines,
+and the app's own GPU time, each also per tick or frame. `--desktop` adds
+a run of nothing to each round, the desktop's own compositor cost, to
+subtract.
+
     cargo build --profile dist --locked -p zgx-desktop --example component_workload  (and heavy_workload, animation_workload, vlist_workload)
     cargo build --profile dist --locked --manifest-path comparisons/gpui-fast/Cargo.toml
     (cd comparisons/mygo && ./build.sh)
@@ -44,6 +50,7 @@ import subprocess
 import time
 
 import windows_input as win
+import windows_pdh
 
 FRAMEWORKS = ("zgx", "gpui-fast", "mygo", "gpui")
 # Scene: (modes, {framework: binary}).
@@ -95,6 +102,18 @@ class Invalid(Exception):
     pass
 
 
+def desktop(seconds, warmup):
+    """The compositor with no app running, sampled as `run` samples one."""
+    dwm = windows_pdh.pid_of("dwm.exe")
+    with windows_pdh.Counters([windows_pdh.dwm_cpu(), windows_pdh.gpu_time(dwm)]) as counters:
+        time.sleep(warmup)
+        first, start = counters.sample(), time.perf_counter()
+        time.sleep(seconds)
+        last, wall = counters.sample(), time.perf_counter() - start
+    cpu, gpu = ((b - a) / 1e7 for a, b in zip(first, last))
+    return {"dwm_cpu_percent": 100 * cpu / wall, "dwm_gpu_ms_per_second": 1000 * gpu / wall}
+
+
 def run(path, mode, seconds, warmup, log_path):
     total = warmup + seconds
     # ZGUI_*: adapters built before the rename read those alone.
@@ -105,6 +124,10 @@ def run(path, mode, seconds, warmup, log_path):
     samples = []
     with open(log_path, "w") as log:
         proc = subprocess.Popen([str(path)], env=env, stdout=log, stderr=log)
+        dwm = windows_pdh.pid_of("dwm.exe")
+        counters = windows_pdh.Counters([windows_pdh.dwm_cpu(), windows_pdh.gpu_time(dwm),
+                                         windows_pdh.gpu_time(proc.pid)])
+        compositor = []
         try:
             while proc.poll() is None:
                 elapsed = time.perf_counter() - started
@@ -115,10 +138,12 @@ def run(path, mode, seconds, warmup, log_path):
                         private, working = win.memory(proc.pid)
                         samples.append((time.perf_counter(), win.cpu_seconds(proc.pid), win.cycles(proc.pid),
                                         working, private))
+                        compositor.append(counters.sample())
                     except OSError:
                         pass
                 time.sleep(0.1)
         finally:
+            counters.close()
             if proc.poll() is None:
                 proc.kill()
             code = proc.wait()
@@ -126,7 +151,8 @@ def run(path, mode, seconds, warmup, log_path):
     text = pathlib.Path(log_path).read_text(errors="replace")
     done = units(text)
     # The last sample can be of a process already releasing its memory.
-    samples = [s for s in samples if s[3] > 0][:-1]
+    kept = [i for i, s in enumerate(samples) if s[3] > 0][:-1]
+    samples, compositor = [samples[i] for i in kept], [compositor[i] for i in kept]
     if code or len(samples) < 10 or done is None:
         raise Invalid(f"{path.name} {mode}: exit {code}, {len(samples)} samples, work {done}; see {log_path}")
     wall = samples[-1][0] - samples[0][0]
@@ -138,7 +164,19 @@ def run(path, mode, seconds, warmup, log_path):
     cycles = samples[-1][2] - samples[0][2]
     # The work over the sampled span, of the whole run's.
     sampled_units = done * wall / total if done else 0
+    # 100 ns units: the compositor's CPU, its GPU and the app's GPU.
+    dwm_cpu, dwm_gpu, app_gpu = ((b - a) / 1e7 for a, b in zip(compositor[0], compositor[-1]))
+
+    def per_unit(value):
+        return 1e6 * value / sampled_units if sampled_units else None
+
     return {
+        "dwm_cpu_percent": 100 * dwm_cpu / wall,
+        "dwm_gpu_ms_per_second": 1000 * dwm_gpu / wall,
+        "gpu_ms_per_second": 1000 * app_gpu / wall,
+        "dwm_cpu_us_per_unit": per_unit(dwm_cpu),
+        "dwm_gpu_us_per_unit": per_unit(dwm_gpu),
+        "gpu_us_per_unit": per_unit(app_gpu),
         "cpu_percent": 100 * cpu / wall,
         "mcycles_per_second": cycles / wall / 1e6,
         "mcycles_per_unit": (cycles / 1e6 / sampled_units) if sampled_units else None,
@@ -170,6 +208,8 @@ def main():
     parser.add_argument("--max-repeats", type=int, default=6)
     parser.add_argument("--spread", type=float, default=0.05,
                         help="another round while (max - min) / median exceeds this")
+    parser.add_argument("--desktop", action="store_true",
+                        help="add a run of nothing to each round: the compositor's cost at rest")
     parser.add_argument("--font", type=pathlib.Path, default=FONT, help="the one font file every adapter loads")
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("target/windows-compare"))
     args = parser.parse_args()
@@ -189,6 +229,11 @@ def main():
 
     def round_of(scene, mode, frameworks, index):
         shift = index % len(frameworks)
+        if args.desktop:
+            row = desktop(args.seconds, args.warmup)
+            results.setdefault((scene, mode, "desktop"), []).append(row)
+            print(f"{scene:7} {mode:6} {'desktop':9} dwm CPU {row['dwm_cpu_percent']:5.2f}%  "
+                  f"dwm GPU {row['dwm_gpu_ms_per_second']:6.2f} ms/s", flush=True)
         for name in frameworks[shift:] + frameworks[:shift]:
             path = binaries[f"{scene}/{name}"]
             log = args.output / f"{scene}.{mode}.{name}.{len(results.get((scene, mode, name), []))}.log"
@@ -206,7 +251,9 @@ def main():
             results.setdefault((scene, mode, name), []).append(row)
             print(f"{scene:7} {mode:6} {name:9} CPU {row['cpu_percent']:6.2f}%  "
                   f"{row['mcycles_per_second']:8.1f} Mcyc/s  {(row['mcycles_per_unit'] or 0):7.2f} Mcyc/unit  "
-                  f"units {row['units']:5}  WS {row['working_set_mib']:6.1f}  private {row['private_mib']:6.1f} MiB"
+                  f"units {row['units']:5}  WS {row['working_set_mib']:6.1f}  private {row['private_mib']:6.1f} MiB  "
+                  f"dwm CPU {row['dwm_cpu_percent']:5.2f}%  dwm GPU {row['dwm_gpu_ms_per_second']:6.2f} ms/s  "
+                  f"GPU {row['gpu_ms_per_second']:6.2f} ms/s"
                   f"{'  UIA client attached' if row['uia_client_attached'] else ''}", flush=True)
 
     for scene in args.scenes.split(","):
@@ -237,10 +284,11 @@ def main():
         median = {key: statistics.median(r[key] for r in rows if r[key] is not None)
                   for key in rows[0]
                   if not isinstance(rows[0][key], bool) and any(r[key] is not None for r in rows)}
-        values = key_metric(rows)
+        values = key_metric(rows) if name != "desktop" else []
         summary.append({"scene": scene, "mode": mode, "framework": name, "median": median,
                         "spread": (max(values) - min(values)) / statistics.median(values) if values else None,
-                        "uia_client_attached_runs": sum(r["uia_client_attached"] for r in rows), "runs": rows})
+                        "uia_client_attached_runs": sum(r.get("uia_client_attached", False) for r in rows),
+                        "runs": rows})
     metadata = {
         "platform": platform.platform(),
         "processor": platform.processor(),
@@ -258,12 +306,14 @@ def main():
                           for key, path in binaries.items()},
     }
     (args.output / "summary.json").write_text(json.dumps({"metadata": metadata, "results": summary}, indent=1))
-    shown = [n for n in FRAMEWORKS if n in dirs]
+    shown = [n for n in FRAMEWORKS if n in dirs] + (["desktop"] if args.desktop else [])
     by = {(s["scene"], s["mode"], s["framework"]): s["median"] for s in summary}
     print("\nscene   mode    metric              " + "".join(f"{n:>11}" for n in shown))
     for scene in args.scenes.split(","):
         for mode in SCENES[scene][0]:
-            for key in ("mcycles_per_unit", "mcycles_per_second", "cpu_percent", "private_mib", "working_set_mib"):
+            for key in ("mcycles_per_unit", "mcycles_per_second", "cpu_percent", "private_mib", "working_set_mib",
+                        "dwm_cpu_percent", "dwm_gpu_ms_per_second", "gpu_ms_per_second", "dwm_gpu_us_per_unit",
+                        "gpu_us_per_unit"):
                 cells = [by.get((scene, mode, n), {}).get(key) for n in shown]
                 if sum(c is not None for c in cells) < 2:
                     continue
