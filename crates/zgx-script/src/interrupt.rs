@@ -665,7 +665,11 @@ mod tests {
         deadline.set(Some(call));
         installed.publish(Some(call));
         let start = Instant::now();
+        // A scan marks the call fired before it sets the interrupt, and
+        // `sleep_until` reads u64::MAX before the first scan too: wait for
+        // all three.
         while !installed.watch.alarm.fired()
+            || installed.state() != (true, true)
             || watchdog.sleep_until.load(Ordering::SeqCst) != u64::MAX
         {
             assert!(start.elapsed() < Duration::from_secs(5), "never fired");
