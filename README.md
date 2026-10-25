@@ -86,7 +86,7 @@ With every framework built with profile-guided optimization, each trained on its
 
 **Correction:** the comparison published here on 2026-10-23/24 (zgx at `51a669c`) built zgx with mimalloc, unintentionally, while GPUI used the system allocator. The table above is the re-run with the system allocator for zgx too; [old and new numbers side by side](docs/results/README.md#correction-2026-10-24-macos-runs-of-2026-1023-24-built-zgui-with-mimalloc).
 
-These are one scene on one machine; Windows and Linux are not measured against GPUI yet. How the runs are made, and the other series, are in [benchmarking](docs/benchmarking.md).
+Every scene, charted: [zgui-performance.pages.dev](https://zgui-performance.pages.dev). These are one machine's measurements; Windows and Linux are not measured against GPUI yet. How the runs are made, and the other series, are in [benchmarking](docs/benchmarking.md).
 
 ## Docs
 
