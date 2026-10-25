@@ -54,14 +54,69 @@ Most of a zgx process's private memory on Windows is the graphics driver's,
 not zgx's. Measured on an RTX 4090 (NVIDIA 32.0.16.1742) by walking the
 process's address space stage by stage:
 - a Direct3D 12 device costs 39.5 MiB and its one queue another 20.5 MiB, a
-  floor no app on Direct3D 12 goes under (Direct3D 11, which GPUI uses, has
-  a device of about 20 MiB);
+  floor no app on Direct3D 12 goes under (GPUI's Direct3D 11 costs 43 MiB
+  less, device to visible window: [below](#what-a-frame-costs-below-zgx));
 - zgx's own share is small: a 2 MiB view heap (images hold at most 16,384
   views a window), wgpu's 4 MiB upload block, its caches.
 
 zgx opens a device on the one adapter it draws with (DXGI's first for low
 power, `vendor/wgpu-hal/ZGX_PATCH.md`): wgpu would otherwise open one on
 every adapter to choose, and each driver keeps memory after it is released.
+
+### What a frame costs below zgx
+
+Most of an animating zgx frame's CPU is spent below zgx. Profiled on an RTX
+4090 (NVIDIA 32.0.16.1742, i7-12700KF, 60 Hz), `animation_workload` takes
+2.47 M cycles a frame:
+- 64% is under wgpu's calls: present 27%, submit 20%, finishing the command
+  encoder (where wgpu records the passes) 14%;
+- wgpu's own code is about 6% of that;
+- Direct3D 12, NVIDIA's driver and the kernel take about 57%;
+- zgx, winit and accessibility take 36%.
+
+GPUI Fast's `animate` takes 2.13 M cycles: about 0.9 M in its Direct3D 11
+path, and more of its own code than zgx's. It draws through Direct3D 11 into
+a DirectComposition flip swap chain of three buffers at sync interval 0, as
+zgx presents through wgpu.
+
+What the APIs cost alone, with nothing drawn, is measured by
+`crates/zgx-gpu/examples/d3d_frame_floor.rs`. It uses one 1280x800 window and
+the same kind of swap chain, and clears and presents each compositor frame.
+Medians of 6 runs in rotating order:
+
+| Path | M cycles a frame, every thread | On the drawing thread (median K cycles) | Private memory added |
+| --- | --- | --- | --- |
+| No device (the message pump and `DwmFlush`) | 0.05 | | |
+| Direct3D 11, the driver's internal threading off | 0.61 | clear 168, present 364 | 52 MiB |
+| Direct3D 11, the driver's default | 1.13 | clear 16, present 201 (the rest on the driver's thread) | 53 MiB |
+| Direct3D 12 | 1.05 | resets 118, recording 103, `ExecuteCommandLists` 240, fence signal 16, present 450 | 95 MiB |
+| Direct3D 12 through wgpu, as zgx sets it up | 1.34 | acquire 84, encode 301, submit 386, present 462 | (not comparable: a plain `request_adapter` opens a device on every adapter) |
+
+```powershell
+cargo build --release -p zgx-gpu --example d3d_frame_floor
+target\release\examples\d3d_frame_floor.exe d3d12   # or none, d3d11, d3d11-threaded, wgpu
+```
+
+On this machine:
+- **Direct3D 12's fixed cost is the floor.** A frame costs 0.45 M cycles more
+  than Direct3D 11 with the driver's threading off, which is how GPUI's renderer runs:
+  its profile shows no busy driver thread. Swap chain flags and the feature
+  level change nothing, and a Direct3D 12 renderer needs its direct queue.
+- **wgpu adds about 0.3 M cycles a frame,** spread over some 25 functions
+  rather than one to patch.
+- **The memory gap is the API's.** Direct3D 12's device, queue and swap chain
+  take 43 MiB more than Direct3D 11's. That is the whole difference between
+  zgx's and GPUI Fast's private memory (about 130 and 87 MiB), so zgx's own
+  memory is about GPUI Fast's.
+
+A direct Direct3D 11 renderer, with the driver's threading off, would save
+about 0.75 M cycles a frame and 43 MiB on this machine; a direct Direct3D 12
+one, about 0.3 M cycles and no memory. These numbers are NVIDIA's alone:
+AMD's and Intel's drivers price submissions and presents differently, and
+need measuring before they guide a choice. GPU time was not measured; this
+GPU is nearly idle at these loads. Within one session, every mode's
+cycles, the empty loop's too, once doubled together and then came back.
+Compare only modes run in alternation.
 
 ## Presentation
 
