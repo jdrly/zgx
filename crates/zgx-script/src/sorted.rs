@@ -14,8 +14,8 @@ use crate::{
 use mlua::{Function, Lua, Table};
 use std::{cmp::Ordering, rc::Rc};
 
-/// A sort key: numbers before strings before booleans; nil (no key) last,
-/// whichever way it sorts (as `ui.sort`'s).
+/// A sort key: numbers before strings before booleans (the other way round
+/// descending); nil (no key) last, whichever way it sorts (as `ui.sort`'s).
 #[derive(Clone, Debug)]
 enum Key {
     Num(f64),
@@ -34,10 +34,13 @@ impl Key {
     }
     fn cmp(&self, other: &Key, descending: bool) -> Ordering {
         let order = match (self, other) {
+            // Nil last, whichever way.
+            (Key::Nil, _) | (_, Key::Nil) => return self.rank().cmp(&other.rank()),
             (Key::Num(a), Key::Num(b)) => a.total_cmp(b),
             (Key::Str(a), Key::Str(b)) => a.cmp(b),
             (Key::Bool(a), Key::Bool(b)) => a.cmp(b),
-            _ => return self.rank().cmp(&other.rank()),
+            // Kinds apart: reversed too, as `ui.sort`'s.
+            _ => self.rank().cmp(&other.rank()),
         };
         if descending { order.reverse() } else { order }
     }
@@ -199,6 +202,13 @@ impl Kept {
         let by_script = matches!(spec.by, By::Function(_));
         if spec.filter.is_some() || by_script {
             self.judge_all(vm, spec, items)?;
+        } else if let By::Field(name) = &spec.by {
+            let mut hint = 0;
+            for item in items.iter() {
+                let key = Self::field(item, name, &mut hint);
+                self.keys.push(key.map_or(Key::Nil, Key::of_value));
+                self.kept.push(true);
+            }
         } else {
             for item in items.iter() {
                 let (key, kept) = Self::judge(vm, spec, item)?;
@@ -206,13 +216,101 @@ impl Kept {
                 self.kept.push(kept);
             }
         }
-        let mut order: Vec<u32> = (0..items.len() as u32)
+        let order: Vec<u32> = (0..items.len() as u32)
             .filter(|i| self.kept[*i as usize])
             .collect();
-        order.sort_unstable_by(|a, b| self.before(spec.descending, *a, *b));
-        self.order = order;
+        self.order = self.sorted(spec.descending, order);
         Ok(())
     }
+    /// `item`'s field `name`, looked for first where the item before had it
+    /// (items of one shape keep their fields in one order), else searched.
+    fn field<'a>(item: &'a Value, name: &str, hint: &mut usize) -> Option<&'a Value> {
+        let Value::Map(fields) = item else {
+            return None;
+        };
+        if let Some((key, value)) = fields.get(*hint)
+            && **key == *name
+        {
+            return Some(value);
+        }
+        let at = fields.binary_search_by(|(key, _)| (**key).cmp(name)).ok()?;
+        *hint = at;
+        Some(&fields[at].1)
+    }
+    /// `order` sorted by `before`. Where every key is a number (or nil), or
+    /// every key a string (or nil), it radix-sorts words beside their items
+    /// (no comparisons, the order's own ties kept): a number as the bits that
+    /// order as `total_cmp` does, a string by its first 8 bytes, the runs of
+    /// those that share them and run longer compared whole. Nil goes last
+    /// either way, and ties by index, as `before`'s.
+    fn sorted(&self, descending: bool, order: Vec<u32>) -> Vec<u32> {
+        let key = |i: &u32| &self.keys[*i as usize];
+        let numbers = order
+            .iter()
+            .all(|i| matches!(key(i), Key::Num(_) | Key::Nil));
+        let strings = !numbers
+            && order
+                .iter()
+                .all(|i| matches!(key(i), Key::Str(_) | Key::Nil));
+        if !numbers && !strings {
+            let mut order = order;
+            order.sort_unstable_by(|a, b| self.before(descending, *a, *b));
+            return order;
+        }
+        let text = |i: u32| match &self.keys[i as usize] {
+            Key::Str(s) => s.as_bytes(),
+            _ => &[][..],
+        };
+        // Nil last, in its order; the rest as words.
+        let (mut words, nils): (Vec<(u64, u32)>, Vec<u32>) = {
+            let mut words = Vec::with_capacity(order.len());
+            let mut nils = Vec::new();
+            for &i in &order {
+                let word = match key(&i) {
+                    Key::Num(n) => {
+                        // `f64::total_cmp`'s order, as unsigned bits.
+                        let bits = n.to_bits() as i64;
+                        (bits ^ (((bits >> 63) as u64) >> 1) as i64) as u64 ^ (1 << 63)
+                    }
+                    Key::Str(_) => {
+                        let (mut head, bytes) = ([0; 8], text(i));
+                        let n = bytes.len().min(8);
+                        head[..n].copy_from_slice(&bytes[..n]);
+                        u64::from_be_bytes(head)
+                    }
+                    _ => {
+                        nils.push(i);
+                        continue;
+                    }
+                };
+                words.push((if descending { !word } else { word }, i));
+            }
+            (words, nils)
+        };
+        radix_sort(&mut words);
+        if strings {
+            // Strings sharing their first 8 bytes and differing (past them,
+            // or by a zero byte): whole.
+            let mut start = 0;
+            while start < words.len() {
+                let mut end = start + 1;
+                while end < words.len() && words[end].0 == words[start].0 {
+                    end += 1;
+                }
+                let first = text(words[start].1);
+                if end - start > 1 && words[start + 1..end].iter().any(|(_, i)| text(*i) != first) {
+                    words[start..end].sort_by(|(_, i), (_, j)| {
+                        let order = text(*i).cmp(text(*j));
+                        let order = if descending { order.reverse() } else { order };
+                        order.then(i.cmp(j))
+                    });
+                }
+                start = end;
+            }
+        }
+        words.into_iter().map(|(_, i)| i).chain(nils).collect()
+    }
+
     /// Every item judged by script in one call (`JUDGE_ALL`), what it
     /// returns read through Luau's C API; field keys read in Rust.
     fn judge_all(&mut self, vm: &Vm, spec: &Spec, items: &Rc<[Value]>) -> mlua::Result<()> {
@@ -273,6 +371,7 @@ impl Kept {
                 }
             })?;
         }
+        let mut hint = 0;
         for (i, item) in items.iter().enumerate() {
             self.kept.push(kept[i]);
             self.keys.push(if !kept[i] {
@@ -280,7 +379,9 @@ impl Kept {
             } else {
                 match &spec.by {
                     By::Item => Key::of_value(item),
-                    By::Field(name) => item.field(name).map_or(Key::Nil, Key::of_value),
+                    By::Field(name) => {
+                        Self::field(item, name, &mut hint).map_or(Key::Nil, Key::of_value)
+                    }
                     By::Function(_) => script_keys.get(i).cloned().unwrap_or(Key::Nil),
                 }
             });
@@ -330,6 +431,36 @@ impl Kept {
         merged.extend_from_slice(&placed[b..]);
         self.order = merged;
         Ok(())
+    }
+}
+
+/// `words` sorted by their first, stably (equal ones keep their order): a
+/// pass a byte, least significant first, skipping a byte every word shares.
+fn radix_sort(words: &mut Vec<(u64, u32)>) {
+    if words.len() < 64 {
+        words.sort_by_key(|(word, _)| *word);
+        return;
+    }
+    let mut scratch = vec![(0, 0); words.len()];
+    for byte in 0..8 {
+        let shift = byte * 8;
+        let mut counts = [0usize; 256];
+        for (word, _) in words.iter() {
+            counts[(word >> shift) as usize & 0xff] += 1;
+        }
+        if counts.contains(&words.len()) {
+            continue;
+        }
+        let mut at = 0;
+        for count in counts.iter_mut() {
+            (*count, at) = (at, at + *count);
+        }
+        for &(word, i) in words.iter() {
+            let bucket = &mut counts[(word >> shift) as usize & 0xff];
+            scratch[*bucket] = (word, i);
+            *bucket += 1;
+        }
+        std::mem::swap(words, &mut scratch);
     }
 }
 

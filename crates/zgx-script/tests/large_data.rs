@@ -339,3 +339,69 @@ fn ui_sorted_keeps_the_order_ui_sort_gives_and_judges_only_written_rows() {
     // Every check the same as ui.sort, and the one write judged one row.
     assert_eq!(h.text("checks"), "judged 1");
 }
+
+/// A whole sort of numbers, of strings, or of keys of mixed kinds, each with
+/// nils among them, gives `ui.sort`'s order both ways: negatives and minus
+/// zero, strings sharing their first 8 bytes or shorter, past ASCII, equal
+/// keys by position, rows of two shapes, and again after one row is written.
+#[test]
+fn ui_sorted_sorts_numbers_and_strings_as_ui_sort_does() {
+    let mut h = Harness::inline(
+        r#"
+        local seed = 11
+        local function random(n)
+            seed = (seed * 1103515245 + 12345) % 2147483648
+            return seed % n
+        end
+        local words = { "alpha", "alphabetical", "alphabetic", "", "zeta", "Zeta", "ünder", "under", "alpha", "a" }
+        local rows = {}
+        for i = 1, 3000 do
+            local n = if i % 89 == 0 then nil elseif i % 7 == 0 then -0.0 else (random(2000) - 1000) / 8
+            local w = if i % 83 == 0 then nil else words[random(#words) + 1] .. if random(3) == 0 then `{random(5)}` else ""
+            -- Some rows of another shape (an extra field before the others):
+            -- the field is not where the row before had it.
+            local m = if i % 3 == 0 then `s{random(50)}` elseif i % 3 == 1 then random(50) else i % 2 == 0
+            rows[i] = if i % 5 == 0 then { aa = true, id = i, m = m, n = n, w = w } else { id = i, m = m, n = n, w = w }
+        end
+        local list = ui.state("rows", rows)
+        local key = ui.state("key", "n")
+        local descending = ui.state("descending", false)
+        local view = ui.sorted(list, function()
+            return { by = key:get(), descending = descending:get() }
+        end)
+        local function ids(rows)
+            local out = table.create(#rows)
+            for i, r in rows do out[i] = r.id end
+            return table.concat(out, ",")
+        end
+        local checks = ui.state("checks", "")
+        ui.command { id = "run", run = function()
+            local function check(label)
+                local same = ids(view:get()) == ids(ui.sort(table.clone(list:peek()), key:peek(), descending:peek()))
+                checks:set(checks:peek() .. (if same then "" else `{label} differs; `))
+            end
+            -- Numbers, strings, and keys of mixed kinds (sorted as before).
+            for _, by in { "n", "w", "m" } do
+                for _, down in { false, true } do
+                    key:set(by)
+                    descending:set(down)
+                    check(`{by} {down}`)
+                end
+            end
+            -- One row written: re-placed, then all sorted again.
+            key:set("w")
+            descending:set(false)
+            list:set_key({ 10, "w" }, "alphabet")
+            check("one written")
+            descending:set(true)
+            check("one written, sorted again")
+            checks:set(checks:peek() .. "done")
+        end }
+        return ui.text { id = "checks", "{checks}" }
+        "#,
+    );
+    assert_eq!(h.error(), None);
+    run(&mut h, "run");
+    assert_eq!(h.error(), None);
+    assert_eq!(h.text("checks"), "done");
+}
