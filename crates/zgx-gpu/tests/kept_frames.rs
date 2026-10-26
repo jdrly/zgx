@@ -815,3 +815,79 @@ fn a_frame_drawn_from_the_kept_window_submits_what_its_damage_reaches() {
     }
     assert!(patched >= 8, "{patched} frames patched");
 }
+
+/// A text growing every frame (outgrowing its spare room, it moves to the
+/// kept frame's end) under a box painted after it, translucent, beside a
+/// bar repainting most of the window: it must still paint under the box,
+/// each frame as drawn afresh, the frames patched rather than kept again.
+fn growing(live: Signal<u32>) -> View {
+    let (bar, words) = (live.clone(), live.clone());
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .text_color(Color(229, 237, 247, 255))
+        .font_family("Geist")
+        .child(
+            div()
+                .absolute()
+                .size(SIZE.0, 150.)
+                .reactive_style(move || {
+                    Styles::new().bg(Color(30, (bar.get() * 37 % 200) as u8, 90, 255))
+                }),
+        )
+        .child(
+            text_signal(move || "grows ".repeat(1 + words.get() as usize % 12))
+                .text_size(12.)
+                .absolute()
+                .ml(10.)
+                .mt(170.)
+                .size(460., 60.),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(40.)
+                .mt(165.)
+                .size(160., 40.)
+                .bg(Color(255, 196, 61, 160)),
+        )
+}
+
+#[test]
+fn a_text_outgrowing_its_room_still_paints_under_what_is_painted_after_it() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        FontData::new(GEIST.to_vec())
+            .unwrap()
+            .install(&mut gpu.text_system().borrow_mut());
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(growing(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(0);
+    draw(&mut ui, &mut gpu);
+    let mut patched = 0;
+    for value in 1..12 {
+        live.set(value);
+        let stats = draw(&mut ui, &mut gpu);
+        patched += usize::from(stats.patched_items > 0);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the text drawn afresh (patched {})",
+            stats.patched_items
+        );
+    }
+    // Growing every frame, it moves rather than making the window keep
+    // again (after the first change gives it room).
+    assert!(patched >= 9, "{patched} of 11 frames patched");
+}

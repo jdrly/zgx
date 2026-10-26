@@ -745,6 +745,9 @@ struct Shaped {
     last_used: u64,
     /// The prepared text these glyphs were laid out from, kept while drawn.
     prepared: Option<u64>,
+    /// Times its node's text was shaped again since it was first: a kept
+    /// frame gives spare room to texts that change (`close_range`).
+    changes: u32,
 }
 impl Shaped {
     fn bytes(&self) -> usize {
@@ -836,6 +839,10 @@ struct Kept {
     /// What its quads' patches wrote, for a vertex buffer still holding
     /// them to take only that (`MappedRing::write_kept`).
     upload: upload::KeptQuads,
+    /// How many of its quads lie in paint order (as kept, or spliced):
+    /// texts outgrowing their room move past them, to its end, where a
+    /// subtree's quads no longer lie together.
+    ordered: u32,
 }
 /// What `render_flat` makes: a frame (`FRAME`, or the kept frame when
 /// `draw_made`), or items' quads and draws alone, with where each
@@ -1124,9 +1131,12 @@ impl<T> Drop for LeftItems<'_, T> {
         self.0.by_ref().for_each(drop);
     }
 }
-/// Spare quads a text keeps for its value to grow into, past its own.
+/// Spare quads a text that changes keeps for its value to grow into, past
+/// its own: few, as a batch drawing the kept frame spans them (empty, they
+/// still cost the GPU), and a text outgrowing them moves to the kept
+/// frame's end (`render_kept`).
 fn text_room(glyphs: u32) -> u32 {
-    (glyphs / 2).max(8)
+    (glyphs / 4).max(2)
 }
 /// `map.get(key)`, or in a patch (`PATCH`) the same through `entry`: the
 /// frame loop stays the one caller of each map's `get` (and of its search,
@@ -2259,6 +2269,8 @@ pub struct GpuRenderer {
     /// While a frame draws from the kept frame: what its quads' patches
     /// wrote, and their bytes, leading the frame's (`render_kept`).
     kept_upload: Option<(upload::KeptQuads, usize)>,
+    /// And how many of its quads lie in paint order (`Kept::ordered`).
+    kept_ordered: u32,
     /// Whether the frame's quads, draws, polyline points and clips
     /// (`patch_clips`) are made already, for the next frame to draw as
     /// they are.
@@ -2728,6 +2740,7 @@ impl GpuRenderer {
             patch_clips: Vec::new(),
             box_quads: Vec::new(),
             kept_upload: None,
+            kept_ordered: 0,
             box_draws: Vec::new(),
             draw_made: false,
             frame_draws: Vec::new(),
@@ -3703,6 +3716,7 @@ impl GpuRenderer {
             background: self.background,
             patched: false,
             upload: upload::KeptQuads::new(),
+            ordered: len as u32,
         }));
         Ok(drawn)
     }
@@ -3905,6 +3919,13 @@ impl GpuRenderer {
         let ranges = std::mem::take(&mut self.item_ranges);
         // Into their places, unless one grew past its room, drew more draws
         // or polylines (whose points a kept frame doesn't hold).
+        // A text outgrowing its room moves to the kept frame's end: its
+        // draws keep their places among the others, so it paints where it
+        // did; its quads alone lie elsewhere. (A text's quads, textured,
+        // never hide a region whole: `occluded_from` skips none for it.)
+        let moves = |item: &KeptItem, len: u32| {
+            len > item.room && matches!(scene.kind(item.id), NodeKind::Text { .. })
+        };
         let fits = self.frame_points.is_empty()
             && ranges.len() == places.len()
             && ranges
@@ -3912,11 +3933,22 @@ impl GpuRenderer {
                 .zip(&places)
                 .all(|(&(_, len, _, first, end), &place)| {
                     let item = &kept.items[place];
-                    len <= item.room && end - first == item.draws.end - item.draws.start
+                    (len <= item.room || moves(item, len))
+                        && end - first == item.draws.end - item.draws.start
                 });
         if fits {
             for (&(start, len, _, first, end), &place) in ranges.iter().zip(&places) {
                 let item = &mut kept.items[place];
+                if len > item.room {
+                    // Emptied where it was; at the end, with room again.
+                    let old = item.start as usize..(item.start + item.len) as usize;
+                    kept.upload.wrote(item.start, item.start + item.len);
+                    kept.quads[old].fill(bytemuck::Zeroable::zeroed());
+                    let room = len + text_room(len);
+                    (item.start, item.len, item.room) = (kept.quads.len() as u32, 0, room);
+                    kept.quads
+                        .resize(kept.quads.len() + room as usize, bytemuck::Zeroable::zeroed());
+                }
                 kept.upload
                     .wrote(item.start, item.start + len.max(item.len));
                 let (at, made) = (item.start as usize, len as usize);
@@ -3952,9 +3984,17 @@ impl GpuRenderer {
             self.patch_stats = stats;
             return Ok(self.recycle_kept(*kept));
         }
+        // (A subtree's quads lie together only until a text moves: kept
+        // again, laid out in order.)
+        if !splices.is_empty() && kept.quads.len() as u32 != kept.ordered {
+            stats.patched_items = 0;
+            self.patch_stats = stats;
+            return Ok(self.recycle_kept(*kept));
+        }
         if !splices.is_empty() {
             match self.splice(scene, &mut kept, &splices, viewport)? {
                 Some(made) => {
+                    kept.ordered = kept.quads.len() as u32;
                     stats.add_made(&made);
                     stats.patched_items += made.patched_items;
                 }
@@ -3992,6 +4032,7 @@ impl GpuRenderer {
         // Its quads lead the frame's: a vertex buffer still holding them
         // takes only what was written since.
         kept.upload.drawn(len * size_of::<Quad>());
+        self.kept_ordered = kept.ordered;
         self.kept_upload = Some((std::mem::take(&mut kept.upload), len * size_of::<Quad>()));
         let drawn =
             self.render_flat::<FRAME>(scene, Vec::new(), damage, Some(regions.to_vec()), false);
@@ -4015,6 +4056,11 @@ impl GpuRenderer {
     /// A kept frame given up: its quads' room goes back to the frame's,
     /// which keeping had taken (the next frame would grow it again from
     /// nothing). `None`, for `render_kept` to return.
+    /// Whether `text`'s node has changed what it shows since first shaped.
+    fn changes(&self, text: Option<NodeId>) -> bool {
+        text.and_then(|id| self.shapes.get(&id))
+            .is_some_and(|shaped| shaped.changes > 0)
+    }
     fn recycle_kept(&mut self, kept: Kept) -> Option<GpuStats> {
         let mut quads = kept.quads;
         if quads.capacity() > self.frame_quads.capacity() {
@@ -4528,14 +4574,15 @@ impl GpuRenderer {
             _ => Vec::new(),
         };
         ranges.clear();
-        let mut text = false;
+        // The open range's text, if one: its spare room, if it changes.
+        let mut text = None;
         let mut items = items.into_iter();
         let items = LeftItems(&mut items);
         for item in items.0.by_ref() {
             if MODE == PATCH {
-                close_range(&mut quads, &draws, &mut ranges, record && text);
+                close_range(&mut quads, &draws, &mut ranges, record && self.changes(text));
                 ranges.push((quads.len() as u32, 0, 0, draws.len() as u32, u32::MAX));
-                text = matches!(item.kind, NodeKind::Text { .. });
+                text = matches!(item.kind, NodeKind::Text { .. }).then_some(item.id);
             }
             // Retained hidden subtrees must not allocate textures, shape text,
             // or trigger filters until their effective opacity is visible.
@@ -5196,8 +5243,10 @@ impl GpuRenderer {
                         // The old shape's glyphs and quads hold the new one's:
                         // a changed value is as many allocations fewer.
                         let (mut spare_glyphs, mut spare_quads) = (Vec::new(), Vec::new());
+                        let mut changes = 0;
                         if let Some(old) = self.shapes.remove(&item.id) {
                             self.shaped_bytes -= old.bytes();
+                            changes = old.changes.saturating_add(1);
                             (spare_glyphs, spare_quads) = (old.glyphs, old.quads);
                             spare_glyphs.clear();
                             spare_quads.clear();
@@ -5358,6 +5407,7 @@ impl GpuRenderer {
                             atlas_epoch: epoch.unwrap_or(0),
                             last_used: self.frame,
                             prepared,
+                            changes,
                         };
                         fresh = Some(shaped);
                         stats.shaped_nodes += 1;
@@ -5618,7 +5668,7 @@ impl GpuRenderer {
             }
         }
         if MODE == PATCH {
-            close_range(&mut quads, &draws, &mut ranges, record && text);
+            close_range(&mut quads, &draws, &mut ranges, record && self.changes(text));
             self.item_ranges = ranges;
             self.frame_quads = quads;
             self.frame_draws = draws;
@@ -6758,6 +6808,13 @@ impl GpuRenderer {
     /// consecutive draws sharing a clip, texture source and shading join.
     fn batches(&self, region: Rect, draws: &[Draw], first: u32, mut emit: impl FnMut(Batch)) {
         let mut batch: Option<Batch> = None;
+        // The instances a batch may span to its next draw, and below which
+        // they lie in paint order: from the kept frame, few and only those
+        // (past them lie texts moved there, painted elsewhere in order).
+        let (span, ordered) = match self.kept_upload {
+            Some(_) => (SKIPPED_SPLIT, self.kept_ordered),
+            None => (u32::MAX, u32::MAX),
+        };
         // Skipping blending pays for its extra draws only over many pixels:
         // a small region (a scrolled-in strip) blends plain quads in one draw.
         let pixels = region.width * region.height * self.scale * self.scale;
@@ -6791,7 +6848,8 @@ impl GpuRenderer {
                 // `region`, a kept text's spare room) are set up by the GPU
                 // to be scissored away: past `SKIPPED_SPLIT`, a draw call
                 // costs less.
-                && (self.kept_upload.is_none() || start - open.end < SKIPPED_SPLIT)
+                && start >= open.end
+                && (start == open.end || start - open.end < span && draw.end <= ordered)
             {
                 // Another shading joins when what it promotes (quads drawn
                 // with a costlier shader than theirs) stays small.
