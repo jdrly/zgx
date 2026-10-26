@@ -102,6 +102,7 @@ SMOKES = [
     ("transparency", "python3 scripts/transparency_smoke.py {bin}/transparency --output {out}", False),
     ("wayland-transparency", "python3 scripts/wayland_transparency_smoke.py {bin}/transparency --output {out}", False),
     ("native-ime", "python3 scripts/native_ime_smoke.py {bin}/native_ime --output {out}", False),
+    ("ime-server-gone", "python3 scripts/native_ime_smoke.py {bin}/native_ime --server-gone --output {out}", False),
     ("wayland-ime", "python3 scripts/wayland_ime_smoke.py {bin}/native_ime --output {out}", False),
     ("wayland-external-ime", "python3 scripts/wayland_external_ime_smoke.py {bin}/external_ime --output {out}", False),
     ("wayland-readonly-ime", "python3 scripts/wayland_external_ime_smoke.py {bin}/external_ime --read-only-test --output {out}", False),

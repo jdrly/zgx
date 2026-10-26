@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Drive an owned IBus/libpinyin XIM session with actual native key events."""
+"""Drive an owned IBus/libpinyin XIM session with actual native key events.
+
+`--server-gone`: the input method's server (ibus-x11) goes while a focus
+for the app is queued behind it (the app stopped meanwhile), as when IBus
+went as a window closed (#564); the app takes the focus without waiting on
+the server, stays responsive, and closes on Alt+F4."""
 import argparse
 import json
 import os
@@ -15,10 +20,58 @@ import time
 from platform_smoke import release_mounts, stop, wait_for_wm, use_ibus_engine, wait_for_ibus_xim, wait_for_exit
 
 
+def server_gone(env, app, window, xdo, key, type_text, output):
+    """ibus-x11 killed with a focus for the app queued ahead of the news:
+    the app, stopped, has focus moved to it from another window, then the
+    server goes, then the app runs on. It must take the focus without a
+    round trip to the server, answer input, and close on Alt+F4."""
+    from platform_smoke import display_processes
+    type_text('nihao'); key('space')
+    deadline = time.monotonic() + 10
+    while 'COMMIT first "你好"' not in (output/'application.log').read_text():
+        if time.monotonic() > deadline: raise AssertionError('the composition did not commit')
+        time.sleep(.05)
+    other = subprocess.Popen(['xmessage', '-geometry', '+600+600', 'another window'], env=env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while not (found := subprocess.run(['xdotool', 'search', '--onlyvisible', '--class', 'Xmessage'], env=env,
+                                           capture_output=True, text=True).stdout.split()):
+            if time.monotonic() > deadline: raise AssertionError('the other window did not show')
+            time.sleep(.05)
+        xdo('windowactivate', '--sync', found[0]); time.sleep(.5)
+        servers = display_processes(env, 'ibus-x11')
+        if not servers: raise AssertionError("no ibus-x11 on the probe's display")
+        os.kill(app.pid, signal.SIGSTOP)
+        try:
+            subprocess.run(['xdotool', 'windowactivate', window], env=env, capture_output=True)
+            time.sleep(.5)
+            for pid in servers: os.kill(pid, signal.SIGKILL)
+            time.sleep(.5)
+        finally:
+            os.kill(app.pid, signal.SIGCONT)
+        # Still answering: it reports its model each half second.
+        seen = (output/'application.log').read_text().count('MODEL ')
+        deadline = time.monotonic() + 5
+        while (output/'application.log').read_text().count('MODEL ') < seen + 2:
+            if time.monotonic() > deadline:
+                from platform_smoke import dump_display
+                dump_display(env, output, app.pid)
+                raise AssertionError('the app stopped answering once the input method went (a round trip to it)')
+            time.sleep(.1)
+        xdo('windowactivate', window); time.sleep(.3); xdo('key', 'alt+F4')
+        wait_for_exit(app, env, output, 10)
+    finally:
+        other.kill()
+    (output/'result.json').write_text(json.dumps({'result': 'pass', 'killed': servers}, indent=2)+'\n')
+    print('PASS: the input method gone with a focus queued, the app took it, answered and closed')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=pathlib.Path)
     parser.add_argument('--output', type=pathlib.Path, required=True)
+    parser.add_argument('--server-gone', action='store_true', help="ibus-x11 goes with a focus queued (#564)")
     args = parser.parse_args()
     for executable in ('Xvfb', 'openbox', 'dbus-daemon', 'gsettings', 'ibus-daemon', 'ibus', 'xdotool', 'xwininfo'):
         if shutil.which(executable) is None:
@@ -167,6 +220,9 @@ def main():
                     (args.output/f'windows-{stage}.log').write_text(subprocess.check_output(['xwininfo','-root','-tree'],env=env,text=True))
                 click(100,82)
                 use_ibus_engine(env,'libpinyin',ime)
+                if args.server_gone:
+                    server_gone(env, app, window, xdo, key, type_text, args.output)
+                    return
                 type_text('nihao');capture(1,'first')
                 key('space');capture(2)
                 type_text('zhong');capture(3,'first')
