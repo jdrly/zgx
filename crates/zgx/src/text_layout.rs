@@ -323,6 +323,22 @@ pub trait TextLayout {
     fn caret_position(&self, position: TextPosition) -> Rect {
         self.caret(position.byte_offset)
     }
+    /// The caret's x before each of `offsets` (grapheme boundaries, in
+    /// order, affinity after): each character's place, as accessibility
+    /// gives a text's characters. Shapers that can walk their glyphs once
+    /// override it; the default asks `caret_position` of each.
+    fn carets_x(&self, offsets: &[usize]) -> Vec<f32> {
+        offsets
+            .iter()
+            .map(|&byte_offset| {
+                self.caret_position(TextPosition {
+                    byte_offset,
+                    affinity: TextAffinity::After,
+                })
+                .x
+            })
+            .collect()
+    }
     /// Logical byte-ordered range of the caret's visual row, excluding hard
     /// line endings. Native bidi layouts override this: physical left/right
     /// edges need not enclose every logical cluster on a mixed-direction row.

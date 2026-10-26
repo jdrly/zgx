@@ -681,23 +681,60 @@ impl AccessibilityTree {
                             }
                     });
                 let shown_box = shown_in.map(|node| scene.bounds(node));
-                let moved = self.run_boxes.get(&id).copied() != shown_box;
-                let reusable = !moved
-                    && self
-                        .ids
-                        .get(&id)
-                        .and_then(|native| self.cache.get(native))
-                        .is_some_and(|cached| {
-                            cached.role() == semantic_role(semantic)
-                                && cached.value() == text_value.filter(|_| !heading)
-                        })
+                let was = self.run_boxes.get(&id).copied();
+                let moved = was != shown_box;
+                let unchanged = self
+                    .ids
+                    .get(&id)
+                    .and_then(|native| self.cache.get(native))
+                    .is_some_and(|cached| {
+                        cached.role() == semantic_role(semantic)
+                            && cached.value() == text_value.filter(|_| !heading)
+                    })
                     && self.blocks.contains(&id) == block
                     && self.text_runs.get(&id).is_none_or(|ids| {
                         ids.iter().all(|run| {
                             self.cache.contains_key(run) && self.text_positions.contains_key(run)
                         })
                     });
-                if let Some((long, lines)) = &long {
+                let reusable = !moved && unchanged;
+                // Only moved, its box the same size (scrolled): its runs keep
+                // their shape, their boxes going with it, nothing shaped again.
+                let shifted = match (was, shown_box) {
+                    (Some(was), Some(now))
+                        if moved
+                            && unchanged
+                            && long.is_none()
+                            && was.width == now.width
+                            && was.height == now.height
+                            && self.text_runs.contains_key(&id) =>
+                    {
+                        Some((
+                            (now.x - was.x) as f64 * scale,
+                            (now.y - was.y) as f64 * scale,
+                            now,
+                        ))
+                    }
+                    _ => None,
+                };
+                if let Some((dx, dy, now)) = shifted {
+                    self.run_boxes.insert(id, now);
+                    for run in &self.text_runs[&id] {
+                        let Some(cached) = self.cache.get(run) else {
+                            continue;
+                        };
+                        let mut moved_run = cached.clone();
+                        if let Some(b) = moved_run.bounds() {
+                            moved_run.set_bounds(accesskit::Rect::new(
+                                b.x0 + dx,
+                                b.y0 + dy,
+                                b.x1 + dx,
+                                b.y1 + dy,
+                            ));
+                        }
+                        nodes.push((*run, moved_run));
+                    }
+                } else if let Some((long, lines)) = &long {
                     self.blocks.remove(&id);
                     self.long_runs(id, long, lines.clone(), &mut nodes);
                 } else if !reusable {
@@ -710,6 +747,8 @@ impl AccessibilityTree {
                         Some(shown) => self.run_boxes.insert(id, shown),
                         None => self.run_boxes.remove(&id),
                     };
+                    #[cfg(test)]
+                    SHAPED.with(|shaped| shaped.set(shaped.get() + 1));
                     let lines = shown_in.and_then(|node| scene.text_lines(node));
                     if let Some(runs) =
                         text_run_data_on(text_value.unwrap_or(""), block, lines.as_deref(), scale)
@@ -833,6 +872,12 @@ struct TextRunData {
     geometry: Option<RunGeometry>,
     /// It ends where its line wraps: the next run is on the next line.
     wraps: bool,
+}
+#[cfg(test)]
+thread_local! {
+    /// Texts whose runs were placed from their shaping: none for a text
+    /// that only moved.
+    static SHAPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 struct RunGeometry {
     bounds: accesskit::Rect,
@@ -1924,6 +1969,58 @@ mod projection_key_tests {
 mod document_selection_tests {
     use super::*;
     use zgx::{compose::prelude::*, selection::TextPoint, widgets::Ui};
+
+    #[test]
+    fn scrolled_text_moves_its_runs_without_shaping_them_again() {
+        let mut ui = Ui::new(400., 200.);
+        let offset = ui.signal(0_f32);
+        let long = "a word ".repeat(400);
+        let view = ui.mount(
+            scroll(offset.clone()).h(100.).child(
+                column()
+                    .w(300.)
+                    .children([text(long.as_str()).text_wrap(true), text("Second line")]),
+            ),
+        );
+        ui.prepare_frame();
+        let scale = 2.;
+        let mut adapter = AccessibilityTree::new();
+        let update = |adapter: &mut AccessibilityTree, ui: &Ui| {
+            adapter.update(
+                &ui.scene.borrow(),
+                &ui.semantics.borrow(),
+                Some(view.node()),
+                "Test",
+                scale,
+            )
+        };
+        let runs = |update: &accesskit::TreeUpdate| -> Vec<(accesskit::NodeId, accesskit::Rect)> {
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == accesskit::Role::TextRun)
+                .map(|(id, node)| (*id, node.bounds().unwrap()))
+                .collect()
+        };
+        let first = runs(&update(&mut adapter, &ui));
+        assert!(first.len() > 2, "a wrapped paragraph's runs");
+        let shaped = SHAPED.with(|s| s.get());
+        offset.set(30.);
+        ui.prepare_frame();
+        let second = runs(&update(&mut adapter, &ui));
+        assert_eq!(SHAPED.with(|s| s.get()), shaped, "nothing shaped again");
+        assert_eq!(second.len(), first.len(), "every run went with its text");
+        for ((id, was), (moved, now)) in first.iter().zip(&second) {
+            assert_eq!(id, moved);
+            assert!(
+                (was.y0 - now.y0 - 30. * scale).abs() < 0.01,
+                "{was:?} to {now:?}"
+            );
+            assert!((was.x0 - now.x0).abs() < 0.01);
+        }
+        // Unchanged and unmoved: nothing sent.
+        assert!(runs(&update(&mut adapter, &ui)).is_empty());
+    }
 
     #[test]
     fn a_selection_across_labels_is_the_regions_and_assistive_technology_can_set_it() {

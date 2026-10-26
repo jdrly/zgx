@@ -3589,9 +3589,16 @@ impl Scene {
                 affinity: TextAffinity::After,
             });
             let range = first.byte_offset.max(start)..last.byte_offset.max(start);
-            let mut carets: Vec<f32> = text[range.clone()]
+            // Every character's place in one pass over the line, not a caret
+            // each from the text's start (quadratic in its length).
+            let starts: Vec<usize> = text[range.clone()]
                 .grapheme_indices(true)
-                .map(|(offset, _)| bounds.x + at(range.start + offset, TextAffinity::After).x)
+                .map(|(offset, _)| range.start + offset)
+                .collect();
+            let mut carets: Vec<f32> = layout
+                .carets_x(&starts)
+                .into_iter()
+                .map(|x| bounds.x + x)
                 .collect();
             let end = at(range.end, TextAffinity::Before);
             carets.push(bounds.x + end.x);

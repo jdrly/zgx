@@ -208,6 +208,11 @@ pub struct TextCursor {
     /// Which side of the offset the caret sits on.
     pub affinity: Affinity,
 }
+#[cfg(test)]
+thread_local! {
+    /// Glyphs `carets_x` has walked: linear in a text's length, not more.
+    static GLYPH_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 /// Owns a shaped text buffer. Reuse it until text/font/width changes.
 /// Coordinates are logical pixels relative to the text node origin.
 /// Ligature interiors divide the advance among graphemes, matching cosmic-text's
@@ -512,6 +517,59 @@ impl zgx::text_layout::TextLayout for ShapedText {
             affinity: zgx::text_layout::TextAffinity::After,
         })
     }
+    /// Every offset's caret from one walk of the glyphs: each glyph's
+    /// cluster by where it starts, then each offset found among them (a
+    /// caret each from the start would walk the text once per character).
+    fn carets_x(&self, offsets: &[usize]) -> Vec<f32> {
+        // (start, end, x, width, right to left), by start.
+        let mut clusters: Vec<(usize, usize, f32, f32, bool)> = Vec::new();
+        for run in self.buffer.layout_runs() {
+            let offset = self.line_offsets[run.line_i];
+            for glyph in run.glyphs {
+                clusters.push((
+                    offset + glyph.start,
+                    offset + glyph.end,
+                    glyph.x,
+                    glyph.w,
+                    glyph.level.is_rtl(),
+                ));
+            }
+        }
+        #[cfg(test)]
+        GLYPH_STEPS.with(|steps| steps.set(steps.get() + clusters.len()));
+        clusters.sort_by_key(|c| c.0);
+        offsets
+            .iter()
+            .map(|&at| {
+                // The cluster at or holding `at`: its first glyph.
+                let i = clusters.partition_point(|c| c.0 <= at);
+                match i.checked_sub(1).map(|i| clusters[i]) {
+                    Some((start, end, x, w, rtl)) if at < end || (at == start && start == end) => {
+                        let cluster = &self.text[start..end];
+                        let count = cluster.graphemes(true).count().max(1);
+                        let before = cluster
+                            .grapheme_indices(true)
+                            .filter(|(i, _)| start + i < at)
+                            .count();
+                        let fraction = before as f32 / count as f32;
+                        if rtl {
+                            x + w * (1. - fraction)
+                        } else {
+                            x + w * fraction
+                        }
+                    }
+                    // No glyph holds it (a line's end, a break): ask.
+                    _ => {
+                        self.caret_position(zgx::text_layout::TextPosition {
+                            byte_offset: at,
+                            affinity: zgx::text_layout::TextAffinity::After,
+                        })
+                        .x
+                    }
+                }
+            })
+            .collect()
+    }
     fn caret_position(&self, position: zgx::text_layout::TextPosition) -> Rect {
         use zgx::text_layout::TextAffinity;
         let offset = if position.byte_offset >= self.text.len() {
@@ -785,6 +843,42 @@ mod visual_line_tests {
                 assert!((layout.caret_position(position).y - rect.y).abs() < 0.1);
             }
         }
+    }
+
+    #[test]
+    fn every_characters_caret_is_found_in_one_walk_of_the_glyphs() {
+        let mut fonts = FontSystem::new();
+        for content in [
+            "plain words, e\u{301} combined, office (ligatures)".to_string(),
+            "abc אבג xyz אבג def".to_string(),
+        ] {
+            let layout = ShapedText::new(&mut fonts, content.as_str(), 18., Some(120.));
+            let offsets: Vec<usize> = content.grapheme_indices(true).map(|(i, _)| i).collect();
+            let fast = layout.carets_x(&offsets);
+            for (at, x) in offsets.iter().zip(fast) {
+                let caret = layout.caret_position(TextPosition {
+                    byte_offset: *at,
+                    affinity: TextAffinity::After,
+                });
+                assert!(
+                    (caret.x - x).abs() < 0.01,
+                    "{content:?} at {at}: {x} not {}",
+                    caret.x
+                );
+            }
+        }
+        // A long text's carets: the glyphs walked once, not once a character.
+        let long = "a word ".repeat(1_500);
+        let layout = ShapedText::new(&mut fonts, long.as_str(), 14., Some(600.));
+        let offsets: Vec<usize> = long.grapheme_indices(true).map(|(i, _)| i).collect();
+        GLYPH_STEPS.with(|steps| steps.set(0));
+        let carets = layout.carets_x(&offsets);
+        assert_eq!(carets.len(), 10_500);
+        let steps = GLYPH_STEPS.with(|steps| steps.get());
+        assert!(
+            steps <= 2 * long.len(),
+            "{steps} glyph steps for 10,500 characters"
+        );
     }
 
     #[test]
