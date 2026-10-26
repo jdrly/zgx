@@ -9979,6 +9979,8 @@ const MAX_REGIONS: usize = 16;
 /// Damage in at most `MAX_REGIONS` groups, each the bounds of its members:
 /// rectangles sharing a cell of a grid, the finest of cells doubling from 16
 /// that leaves few enough.
+// Out of line: inlined, it grew `merge_damage`'s other paths (scroll's).
+#[inline(never)]
 fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
     fn root(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
@@ -9987,11 +9989,14 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
         }
         i
     }
-    let groups = |cell: f32| -> Vec<Rect> {
+    // A grid's groups, or `None` if it leaves too many (counted as they
+    // join, so a grid the search discards makes no bounds).
+    let groups = |cell: f32| -> Option<Vec<Rect>> {
         let columns = (viewport.width / cell).ceil().max(1.) as usize;
         let rows = (viewport.height / cell).ceil().max(1.) as usize;
         let mut owner = vec![usize::MAX; columns * rows];
         let mut parent: Vec<usize> = (0..damage.len()).collect();
+        let mut count = damage.len();
         for (i, r) in damage.iter().enumerate() {
             // The root of `i`'s group: `i` until a cell joins it to another,
             // then that one's root (each join keeps it a root).
@@ -10007,21 +10012,22 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
                         *slot = i;
                     } else {
                         let other = root(&mut parent, *slot);
+                        count -= usize::from(group != other);
                         parent[group] = other;
                         group = other;
                     }
                 }
             }
         }
+        if count > MAX_REGIONS && cell < viewport.width.max(viewport.height) {
+            return None;
+        }
         let mut bounds: Vec<Option<Rect>> = vec![None; damage.len()];
         for (i, r) in damage.iter().enumerate() {
             let group = &mut bounds[root(&mut parent, i)];
             *group = Some(group.map_or(*r, |g| g.union(*r)));
         }
-        bounds.into_iter().flatten().collect()
-    };
-    let fits = |groups: &Vec<Rect>, cell: f32| {
-        groups.len() <= MAX_REGIONS || cell >= viewport.width.max(viewport.height)
+        Some(bounds.into_iter().flatten().collect())
     };
     // Coarser cells only merge groups, so the answer is the finest cell that
     // fits. A frame's damage is much like the last one's: search from the
@@ -10032,10 +10038,10 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
     }
     let mut cell = LAST.get().max(16.);
     let mut found = groups(cell);
-    if fits(&found, cell) {
+    if found.is_some() {
         while cell > 16. {
             let finer = groups(cell / 2.);
-            if !fits(&finer, cell / 2.) {
+            if finer.is_none() {
                 break;
             }
             cell /= 2.;
@@ -10045,13 +10051,14 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
         loop {
             cell *= 2.;
             found = groups(cell);
-            if fits(&found, cell) {
+            if found.is_some() {
                 break;
             }
         }
     }
     LAST.set(cell);
-    found
+    // A cell as large as the viewport always fits.
+    found.expect("a grid fits")
 }
 fn merge_damage(damage: &[Rect], viewport: Rect, scale: f32) -> Vec<Rect> {
     // Each region redraws every batch it touches: nearby small ones (the
