@@ -6727,8 +6727,10 @@ impl GpuRenderer {
                 .map_or(0., |covered| covered.width * covered.height)
                 * self.scale
                 * self.scale;
-            // Past `SKIPPED_SPLIT` such instances, a draw call costs less.
-            let spans = std::mem::take(&mut skipped) < SKIPPED_SPLIT;
+            // Past `SKIPPED_SPLIT` such instances (or a kept text's spare
+            // room, empty quads), a draw call costs less.
+            let room = batch.as_ref().map_or(0, |open| start.saturating_sub(open.end));
+            let spans = std::mem::take(&mut skipped).max(room) < SKIPPED_SPLIT;
             if let Some(open) = &mut batch
                 && spans
                 && open.rect == rect
