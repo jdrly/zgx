@@ -172,6 +172,16 @@ python scripts/windows_latency_probe.py target/release/examples/input_latency.ex
 python scripts/windows_pacing_probe.py target/release/examples/animation_workload.exe
 ```
 
+The idle probe brings the window to the front, as a user has it, and fails
+if it presents while at rest (`--max-presents`, none by default); it sums
+zgx's own threads apart from the graphics driver's (`--max-own-cycles-per-second`).
+The lab scene at rest, in front: no presents, and no cycles on zgx's own
+threads; the 1.2 M cycles a second left are two of NVIDIA's Direct3D 12
+driver threads, which Direct3D 11 (GPUI Fast's, MyGo's) does not keep busy.
+The compositor redraws nothing of the window then (Desktop Duplication's
+dirty rectangles over six seconds), though its GPU time shows 0.1 ms a
+second while a zgx window is open, against none for theirs.
+
 Resizing shows a frame drawn for each new size as soon as a window drawn
 with GDI does, with no black or stretched frames on the way.
 `scripts/windows_resize_probe.py` resizes `resize_probe` (edged in red, so a
