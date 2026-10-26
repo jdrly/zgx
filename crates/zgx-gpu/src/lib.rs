@@ -1574,6 +1574,13 @@ impl LayerPresent {
     fn drawable_frame(&self) -> bool {
         self.drawables.unwrap_or(*PRESENT_DRAWABLE)
             && (self.full_rate || *PRESENT_DRAWABLE_ALL)
+            // DIAGNOSTIC (ZGX_DRAWABLE_ALT): drawables on even Unix seconds,
+            // tiles on odd, for paired-second WindowServer measurement.
+            && (!*DRAWABLE_ALT
+                || std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+                    .is_multiple_of(2))
             && !self.plain_only
             && !self.with_natives
             && self
@@ -1680,6 +1687,11 @@ static WARM_AFTER_IDLE: std::sync::LazyLock<bool> =
 #[cfg(target_os = "macos")]
 static PRESENT_DRAWABLE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_PRESENT_DRAWABLE").is_some_and(|v| v != "0"));
+/// DIAGNOSTIC (not for main): `ZGX_DRAWABLE_ALT`, drawables on even Unix
+/// seconds and tiles on odd (`LayerPresent::drawable_frame`).
+#[cfg(target_os = "macos")]
+static DRAWABLE_ALT: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_DRAWABLE_ALT").is_some_and(|v| v != "0"));
 /// `ZGX_PRESENT_DRAWABLE=all`: every frame, not only full-rate ones (a 60 Hz
 /// stream on a 120 Hz display), draws into a drawable. PROTOTYPE.
 #[cfg(target_os = "macos")]

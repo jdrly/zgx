@@ -115,10 +115,15 @@ Task {
     }
     try await stream.stopCapture()
     let back2 = revisits.filter { $0.1 == 2 }.count
+    // Intervals between changed images, as framepace reports them.
+    let intervals = zip(changes.dropFirst(), changes).map { ($0.0 - $1.0) * 1000 }.sorted()
+    let at = { (q: Double) in intervals.isEmpty ? 0 : intervals[min(intervals.count - 1, Int(q * Double(intervals.count)))] }
+    let long = intervals.filter { $0 > 25 }.count
     let first = revisits.prefix(12).map { "\($0.0):\($0.1)" }.joined(separator: ",")
-    print(String(format: "{\"display_hz\":%d,\"changes\":%d,\"changes_per_second\":%.3f,\"revisits\":%d,\"revisit_fraction\":%.5f,\"revisits_two_back\":%d,\"first_revisits\":\"%@\"}",
+    print(String(format: "{\"display_hz\":%d,\"changes\":%d,\"changes_per_second\":%.3f,\"revisits\":%d,\"revisit_fraction\":%.5f,\"revisits_two_back\":%d,\"first_revisits\":\"%@\",\"interval_p50_ms\":%.3f,\"interval_p95_ms\":%.3f,\"interval_p99_ms\":%.3f,\"interval_max_ms\":%.3f,\"long_intervals\":%d,\"long_interval_fraction\":%.5f}",
       rate, changes.count, Double(changes.count) / seconds, revisits.count,
-      changes.isEmpty ? 0 : Double(revisits.count) / Double(changes.count), back2, first))
+      changes.isEmpty ? 0 : Double(revisits.count) / Double(changes.count), back2, first,
+      at(0.5), at(0.95), at(0.99), intervals.last ?? 0, long, intervals.isEmpty ? 0 : Double(long) / Double(intervals.count)))
     exit(0)
   } catch {
     fail("\(error)".replacingOccurrences(of: "\"", with: "'"))
