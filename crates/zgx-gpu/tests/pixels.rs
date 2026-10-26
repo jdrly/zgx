@@ -404,6 +404,55 @@ fn thousand_streaming_frames_keep_caches_bounded_and_reuse_vertices() {
 }
 
 #[test]
+fn frames_in_flight_never_share_a_vertex_buffer_being_read() {
+    let _gpu_fixture = gpu_fixture();
+    // Frames submitted back to back, never waited for, go round the ring of
+    // vertex buffers many times while earlier ones are still in flight. Each
+    // draws one new mark and leaves the others: a buffer rewritten before
+    // the GPU read it would draw an earlier frame's mark where a later one
+    // goes, and leave its own place empty.
+    let mut gpu = GpuRenderer::new(256, 64).unwrap();
+    let mut scene = Scene::new(256., 64.);
+    scene.set_kind(scene.root(), NodeKind::Container(Layout::Overlay));
+    scene.append(
+        scene.root(),
+        NodeKind::Rect(Color(0, 0, 0, 255)),
+        fixed(256., 64.),
+    );
+    let d = scene.flush().damage;
+    gpu.render(&scene, &d).unwrap();
+    let place = |frame: u32| ((frame % 32) * 8, (frame / 32) * 32);
+    for frame in 0..64 {
+        let mark = scene.append(
+            scene.root(),
+            NodeKind::Rect(Color(255, frame as u8 * 4, 0, 255)),
+            fixed(4., 4.),
+        );
+        let (x, y) = place(frame);
+        scene.set_transform(
+            mark,
+            Transform {
+                x: x as f32,
+                y: y as f32,
+            },
+        );
+        let d = scene.flush().damage;
+        gpu.render(&scene, &d).unwrap();
+        assert!(gpu.debug_cache_stats().vertex_buffers <= 4);
+    }
+    let pixels = gpu.readback().unwrap();
+    for frame in 0..64 {
+        let (x, y) = place(frame);
+        let at = (((y + 2) * 256 + x + 2) * 4) as usize;
+        assert_eq!(
+            &pixels[at..at + 4],
+            &[255, frame as u8 * 4, 0, 255],
+            "frame {frame}'s mark"
+        );
+    }
+}
+
+#[test]
 fn shaped_hit_caret_and_disjoint_bidi_selection_use_visual_clusters() {
     let _gpu_fixture = gpu_fixture();
     use zgx_gpu::text::{Affinity, ShapedText, TextCursor};
