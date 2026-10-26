@@ -4304,16 +4304,17 @@ impl Scene {
     /// extent along an axis and overlapping are, together, their union.
     #[inline(never)]
     fn leaf_damage(&self, id: NodeId, place: &LeafPlace, bounds: Rect) -> Option<Rect> {
+        let node = self.node(id);
         let bounds = bounds.translated(place.transform);
         let clip = match place.clips {
-            true => clipped_bounds(place.parent_clip, bounds, &self.node(id).style),
+            true => clipped_bounds(place.parent_clip, bounds, &node.style),
             false => place.parent_clip,
         };
         let own = match place.past_clip {
             true => place.parent_clip,
             false => clip,
         };
-        let painted = self.painted(id, bounds, place.blur_radius)?;
+        let painted = self.painted_of(id, node, bounds, place.blur_radius)?;
         own.and_then(|clip| painted.intersection(clip))
             .map(quantized)
     }
@@ -4882,10 +4883,16 @@ impl Scene {
     /// What `id` itself paints when laid out at `bounds`, if anything.
     #[inline]
     fn painted(&self, id: NodeId, bounds: Rect, blur_radius: f32) -> Option<Rect> {
-        if matches!(self.node(id).kind, NodeKind::Container(_)) && blur_radius <= 0.0 {
+        self.painted_of(id, self.node(id), bounds, blur_radius)
+    }
+    /// `painted` for `id` whose node the caller has: no lookup again (a moved
+    /// leaf's damage asks twice a frame, before and after it moves).
+    #[inline]
+    fn painted_of(&self, id: NodeId, node: &Node, bounds: Rect, blur_radius: f32) -> Option<Rect> {
+        if matches!(node.kind, NodeKind::Container(_)) && blur_radius <= 0.0 {
             return None;
         }
-        Some(match &self.node(id).kind {
+        Some(match &node.kind {
             NodeKind::Quad(quad) | NodeKind::Panel { quad, .. } => quad.paint_bounds(bounds),
             NodeKind::Image(image) => image.paint_bounds(bounds),
             NodeKind::Svg(svg) => svg.paint_bounds(bounds),
