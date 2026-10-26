@@ -6923,21 +6923,23 @@ impl GpuRenderer {
             {
                 // Another shading joins when what it promotes (quads drawn
                 // with a costlier shader than theirs) stays small.
-                let merged = match merged_shading(open.shading, shading) {
-                    _ if open.shading == shading => Some((shading, open.promoted)),
-                    Some(merged) => {
-                        let promoted = if merged == open.shading {
-                            open.promoted
-                        } else {
-                            open.pixels
-                        } + if merged == shading { 0. } else { pixels };
-                        let budget = match merged {
-                            Shading::Full => PROMOTED_FULL_PIXELS,
-                            _ => PROMOTED_PIXELS,
-                        };
-                        (promoted <= budget).then_some((merged, promoted))
-                    }
-                    None => None,
+                let merged = match open.shading == shading {
+                    true => Some((shading, open.promoted)),
+                    false => match merged_shading(open.shading, shading) {
+                        Some(merged) => {
+                            let promoted = if merged == open.shading {
+                                open.promoted
+                            } else {
+                                open.pixels
+                            } + if merged == shading { 0. } else { pixels };
+                            let budget = match merged {
+                                Shading::Full => PROMOTED_FULL_PIXELS,
+                                _ => PROMOTED_PIXELS,
+                            };
+                            (promoted <= budget).then_some((merged, promoted))
+                        }
+                        None => None,
+                    },
                 };
                 if let Some((merged, promoted)) = merged {
                     open.shading = merged;
