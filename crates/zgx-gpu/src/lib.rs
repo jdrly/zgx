@@ -6821,15 +6821,22 @@ impl GpuRenderer {
     }
     /// The draws within `region` from instance `first` on, as batches:
     /// consecutive draws sharing a clip, texture source and shading join.
-    fn batches(&self, region: Rect, draws: &[Draw], first: u32, mut emit: impl FnMut(Batch)) {
+    fn batches(&self, region: Rect, draws: &[Draw], first: u32, emit: impl FnMut(Batch)) {
+        match self.kept_upload.is_some() {
+            true => self.batches_of::<true>(region, draws, first, emit),
+            false => self.batches_of::<false>(region, draws, first, emit),
+        }
+    }
+    /// `batches`, of the kept frame's draws (`KEPT`) or a frame's.
+    #[inline(always)]
+    fn batches_of<const KEPT: bool>(
+        &self,
+        region: Rect,
+        draws: &[Draw],
+        first: u32,
+        mut emit: impl FnMut(Batch),
+    ) {
         let mut batch: Option<Batch> = None;
-        // The instances a batch may span to its next draw, and below which
-        // they lie in paint order: from the kept frame, few and only those
-        // (past them lie texts moved there, painted elsewhere in order).
-        let (span, ordered) = match self.kept_upload {
-            Some(_) => (SKIPPED_SPLIT, self.kept_ordered),
-            None => (u32::MAX, u32::MAX),
-        };
         // Skipping blending pays for its extra draws only over many pixels:
         // a small region (a scrolled-in strip) blends plain quads in one draw.
         let pixels = region.width * region.height * self.scale * self.scale;
@@ -6859,12 +6866,17 @@ impl GpuRenderer {
             if let Some(open) = &mut batch
                 && open.rect == rect
                 && open.source == source
-                // The instances it would span to this draw (draws outside
-                // `region`, a kept text's spare room) are set up by the GPU
-                // to be scissored away: past `SKIPPED_SPLIT`, a draw call
-                // costs less.
-                && start >= open.end
-                && (start == open.end || start - open.end < span && draw.end <= ordered)
+                // From the kept frame, the instances it would span to this
+                // draw (draws outside `region`, a kept text's spare room),
+                // set up by the GPU to be scissored away: under
+                // `SKIPPED_SPLIT` (past it, a draw call costs less), and only
+                // below those in paint order (past them lie texts moved
+                // there, painted elsewhere in order).
+                && (!KEPT
+                    || start == open.end
+                    || start > open.end
+                        && start - open.end < SKIPPED_SPLIT
+                        && draw.end <= self.kept_ordered)
             {
                 // Another shading joins when what it promotes (quads drawn
                 // with a costlier shader than theirs) stays small.
