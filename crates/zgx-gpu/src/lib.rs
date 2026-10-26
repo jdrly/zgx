@@ -628,29 +628,54 @@ fn spans_cover(clip: Rect, rects: impl Iterator<Item = Rect>, scale: f32) -> boo
 }
 /// Positioned glyphs of laid-out runs; rich text takes each glyph's colour
 /// from its run (it is shaped without colours, see `rich_buffer_raw`).
+#[inline]
 fn glyphs_of<'a>(
-    mut glyphs: Vec<Glyph>,
+    glyphs: Vec<Glyph>,
     runs: impl Iterator<Item = cosmic_text::LayoutRun<'a>>,
     starts: &[usize],
     rich: Option<&zgx::rich_text::RichText>,
     scale: f32,
+) -> Vec<Glyph> {
+    match rich {
+        // Glyphs come mostly in their run's order: the run of the last one
+        // is tried first, and searched for (`run_at`) only when it isn't
+        // this one's (runs cover the text in order, `RichText::new`).
+        Some(rich) => {
+            let mut current = 0;
+            styled_glyphs(glyphs, runs, scale, |line, glyph| {
+                let byte = starts[line] + glyph.start;
+                if !rich.runs()[current].range.contains(&byte) {
+                    current = text::run_at(rich, byte);
+                }
+                (current, Some(rich.runs()[current].color))
+            })
+        }
+        None => styled_glyphs(glyphs, runs, scale, |_, glyph| {
+            (
+                0,
+                glyph
+                    .color_opt
+                    .map(|c| zgx::scene::Color(c.r(), c.g(), c.b(), c.a())),
+            )
+        }),
+    }
+}
+/// `glyphs_of`, each glyph's run and colour from `style` (given its line).
+fn styled_glyphs<'a>(
+    mut glyphs: Vec<Glyph>,
+    runs: impl Iterator<Item = cosmic_text::LayoutRun<'a>>,
+    scale: f32,
+    mut style: impl FnMut(usize, &cosmic_text::LayoutGlyph) -> (usize, Option<zgx::scene::Color>),
 ) -> Vec<Glyph> {
     for run in runs {
         // Most texts are one line: one allocation at its size.
         glyphs.reserve(run.glyphs.len());
         for glyph in run.glyphs {
             let p = glyph.physical((0., 0.), scale);
-            let run_index = rich.map_or(0, |rich| {
-                text::run_at(rich, starts[run.line_i] + glyph.start)
-            });
+            let (run_index, color) = style(run.line_i, glyph);
             glyphs.push(Glyph {
                 key: p.cache_key,
-                color: match rich {
-                    Some(rich) => Some(rich.runs()[run_index].color),
-                    None => glyph
-                        .color_opt
-                        .map(|c| zgx::scene::Color(c.r(), c.g(), c.b(), c.a())),
-                },
+                color,
                 run: run_index,
                 x: p.x as f32,
                 // Each line's baseline on a whole device pixel too.
