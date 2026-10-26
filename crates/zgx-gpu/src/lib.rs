@@ -1084,6 +1084,46 @@ fn cull_on_cpu(
     }
     (viewport, Some(kept.unwrap_or_default()))
 }
+/// `cull_on_cpu` of a text's glyphs alone (`glyphs_alone`): untransformed
+/// quads of sizes never negative, each its own rectangle (`quad_rect`),
+/// tested and joined as such in one pass.
+#[inline(always)]
+fn cull_glyphs(
+    quads: &mut Vec<Quad>,
+    start: usize,
+    clip: Rect,
+    viewport: Rect,
+    scale: f32,
+) -> (Rect, Option<Rect>) {
+    let limit = snap_out(clip, scale);
+    let (mut outside, mut kept) = (false, None::<Rect>);
+    for quad in &quads[start..] {
+        let [x, y, width, height] = quad.rect;
+        if quad.options[2] >= 0.5 || width < 0. || height < 0. {
+            return cull_on_cpu(quads, start, clip, viewport, scale);
+        }
+        // (As `quad_rect` has it: a zero size's sign dropped.)
+        let rect = Rect::new(x, y, width.abs(), height.abs());
+        if rect_inside(rect, limit) {
+            kept = Some(kept.map_or(rect, |bounds| bounds.union(rect)));
+        } else if rect_outside(rect, limit) {
+            outside = true;
+        } else {
+            return (clip, None);
+        }
+    }
+    if outside {
+        let mut kept = start;
+        for index in start..quads.len() {
+            if inside(&quads[index], limit) {
+                quads[kept] = quads[index];
+                kept += 1;
+            }
+        }
+        quads.truncate(kept);
+    }
+    (viewport, Some(kept.unwrap_or_default()))
+}
 /// Close the open item range (`render_flat`'s `item_ranges`): its quads'
 /// count, its room (`pad`: a text's spare quads, added empty) and where
 /// its draws end.
@@ -5642,6 +5682,9 @@ impl GpuRenderer {
             // it would cut, transformed quads and filters keep the scissor.
             // (The kept quads' bounds, when the clip culls on the CPU.)
             let (draw_clip, culled_bounds) = match item.effects.blur_radius <= 0. {
+                true if glyphs_alone => {
+                    cull_glyphs(&mut quads, start as usize, clip, viewport, self.scale)
+                }
                 true => cull_on_cpu(&mut quads, start as usize, clip, viewport, self.scale),
                 false => (clip, None),
             };
