@@ -3953,8 +3953,10 @@ impl GpuRenderer {
                     kept.quads[old].fill(bytemuck::Zeroable::zeroed());
                     let room = len + text_room(len);
                     (item.start, item.len, item.room) = (kept.quads.len() as u32, 0, room);
-                    kept.quads
-                        .resize(kept.quads.len() + room as usize, bytemuck::Zeroable::zeroed());
+                    kept.quads.resize(
+                        kept.quads.len() + room as usize,
+                        bytemuck::Zeroable::zeroed(),
+                    );
                 }
                 kept.upload
                     .wrote(item.start, item.start + len.max(item.len));
@@ -4586,7 +4588,12 @@ impl GpuRenderer {
         let items = LeftItems(&mut items);
         for item in items.0.by_ref() {
             if MODE == PATCH {
-                close_range(&mut quads, &draws, &mut ranges, record && self.changes(text));
+                close_range(
+                    &mut quads,
+                    &draws,
+                    &mut ranges,
+                    record && self.changes(text),
+                );
                 ranges.push((quads.len() as u32, 0, 0, draws.len() as u32, u32::MAX));
                 text = matches!(item.kind, NodeKind::Text { .. }).then_some(item.id);
             }
@@ -5671,7 +5678,12 @@ impl GpuRenderer {
             }
         }
         if MODE == PATCH {
-            close_range(&mut quads, &draws, &mut ranges, record && self.changes(text));
+            close_range(
+                &mut quads,
+                &draws,
+                &mut ranges,
+                record && self.changes(text),
+            );
             self.item_ranges = ranges;
             self.frame_quads = quads;
             self.frame_draws = draws;

@@ -827,14 +827,9 @@ fn growing(live: Signal<u32>) -> View {
         .bg(Color(14, 18, 24, 255))
         .text_color(Color(229, 237, 247, 255))
         .font_family("Geist")
-        .child(
-            div()
-                .absolute()
-                .size(SIZE.0, 150.)
-                .reactive_style(move || {
-                    Styles::new().bg(Color(30, (bar.get() * 37 % 200) as u8, 90, 255))
-                }),
-        )
+        .child(div().absolute().size(SIZE.0, 150.).reactive_style(move || {
+            Styles::new().bg(Color(30, (bar.get() * 37 % 200) as u8, 90, 255))
+        }))
         .child(
             text_signal(move || "grows ".repeat(1 + words.get() as usize % 12))
                 .text_size(12.)
