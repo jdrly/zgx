@@ -299,6 +299,16 @@ def micro_section(frames, e):
 def page(by, verdict, cards, micro=None):
     heavy = by['heavy']
     env, protocol, commit = heavy['environment'], heavy['protocol'], heavy['commit']
+    # Since 2026-10-26 (#637), samples start from the window's readiness,
+    # not from launch, and apps run a little longer: runs on either side of
+    # that are not ranked against each other.
+    ready = 'sampling_anchor' in protocol
+    anchor = 'after its window was ready (frontmost and uncovered)' if ready else 'after launch'
+    anchor_short = 'after its window was ready' if ready else 'after launch'
+    anchor_note = ('<li>Since 2026-10-26 a trial&#8217;s sample starts from its window being ready (frontmost and '
+                   'uncovered, polled up to {:g} s), not from its launch, and each app runs {} s longer; this '
+                   'run is therefore not ranked against earlier ones, which measured from launch.</li>').format(
+        protocol.get('readiness_timeout_seconds', 2.5), protocol.get('lifetime_margin_seconds', 3)) if ready else ''
     date = heavy['started_utc'][:10]
     tools = heavy['toolchains']
     mygo = tools.get('mygo', {})
@@ -402,7 +412,7 @@ def page(by, verdict, cards, micro=None):
 <li><strong>Machine:</strong> {e(env['chip'])} ({e(env['machine'])}, {env['cores']} cores, {env['memory_bytes'] // 2**30} GB), macOS {e(env['macos'])}, {e(env['power'])}.</li>
 <li><strong>Displays:</strong> {e(display)}; the window on the main display, nothing covering it.</li>
 <li><strong>Builds:</strong> zgx and GPUI Fast with their <code>dist</code> profile (release, fat LTO, one codegen unit), {e(tools.get('rust', env.get('rust', 'Rust')))}; {mygo_build}. Every framework uses the system allocator. zgx at <a href="{REPO}/commit/{commit}"><code>{commit[:7]}</code></a>.</li>
-<li><strong>Trials:</strong> each a fresh launch, the first {protocol['warmup_seconds']} s discarded and the next {protocol['sampled_seconds']} s sampled every {int(protocol['interval_seconds'] * 1000)} ms; {protocol['repeats']} trials of each mode, in alternating order, and {protocol['extra_trials']} more of any whose CPU or GPU spread past {protocol['spread_for_extra_trials'] * 100:.0f}% of its median; idle {protocol['idle_repeats']} times in the dashboard, {protocol['idle_window_seconds'][0]}–{protocol['idle_window_seconds'][1]} s after launch. Every trial had to run as long as asked, at 60 updates a second. Medians are shown, the trials' range beside them. Frame timing is {protocol['pacing_repeats']} separate {protocol['pacing_seconds']} s captures of each mode.</li>
+<li><strong>Trials:</strong> each a fresh launch, the first {protocol['warmup_seconds']} s {anchor} discarded and the next {protocol['sampled_seconds']} s sampled every {int(protocol['interval_seconds'] * 1000)} ms; {protocol['repeats']} trials of each mode, in alternating order, and {protocol['extra_trials']} more of any whose CPU or GPU spread past {protocol['spread_for_extra_trials'] * 100:.0f}% of its median; idle {protocol['idle_repeats']} times in the dashboard, {protocol['idle_window_seconds'][0]}–{protocol['idle_window_seconds'][1]} s {anchor_short}. Every trial had to run as long as asked, at 60 updates a second. Medians are shown, the trials' range beside them. Frame timing is {protocol['pacing_repeats']} separate {protocol['pacing_seconds']} s captures of each mode.</li>
 <li><strong>CPU:</strong> the app process's CPU time over the sample, as a percentage of one core (it can exceed 100).</li>
 <li><strong>WindowServer CPU:</strong> the CPU of macOS's compositor, which puts every app's frames on screen, over the same sample: what showing the app costs the system beside the app's own CPU. It includes what WindowServer does anyway (the desktop alone, measured each repeat, is beside each chart's title).</li>
 <li><strong>GPU power:</strong> the whole GPU's energy over the sample, from the system's energy model (IOReport), in milliwatts, less the desktop alone (measured each repeat; beside each chart's title). It counts everything the GPU does for the app, the window server's compositing of its window included, so a framework is charged for how it presents its frames as well as for drawing them.</li>
@@ -415,6 +425,7 @@ def page(by, verdict, cards, micro=None):
 {'<h3>How Rune is driven</h3><ul class="facts">' + rune_notes + '</ul>' if rune_notes else ''}
 <h3>Caveats</h3>
 <ul class="facts">
+{anchor_note}
 <li>Compare within this run only: the same binaries measured hours apart read differently (the machine's state changes), so a cell is not comparable across runs, while the frameworks in one run share its session.</li>
 <li>Idle memory is two-level: an idle window settles at one of two levels about 25 MB apart, launch to launch, as the Metal driver returns its startup memory. Which level a launch lands on is the driver's timing, not the app's, so read idle memory with its range.</li>
 <li>MyGo is immediate mode: each frame it draws builds and draws its whole window, which is how MyGo apps work.</li>
@@ -453,6 +464,9 @@ def main():
     data = {
         'verdict': verdict,
         'commit': by['heavy']['commit'],
+        # Samples from window readiness (#637, 2026-10-26) or from launch:
+        # runs with different anchors are not ranked against each other.
+        'sampling_anchor': by['heavy']['protocol'].get('sampling_anchor', 'launch'),
         'frameworks': NAMES,
         'metrics': {m: {'title': t, 'unit': u, 'source': k} for m, (t, u, _, _, k, _) in METRICS.items()},
         'scenes': [{k: by[n][k] for k in ('scene', 'run', 'started_utc', 'frameworks', 'modes', 'trials',
