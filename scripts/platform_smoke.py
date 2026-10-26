@@ -99,6 +99,14 @@ class _ClientMessage(ctypes.Structure):
                 ("format", ctypes.c_int), ("data", ctypes.c_long * 5), ("pad", ctypes.c_long * 12)]
 
 
+_x11 = ctypes.CDLL("libX11.so.6")
+_x11.XOpenDisplay.argtypes, _x11.XOpenDisplay.restype = [ctypes.c_char_p], ctypes.c_void_p
+_x11.XInternAtom.argtypes, _x11.XInternAtom.restype = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int], ctypes.c_ulong
+_x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.POINTER(_ClientMessage)]
+_x11.XFlush.argtypes = [ctypes.c_void_p]
+_x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
+
 def keep_awake(env, check, parent, period=.5):
     """Wake the window manager every `period` seconds while its display
     lives, from a process of its own (`start_keep_awake`): Xlib exits the
@@ -172,6 +180,27 @@ def settle_keyboard(env, deadline):
                 asked = time.monotonic()
             time.sleep(.02)
     return count
+
+
+def close_window(env, window):
+    """Ask `window` (an id) to close as a window manager does for Alt+F4 or
+    its close button: `WM_DELETE_WINDOW`, with no key sent. Under IBus's
+    asynchronous mode a key still being handled as the window closes (Alt+F4's
+    Alt) crashed ibus-x11 1.5.29 (SIGSEGV, 92 of 120 loaded runs with keys in
+    flight; none in its default synchronous mode), and libX11 waits for a
+    crashed input method's reply forever (#564)."""
+    display = _x11.XOpenDisplay(env["DISPLAY"].encode())
+    if not display:
+        raise RuntimeError("no display to close the window on")
+    try:
+        event = _ClientMessage(type=33, send_event=1, display=display, window=int(window, 0),  # ClientMessage
+                               message_type=_x11.XInternAtom(display, b"WM_PROTOCOLS", 0), format=32)
+        event.data[0] = _x11.XInternAtom(display, b"WM_DELETE_WINDOW", 0)
+        event.data[1] = 0  # CurrentTime
+        _x11.XSendEvent(display, int(window, 0), 0, 0, ctypes.byref(event))
+        _x11.XFlush(display)
+    finally:
+        _x11.XCloseDisplay(display)
 
 
 def wait_for_exit(app, env, output, seconds):

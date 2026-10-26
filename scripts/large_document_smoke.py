@@ -52,9 +52,11 @@ def main():
                        XDG_CONFIG_HOME=private + "/config", XDG_CACHE_HOME=private + "/cache",
                        XDG_DATA_HOME=private + "/data", XMODIFIERS="@im=ibus",
                        GTK_IM_MODULE="ibus", QT_IM_MODULE="ibus", WINIT_X11_SCALE_FACTOR="1", LANG="C.UTF-8",
-                       # As native_ime_smoke.py: IBus 1.5.29's synchronous
-                       # bridge drops preedit signals.
-                       IBUS_ENABLE_SYNC_MODE="0")
+                       # IBus's default, synchronous mode: its asynchronous
+                       # one crashed ibus-x11 1.5.29 with keys in flight as a
+                       # window closed (#564), and this probe needs only a
+                       # composition to show and commit, which it does here.
+                       IBUS_ENABLE_SYNC_MODE="1")
             for key in ("WAYLAND_DISPLAY", "IBUS_ADDRESS", "SWAYSOCK", "I3SOCK", "AT_SPI_BUS_ADDRESS"):
                 env.pop(key, None)
             with (args.output / "dbus.log").open("w") as log:

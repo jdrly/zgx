@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import time
 
-from platform_smoke import release_mounts, stop, wait_for_wm, use_ibus_engine, wait_for_ibus_xim, wait_for_exit
+from platform_smoke import release_mounts, stop, wait_for_wm, use_ibus_engine, wait_for_ibus_xim, wait_for_exit, close_window
 
 
 def server_gone(env, app, window, xdo, key, type_text, output):
@@ -237,9 +237,11 @@ def main():
                 click(100,174);capture(6)
                 type_text('shijie');capture(7,'second')
                 key('space');capture(8)
-                # Closed as a user closes it (Openbox's Alt+F4), not by the app's
-                # own timer, which a quick run would wait out.
-                xdo('windowactivate','--sync',window,'key','alt+F4')
+                # Closed as a user closes it (the window manager's close:
+                # WM_DELETE_WINDOW), not by the app's own timer, which a quick
+                # run would wait out; with no key, which this asynchronous
+                # IBus could still be handling as the window went, and crash.
+                close_window(env, window)
                 wait_for_exit(app, env, args.output, 25)
             text=(args.output/'application.log').read_text()
             if app.returncode: raise RuntimeError(text)
