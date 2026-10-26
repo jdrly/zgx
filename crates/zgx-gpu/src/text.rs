@@ -517,6 +517,75 @@ impl zgx::text_layout::TextLayout for ShapedText {
             affinity: zgx::text_layout::TextAffinity::After,
         })
     }
+    /// Every visual line from one walk of the glyphs: each layout run is a
+    /// line, its bytes its glyphs' clusters, each grapheme's caret found
+    /// among them.
+    fn line_carets(&self, text: &str) -> Option<Vec<zgx::text_layout::LineCarets>> {
+        if text != &*self.text {
+            return None;
+        }
+        let mut lines = Vec::new();
+        for run in self.buffer.layout_runs() {
+            let offset = self.line_offsets[run.line_i];
+            // (start, end, x, width, right to left), by start.
+            let mut clusters: Vec<(usize, usize, f32, f32, bool)> = run
+                .glyphs
+                .iter()
+                .map(|g| (offset + g.start, offset + g.end, g.x, g.w, g.level.is_rtl()))
+                .collect();
+            #[cfg(test)]
+            GLYPH_STEPS.with(|steps| steps.set(steps.get() + clusters.len()));
+            clusters.sort_by_key(|c| c.0);
+            let Some(start) = clusters.first().map(|c| c.0) else {
+                // An empty line: its caret at its start.
+                lines.push(zgx::text_layout::LineCarets {
+                    range: offset..offset,
+                    top: run.line_top,
+                    height: run.line_height,
+                    carets: vec![0.],
+                });
+                continue;
+            };
+            let end = clusters.iter().map(|c| c.1).max().unwrap_or(start);
+            let mut carets = Vec::new();
+            for (i, _) in self.text[start..end].grapheme_indices(true) {
+                let at = start + i;
+                let k = clusters.partition_point(|c| c.0 <= at);
+                let x = match k.checked_sub(1).map(|k| clusters[k]) {
+                    Some((s, e, x, w, rtl)) if at < e => {
+                        let cluster = &self.text[s..e];
+                        let count = cluster.graphemes(true).count().max(1);
+                        let before = cluster
+                            .grapheme_indices(true)
+                            .filter(|(i, _)| s + i < at)
+                            .count();
+                        let fraction = before as f32 / count as f32;
+                        if rtl {
+                            x + w * (1. - fraction)
+                        } else {
+                            x + w * fraction
+                        }
+                    }
+                    _ => 0.,
+                };
+                carets.push(x);
+            }
+            // Its end: the trailing edge of the cluster ending there.
+            let last = clusters.iter().rev().find(|c| c.1 == end).copied();
+            carets.push(match last {
+                Some((_, _, x, _, true)) => x,
+                Some((_, _, x, w, false)) => x + w,
+                None => 0.,
+            });
+            lines.push(zgx::text_layout::LineCarets {
+                range: start..end,
+                top: run.line_top,
+                height: run.line_height,
+                carets,
+            });
+        }
+        Some(lines)
+    }
     /// Every offset's caret from one walk of the glyphs: each glyph's
     /// cluster by where it starts, then each offset found among them (a
     /// caret each from the start would walk the text once per character).
@@ -843,6 +912,116 @@ mod visual_line_tests {
                 assert!((layout.caret_position(position).y - rect.y).abs() < 0.1);
             }
         }
+    }
+
+    /// Each line as `Scene::text_lines` worked them out one by one: its
+    /// range from `visual_line_range`, a caret a grapheme, its end's.
+    fn lines_one_by_one(layout: &ShapedText, text: &str) -> Vec<(Range<usize>, Vec<f32>)> {
+        let at = |byte, affinity| {
+            layout
+                .caret_position(TextPosition {
+                    byte_offset: byte,
+                    affinity,
+                })
+                .x
+        };
+        let mut lines = Vec::new();
+        let mut start = 0;
+        loop {
+            let (first, last) = layout.visual_line_range(TextPosition {
+                byte_offset: start,
+                affinity: TextAffinity::After,
+            });
+            let range = first.byte_offset.max(start)..last.byte_offset.max(start);
+            let mut carets: Vec<f32> = text[range.clone()]
+                .grapheme_indices(true)
+                .map(|(o, _)| at(range.start + o, TextAffinity::After))
+                .collect();
+            carets.push(at(range.end, TextAffinity::Before));
+            lines.push((range.clone(), carets));
+            let next = if text[range.end..].starts_with("\r\n") {
+                range.end + 2
+            } else if text[range.end..].starts_with(['\n', '\r']) {
+                range.end + 1
+            } else {
+                range.end
+            };
+            if next <= start || next > text.len() || (next == range.end && next >= text.len()) {
+                break;
+            }
+            start = next;
+        }
+        lines
+    }
+
+    #[test]
+    fn every_lines_carets_come_from_one_walk_as_they_did_line_by_line() {
+        let mut fonts = FontSystem::new();
+        // Unwrapped lines, as they were (one by one, a wrapped text's lines
+        // after its first were lost: their start sat at the first's end).
+        for (content, width) in [
+            ("first line\nsecond line\r\nthird", 400.),
+            ("abc אבג xyz אבג def", 400.),
+            ("אבגדהוזחטיכלמנסעפצקרשת", 400.),
+            ("e\u{301}x office words", 400.),
+        ] {
+            let layout = ShapedText::new(&mut fonts, content, 18., Some(width));
+            let fast = layout.line_carets(content).expect("one pass");
+            let slow = lines_one_by_one(&layout, content);
+            assert_eq!(
+                fast.len(),
+                slow.len(),
+                "{content:?}: lines {:?} vs {:?}",
+                fast.iter().map(|l| l.range.clone()).collect::<Vec<_>>(),
+                slow.iter().map(|l| l.0.clone()).collect::<Vec<_>>()
+            );
+            for (line, (range, carets)) in fast.iter().zip(&slow) {
+                assert_eq!(&line.range, range, "{content:?}");
+                assert_eq!(line.carets.len(), carets.len(), "{content:?} {range:?}");
+                for (a, b) in line.carets.iter().zip(carets) {
+                    assert!(
+                        (a - b).abs() < 0.01,
+                        "{content:?} {range:?}: {:?} not {carets:?}",
+                        line.carets
+                    );
+                }
+            }
+        }
+        // Wrapped: every row, in order, a caret a grapheme and its end.
+        for (content, width) in [
+            ("one two three four five six seven eight nine ten", 90.),
+            ("abc אבג xyz אבג def", 70.),
+        ] {
+            let layout = ShapedText::new(&mut fonts, content, 18., Some(width));
+            let lines = layout.line_carets(content).unwrap();
+            assert!(lines.len() > 1, "{content:?} wraps");
+            for pair in lines.windows(2) {
+                assert!(pair[0].range.end <= pair[1].range.start, "{content:?}");
+                assert!(pair[1].top > pair[0].top, "{content:?}: each row below");
+            }
+            for line in &lines {
+                let graphemes = content[line.range.clone()].graphemes(true).count();
+                assert_eq!(
+                    line.carets.len(),
+                    graphemes + 1,
+                    "{content:?} {:?}",
+                    line.range
+                );
+            }
+            assert_eq!(lines.last().unwrap().range.end, content.len());
+        }
+        // A long, wrapped text: its glyphs walked once.
+        let long = "a word ".repeat(1_500);
+        let layout = ShapedText::new(&mut fonts, long.as_str(), 14., Some(300.));
+        GLYPH_STEPS.with(|steps| steps.set(0));
+        let lines = layout.line_carets(&long).unwrap();
+        assert!(lines.len() > 100, "{} lines", lines.len());
+        let steps = GLYPH_STEPS.with(|steps| steps.get());
+        assert!(
+            steps <= 2 * long.len(),
+            "{steps} glyph steps for {} bytes",
+            long.len()
+        );
     }
 
     #[test]

@@ -3629,6 +3629,32 @@ impl Scene {
                 ),
                 _ => return None,
             };
+        // Every line in one pass where the shaper can (zgx-gpu's).
+        if let Some(lines) = layout.line_carets(&text) {
+            return Some(
+                lines
+                    .into_iter()
+                    .map(|line| {
+                        let carets: Vec<f32> =
+                            line.carets.into_iter().map(|x| bounds.x + x).collect();
+                        let (left, right) = carets
+                            .iter()
+                            .fold((f32::MAX, f32::MIN), |(l, r), x| (l.min(*x), r.max(*x)));
+                        TextLine {
+                            rtl: carets.len() > 1 && carets[0] > carets[carets.len() - 1],
+                            range: line.range,
+                            rect: Rect::new(
+                                left,
+                                bounds.y + line.top,
+                                (right - left).max(0.),
+                                line.height,
+                            ),
+                            carets,
+                        }
+                    })
+                    .collect(),
+            );
+        }
         let at = |byte, affinity| {
             layout.caret_position(TextPosition {
                 byte_offset: byte,
