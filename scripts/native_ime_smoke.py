@@ -81,7 +81,7 @@ def main():
         parser.error('Missing ibus-memconf; install the IBus package with its memory configuration service')
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'result.json').unlink(missing_ok=True)
-    xvfb = wm = bus = ime = app = None
+    xvfb = wm = bus = ime = app = xim = None
     snapshots = []
     with tempfile.TemporaryDirectory(prefix='zgx-native-ime-') as private:
         try:
@@ -112,7 +112,7 @@ def main():
                 wm = subprocess.Popen(['openbox'], env=env, stdout=log, stderr=log)
             wait_for_wm(env)
             with (args.output / 'ibus.log').open('w') as log:
-                ime = subprocess.Popen(['ibus-daemon', '--xim', '--replace', '--cache=none', '--emoji-extension=disable', '--config='+memconf, '--verbose'], env=env, stdout=log, stderr=log, start_new_session=True)
+                ime = subprocess.Popen(['ibus-daemon', '--replace', '--cache=none', '--emoji-extension=disable', '--config='+memconf, '--verbose'], env=env, stdout=log, stderr=log, start_new_session=True)
             deadline = time.monotonic()+10
             while True:
                 ready = subprocess.run(['ibus', 'list-engine'], env=env, capture_output=True, text=True)
@@ -121,6 +121,12 @@ def main():
                 if time.monotonic()>deadline or ime.poll() is not None:
                     raise RuntimeError('IBus failed: '+ready.stdout+ready.stderr)
                 time.sleep(.2)
+            # The XIM frontend started here, not by the daemon (`--xim`), its
+            # output and exit kept: #564's app hung on its way out in a
+            # round trip to it, and by then it had gone, how unknown.
+            xim_log = (args.output / 'ibus-x11.log').open('w')
+            xim = subprocess.Popen(['/usr/libexec/ibus-x11', '--kill-daemon'], env=env, stdout=xim_log, stderr=xim_log,
+                                   start_new_session=True)
             wait_for_ibus_xim(env)
             def xdo(*arguments):
                 return subprocess.check_output(['xdotool', *map(str,arguments)], env=env, text=True).strip()
@@ -258,6 +264,11 @@ def main():
             print('PASS: '+', '.join(result['checks']))
         finally:
             stop(app)
+            if xim:
+                # Still running (None), exited (its status) or killed (minus
+                # the signal), before anything here stops it.
+                (args.output / 'ibus-x11.log').open('a').write(f'\nibus-x11 status before cleanup: {xim.poll()}\n')
+                stop(xim)
             for owned in (ime,bus):
                 if owned:
                     try:os.killpg(owned.pid,signal.SIGTERM)
