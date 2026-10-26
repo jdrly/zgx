@@ -197,9 +197,6 @@ fn fill(input: FillInput) -> vec4<f32> {
 	return vec4<f32>(col, rim * (0.15 + 0.85 * head));
 }]])
 
--- Where the scene is: the window's size, once laid out (the agents land by it).
-local size = { w = 0, h = 0 }
-local view = ui.state("view", { w = 0, h = 0 })
 local started = false
 local leaving = false
 
@@ -238,16 +235,12 @@ local function agent(i: number, a: Agent): Node
 		id = `agent{i}`,
 		class = "agent",
 		absolute = true,
-		left = "50%",
-		top = 0,
+		left = `{50 + a.x * 100}%`,
+		top = `{a.y * 100}%`,
 		w = a.s,
 		h = a.s,
-		ml = function()
-			return a.x * (view:get()).w - a.s / 2
-		end,
-		mt = function()
-			return a.y * (view:get()).h - a.s / 2
-		end,
+		ml = -a.s / 2,
+		mt = -a.s / 2,
 		opacity = 0,
 		ui.column {
 			id = `drift{i}`,
@@ -451,10 +444,8 @@ return ui.overlay {
 	end,
 	-- The sequence starts once the window's size is known.
 	on_resize = function(s)
-		size.w, size.h = s.w, s.h
 		if not started and s.w > 0 and s.h > 0 then
 			started = true
-			view:set { w = s.w, h = s.h }
 			start(s.w, s.h)
 		end
 	end,
