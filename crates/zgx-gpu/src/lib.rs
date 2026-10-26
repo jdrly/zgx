@@ -3886,6 +3886,44 @@ impl GpuRenderer {
                     ),
                     _ => unreachable!("a plain box"),
                 }
+                // One quad, not culled whole (the usual box): its draw as
+                // `cull_on_cpu` and `push_draw` make it, written into place.
+                if let [quad] = quads[..]
+                    && quad.options[2] < 0.5
+                    && let rect = quad_rect(&quad)
+                    && let limit = snap_out(clip, self.scale)
+                    && !rect_outside(rect, limit)
+                {
+                    let kept_item = &mut kept.items[place];
+                    if kept_item.room == 0 || kept_item.draws.end - kept_item.draws.start != 1 {
+                        return false;
+                    }
+                    let at = kept_item.start as usize;
+                    kept.quads[at] = quad;
+                    // What a longer value left past this one's, emptied.
+                    if kept_item.len > 1 {
+                        kept.quads[at + 1..at + kept_item.len as usize]
+                            .fill(bytemuck::Zeroable::zeroed());
+                    }
+                    kept_item.len = 1;
+                    kept.draws[kept_item.draws.start as usize] = Draw {
+                        shading: match self.split_shading {
+                            true => shading(&quad, self.scale),
+                            false => Shading::Full,
+                        },
+                        layer: None,
+                        blur: None,
+                        start: at as u32,
+                        end: at as u32 + 1,
+                        clip: match rect_inside(rect, limit) {
+                            true => viewport,
+                            false => clip,
+                        },
+                        bounds: rect,
+                        image: None,
+                    };
+                    return true;
+                }
                 let (draw_clip, culled) = cull_on_cpu(quads, 0, clip, viewport, self.scale);
                 if !quads.is_empty() {
                     let draw = Draw {

@@ -217,9 +217,14 @@ fn a_window_keeps_a_frame_again_after_a_change_no_patch_makes() {
 }
 
 /// Boxes a frame patches alone (`patch_box`): a flat colour, translucent,
-/// edge-faded, bordered and rounded, and one sliding across a clip's edge
-/// (inside it, cut by it, then outside), each frame as drawn afresh.
-fn boxes(live: Signal<u32>) -> View {
+/// edge-faded, bordered and rounded, one sliding across a clip's edge
+/// (inside it, cut by it, then outside) and one swinging between inside
+/// it and cut by it, each frame as drawn afresh.
+/// `wide`: over a bar across the window under the clip, changing colour
+/// each frame, so that frames draw from the kept frame (damage over
+/// `KEPT_SHARE` of the window) where the clip cuts the sliding box.
+fn boxes(live: Signal<u32>, wide: bool) -> View {
+    let (bar, swing) = (live.clone(), live.clone());
     let shade = live.clone();
     let tint = live.clone();
     let slide = live.clone();
@@ -227,6 +232,15 @@ fn boxes(live: Signal<u32>) -> View {
     div()
         .size(SIZE.0, SIZE.1)
         .bg(Color(14, 18, 24, 255))
+        .child(
+            div()
+                .absolute()
+                .mt(95.)
+                .size(SIZE.0, if wide { 70. } else { 0. })
+                .reactive_style(move || {
+                    Styles::new().bg(Color(40, (bar.get() * 29 % 200) as u8, 70, 255))
+                }),
+        )
         .child(
             div()
                 .absolute()
@@ -291,19 +305,40 @@ fn boxes(live: Signal<u32>) -> View {
                         .reactive_style(move || {
                             Styles::new().ml(-70. + (slide.get() % 12) as f32 * 30.5)
                         }),
+                )
+                // And one going from inside it to cut by it and back
+                // (small enough to draw as one quad, `push_panel`).
+                .child(
+                    div()
+                        .absolute()
+                        .mt(20.)
+                        .size(40., 20.)
+                        .bg(Color(200, 120, 255, 255))
+                        .reactive_style(move || {
+                            Styles::new().ml(100. + (swing.get() % 4) as f32 * 25.5)
+                        }),
                 ),
         )
 }
 
 #[test]
 fn a_box_patched_alone_is_the_box_drawn_afresh() {
+    boxes_patched_alone(false);
+}
+
+#[test]
+fn a_box_patched_alone_and_drawn_from_the_kept_frame_is_the_box_drawn_afresh() {
+    boxes_patched_alone(true);
+}
+
+fn boxes_patched_alone(wide: bool) {
     let window = |live: u32| {
         let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
         gpu.set_scale_factor(2.);
         let mut ui = Ui::new(SIZE.0, SIZE.1);
         gpu.install_text(&mut ui.scene.borrow_mut());
         let state = ui.signal(live);
-        ui.mount(boxes(state.clone()));
+        ui.mount(boxes(state.clone(), wide));
         (ui, gpu, state)
     };
     let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
