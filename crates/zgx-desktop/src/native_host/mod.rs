@@ -87,6 +87,13 @@ pub(crate) struct NativeHost {
         allow(dead_code)
     )]
     input: zgx::input::InputDispatcher,
+    /// The window's zoom (`Ui::zoom`): native views are placed and drawn
+    /// at it.
+    #[cfg_attr(
+        not(any(target_os = "macos", all(windows, feature = "webview2"))),
+        allow(dead_code)
+    )]
+    zoom: f32,
     _waker: zgx::native_view::WakerGuard,
 }
 
@@ -123,6 +130,7 @@ impl NativeHost {
             pending: false,
             scene: Rc::downgrade(&ui.scene),
             input: ui.input.clone(),
+            zoom: 1.,
             _waker: zgx::native_view::set_waker(wake),
         }
     }
@@ -168,6 +176,18 @@ impl NativeHost {
             }
         }
         zgx_gpu::GpuRenderer::for_window_with_transparency(window, context, transparent)
+    }
+    /// The window zoomed to `zoom`: its native views follow at the next frame.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        if self.zoom == zoom {
+            return;
+        }
+        self.zoom = zoom;
+        #[cfg(any(target_os = "macos", all(windows, feature = "webview2")))]
+        if let Some(surfaces) = &self.surfaces {
+            surfaces.router().zoom.set(zoom);
+            self.pending = true;
+        }
     }
     /// Whether this window has native views to keep up (now or last frame).
     pub fn active(&self) -> bool {
@@ -260,6 +280,7 @@ impl NativeHost {
                 pointer: Default::default(),
                 #[cfg(target_os = "macos")]
                 unheard: Default::default(),
+                zoom: std::cell::Cell::new(self.zoom),
             };
             #[cfg(target_os = "macos")]
             let surfaces = macos::Surfaces::new(window, router);

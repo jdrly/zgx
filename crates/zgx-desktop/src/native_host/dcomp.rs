@@ -135,8 +135,15 @@ pub(crate) struct Router {
     pub natives: NativeViews,
     /// The pointer over native views (zgx's leave, pages' pointers).
     pub pointer: zgx::native_view::NativePointer,
+    /// The window's zoom: zgx's point is the display's scale times it in
+    /// pixels.
+    pub zoom: Cell<f32>,
 }
 impl Router {
+    /// Pixels to zgx's point in window `hwnd`.
+    fn scale(&self, hwnd: HWND) -> f32 {
+        scale_of(hwnd) * self.zoom.get()
+    }
     /// The pointer moved to window point `(x, y)`: what zgx hears.
     pub fn track(&self, x: f32, y: f32, held: bool) -> (PointerStep, PageReport) {
         let route = self.route(x, y);
@@ -194,7 +201,7 @@ impl Pointer {
         let Some(page) = self.router.page(node) else {
             return;
         };
-        let scale = scale_of(hwnd);
+        let scale = self.router.scale(hwnd);
         let origin = self
             .router
             .natives
@@ -231,7 +238,7 @@ impl Pointer {
     }
     /// Where the pointer at client point `(x, y)` goes.
     fn route(&self, hwnd: HWND, x: i32, y: i32) -> PointerRoute {
-        let scale = scale_of(hwnd);
+        let scale = self.router.scale(hwnd);
         self.router.route(x as f32 / scale, y as f32 / scale)
     }
     /// A window message, before winit: whether it was a page's (winit then
@@ -574,7 +581,7 @@ impl Surfaces {
         &self.pointer.router
     }
     fn scale(&self) -> f32 {
-        scale_of(self.hwnd)
+        self.pointer.router.scale(self.hwnd)
     }
     /// The overlay plane's renderer, presenting into a visual of its own
     /// (shown by `show_overlay`).

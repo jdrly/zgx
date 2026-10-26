@@ -161,6 +161,8 @@ fn after(_mtm: MainThreadMarker, seconds: f64, work: impl FnOnce() + 'static) {
 
 struct App {
     app: g::ghostty_app_t,
+    /// The configured font size, in points (0 if unread).
+    font_size: f32,
 }
 thread_local! {
     static APP: OnceCell<Option<App>> = const { OnceCell::new() };
@@ -171,6 +173,13 @@ static TICK_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn app() -> Option<g::ghostty_app_t> {
     APP.with(|cell| cell.get_or_init(App::new).as_ref().map(|app| app.app))
+}
+fn configured_font_size() -> f32 {
+    APP.with(|cell| {
+        cell.get()
+            .and_then(Option::as_ref)
+            .map_or(0., |app| app.font_size)
+    })
 }
 
 impl App {
@@ -183,8 +192,10 @@ impl App {
         // is a NUL-terminated `CString` alive for its call; the diagnostics'
         // messages are NUL-terminated strings the config owns, copied before
         // it goes. The callbacks match `ghostty_runtime_config_s`'s types and
-        // never dereference their userdata. `ghostty_app_new` copies the
-        // config (embedded.zig `App.init` clones it), so this one is freed.
+        // never dereference their userdata. `ghostty_config_get` writes the
+        // key's value, an f32 for `font-size`, to the pointer it is given.
+        // `ghostty_app_new` copies the config (embedded.zig `App.init`
+        // clones it), so this one is freed.
         unsafe {
             if g::ghostty_init(0, std::ptr::null_mut()) != g::GHOSTTY_SUCCESS as i32 {
                 eprintln!("zgx: ghostty_init failed");
@@ -223,6 +234,14 @@ impl App {
                 write_clipboard_cb: Some(write_clipboard),
                 close_surface_cb: Some(close_surface),
             };
+            let mut font_size = 0_f32;
+            let key = "font-size";
+            g::ghostty_config_get(
+                config,
+                (&mut font_size as *mut f32).cast(),
+                key.as_ptr().cast(),
+                key.len(),
+            );
             let app = g::ghostty_app_new(&runtime, config);
             // The app keeps its own copy.
             g::ghostty_config_free(config);
@@ -231,7 +250,7 @@ impl App {
                 return None;
             }
             g::ghostty_app_set_focus(app, true);
-            Some(Self { app })
+            Some(Self { app, font_size })
         }
     }
 }
@@ -2001,6 +2020,10 @@ fn replays_after_commit(event: &NSEvent) -> bool {
 /// A Ghostty surface in its view: the platform side of a `Terminal`.
 pub(crate) struct MacTerminal {
     view: Retained<TerminalView>,
+    /// Its font size at 100% (the terminal's own, or Ghostty's configured).
+    font_size: f32,
+    /// Its window's zoom, which its font follows.
+    zoom: Cell<f64>,
 }
 impl MacTerminal {
     fn new(term: &Terminal, mtm: MainThreadMarker) -> Option<Self> {
@@ -2069,10 +2092,30 @@ impl MacTerminal {
         unsafe { g::ghostty_surface_set_focus(surface, false) };
         refresh_process(surface as usize);
         view.scale_changed();
-        Some(Self { view })
+        let font_size = options
+            .font_size
+            .filter(|size| *size > 0.)
+            .unwrap_or_else(configured_font_size);
+        Some(Self {
+            view,
+            font_size,
+            zoom: Cell::new(1.),
+        })
     }
     pub fn view(&self) -> &NSView {
         &self.view
+    }
+    /// Its window zoomed to `zoom`: its font follows, so its cells grow as
+    /// a zoomed page's text does.
+    pub fn set_window_zoom(&self, zoom: f64) {
+        let surface = self.view.ivars().surface.get();
+        if surface.is_null() || self.font_size <= 0. || self.zoom.replace(zoom) == zoom {
+            return;
+        }
+        let action = format!("set_font_size:{}", f64::from(self.font_size) * zoom);
+        // SAFETY: non-null, so live (`free` nulls it first); main thread.
+        // Ghostty parses `len` bytes of `action`.
+        unsafe { g::ghostty_surface_binding_action(surface, action.as_ptr().cast(), action.len()) };
     }
     fn free(&self) {
         let surface = self.view.ivars().surface.replace(std::ptr::null_mut());

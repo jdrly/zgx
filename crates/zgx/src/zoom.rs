@@ -38,20 +38,12 @@ impl Ui {
             return;
         }
         let zoom = zoom.clamp(LEVELS[0], LEVELS[LEVELS.len() - 1]);
-        if zoom != self.zoom() && self.zoom_blocked() {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "zgx: the window stays at {:.0}%: it shows native views (web views, terminals), which do not zoom yet",
-                self.zoom() * 100.
-            );
-            return;
-        }
         if self.storage.zoom.replace(zoom) == zoom {
             return;
         }
-        let host = self.storage.zoom_host.borrow().clone();
-        if let Some(host) = host {
-            host();
+        let told = self.storage.zoom_host.borrow().clone();
+        for tell in told {
+            tell();
         }
     }
     /// One of Chrome's levels in: the next above the zoom.
@@ -88,21 +80,11 @@ impl Ui {
     pub fn zoomable(&self) -> bool {
         !self.storage.zoom_off.get()
     }
-    /// The window does not zoom while `blocked` says so: the host's, while
-    /// the window shows native views (web views, terminals), which do not
-    /// follow a zoom yet.
+    /// `told` each time the zoom changes: the host, to apply it; a script,
+    /// to show it.
     #[doc(hidden)]
-    pub fn zoom_blocked_by(&self, blocked: impl Fn() -> bool + 'static) {
-        *self.storage.zoom_blocked.borrow_mut() = Some(Rc::new(blocked));
-    }
-    fn zoom_blocked(&self) -> bool {
-        let blocked = self.storage.zoom_blocked.borrow().clone();
-        blocked.is_some_and(|blocked| blocked())
-    }
-    /// The host, told each time the zoom changes, to apply it.
-    #[doc(hidden)]
-    pub fn on_zoom(&self, apply: impl Fn() + 'static) {
-        *self.storage.zoom_host.borrow_mut() = Some(Rc::new(apply));
+    pub fn on_zoom(&self, told: impl Fn() + 'static) {
+        self.storage.zoom_host.borrow_mut().push(Rc::new(told));
     }
     /// What each scrolled view shows at its top, to keep there through a
     /// zoom (`restore_zoom_anchors`).
@@ -175,20 +157,18 @@ pub(crate) fn after_dispatch(ui: &Ui, event: &InputEvent) -> bool {
     if !modifiers.primary_shortcut()
         || modifiers.alt
         || !ui.zoomable()
-        || ui.storage.zoom_host.borrow().is_none()
+        || ui.storage.zoom_host.borrow().is_empty()
     {
         return false;
     }
     let Key::Character(key) = key else {
         return false;
     };
-    let zoom = ui.zoom();
     match key.as_str() {
         "=" | "+" => ui.zoom_in(),
         "-" | "_" => ui.zoom_out(),
         "0" if !modifiers.shift => ui.reset_zoom(),
         _ => return false,
     }
-    // Blocked (`zoom_blocked_by`), the keys go on.
-    ui.zoom() != zoom || !ui.zoom_blocked()
+    true
 }

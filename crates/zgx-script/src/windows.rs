@@ -107,6 +107,11 @@ impl Windows {
 /// `ui.window.controls` read.
 pub(crate) const TITLEBAR_AREA: &str = "zgx.window.titlebar_area";
 pub(crate) const CONTROLS: &str = "zgx.window.controls";
+/// The shared keys holding the app's window's zoom (1 at 100%) and whether
+/// its keys zoom it (`ScriptHost::window_zoom`): `ui.window.zoom` and
+/// `ui.window.zoomable`, which a script reads and sets.
+pub(crate) const ZOOM: &str = "zgx.window.zoom";
+pub(crate) const ZOOMABLE: &str = "zgx.window.zoomable";
 
 /// Installs `ui.window`: called, it declares a window; its
 /// `titlebar_area` and `controls` are the app's own window's.
@@ -127,6 +132,11 @@ pub(crate) fn install(
             State::new(shared.state(TITLEBAR_AREA, Value::Nil)),
         )?;
         window.set("controls", State::new(shared.state(CONTROLS, Value::Nil)))?;
+        window.set("zoom", State::new(shared.state(ZOOM, Value::Num(1.))))?;
+        window.set(
+            "zoomable",
+            State::new(shared.state(ZOOMABLE, Value::Bool(true))),
+        )?;
     }
     let meta = lua.create_table()?;
     meta.set(
