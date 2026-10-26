@@ -125,16 +125,21 @@ impl DamageGrid {
         }
     }
     fn mark(&mut self, rect: Rect) {
-        self.mark_cells(rect);
-        // One look a mark: `full` is then a comparison, asked as most
-        // damage is added (`damage_is_full`).
+        self.mark_span(self.span(rect));
+        self.passed_full();
+    }
+    /// Move `full_before` past the words marks filled: one look a mark, so
+    /// `full` is a comparison, asked as most damage is added
+    /// (`damage_is_full`).
+    #[inline(always)]
+    fn passed_full(&mut self) {
         while self.cells.get(self.full_before) == Some(&u64::MAX) {
             self.full_before += 1;
         }
     }
+    /// Mark the cells `span` (columns then rows, end exclusive) covers.
     #[inline(always)]
-    fn mark_cells(&mut self, rect: Rect) {
-        let (left, top, right, bottom) = self.span(rect);
+    fn mark_span(&mut self, (left, top, right, bottom): (usize, usize, usize, usize)) {
         if left >= right {
             return;
         }
@@ -159,6 +164,45 @@ impl DamageGrid {
                 *cell |= bits;
             }
         }
+    }
+    /// A moved leaf's two painted areas (`leaf_damage::<true>`), clipped but
+    /// not rounded, marked as `mark` would mark them rounded to whole
+    /// points: straight to cells, with no rounded rectangles, union or
+    /// second clip in between. Two spans sharing their extent along an axis
+    /// and overlapping are marked as one. The viewport is 1 to 2^22 points
+    /// on each axis (`Scene::grid_takes_cells`), where whole-point edges are
+    /// exact in f32; a far edge is rounded up before it is divided, so an
+    /// area thinner than a point still covers its cell.
+    #[inline(never)]
+    fn mark_clipped_pair(&mut self, before: Option<Rect>, after: Option<Rect>) {
+        let span = |rect: Rect| {
+            let first = |value: f32, count: usize| ((value / DAMAGE_CELL) as usize).min(count);
+            let end = |value: f32, count: usize| {
+                (value.ceil() as usize)
+                    .div_ceil(DAMAGE_CELL as usize)
+                    .min(count)
+            };
+            (
+                first(rect.x, self.columns),
+                first(rect.y, self.rows),
+                end(rect.x + rect.width, self.columns),
+                end(rect.y + rect.height, self.rows),
+            )
+        };
+        match (before.map(span), after.map(span)) {
+            (Some((l, t, r, b)), Some((ll, tt, rr, bb)))
+                if (l == ll && r == rr && t <= bb && tt <= b)
+                    || (t == tt && b == bb && l <= rr && ll <= r) =>
+            {
+                self.mark_span((l.min(ll), t.min(tt), r.max(rr), b.max(bb)));
+            }
+            (before, after) => {
+                for span in [before, after].into_iter().flatten() {
+                    self.mark_span(span);
+                }
+            }
+        }
+        self.passed_full();
     }
     fn touches(&self, rect: Rect) -> bool {
         let (left, top, right, bottom) = self.span(rect);
@@ -1979,6 +2023,10 @@ pub struct Scene {
     /// and again (before and after, then where layout moves it).
     recent_damage: [Rect; 4],
     damage_grid: Option<DamageGrid>,
+    /// Tests: every layout walk as list mode's (`arrange::<false>`), never
+    /// the grid's, to compare the two.
+    #[cfg(test)]
+    cells_off: bool,
     viewport: Rect,
     /// Roots of subtrees shown in popup windows of their own (`set_popup`),
     /// and those of them promoted for it (their layer revision counts
@@ -2177,6 +2225,8 @@ impl Scene {
             damage: Vec::new(),
             recent_damage: [Rect::default(); 4],
             damage_grid: None,
+            #[cfg(test)]
+            cells_off: false,
             viewport: Rect::new(0.0, 0.0, width, height),
             popups: Vec::new(),
             popup_anchors: Vec::new(),
@@ -4529,12 +4579,14 @@ impl Scene {
     /// What `damage_subtree_with` would add for leaf `id` (no children)
     /// where nothing is transformed or filtered, at its box `was` and at
     /// `now`, where layout places it: worked out together, from one look at
-    /// the node. Each is quantized as `add_damage` quantizes it: two such
+    /// the node. With `CELLS` (`arrange::<true>`: the grid takes cells,
+    /// `DamageGrid::mark_clipped_pair`) they are clipped but not rounded.
+    /// Otherwise each is quantized as `add_damage` quantizes it: two such
     /// areas sharing their extent along an axis and overlapping are,
     /// together, their union. `context`: its parent's, as
     /// `damage_subtree_with` keeps it. Out of line: `arrange` stays small.
     #[inline(never)]
-    fn leaf_damage(
+    fn leaf_damage<const CELLS: bool>(
         &self,
         id: NodeId,
         context: &mut Option<DamageContext>,
@@ -4561,15 +4613,16 @@ impl Scene {
         };
         let clips = clip_axes(&node.style) != (false, false);
         let past_clip = clips && matches!(node.kind, NodeKind::Quad(_) | NodeKind::Panel { .. });
-        let at =
-            |bounds| self.leaf_rect(id, node, bounds, transform, parent_clip, clips, past_clip);
+        let at = |bounds| {
+            self.leaf_rect::<CELLS>(id, node, bounds, transform, parent_clip, clips, past_clip)
+        };
         (at(was), at(now))
     }
     /// One of `leaf_damage`'s areas: leaf `id` at `bounds`, translated by
     /// `transform` within `parent_clip`. Inlined into it, twice.
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
-    fn leaf_rect(
+    fn leaf_rect<const CELLS: bool>(
         &self,
         id: NodeId,
         node: &Node,
@@ -4589,11 +4642,28 @@ impl Scene {
             false => clip,
         };
         let painted = self.painted_of(id, node, bounds, node.effects.blur_radius)?;
-        own.and_then(|clip| painted.intersection(clip))
-            .map(quantized)
+        let rect = own.and_then(|clip| painted.intersection(clip));
+        match CELLS {
+            true => rect,
+            false => rect.map(quantized),
+        }
     }
     fn add_damage(&mut self, rect: Rect) {
         self.add_damage_as::<false>(rect);
+    }
+    /// Whether moved leaves' damage can go to the grid as cells
+    /// (`DamageGrid::mark_clipped_pair`): with the grid active, in a
+    /// viewport of 1 to 2^22 points on each axis, where whole-point edges
+    /// are exact in f32. Asked as a layout walk starts (`arrange_from`):
+    /// the grid, once active, stays so until the frame's damage is taken.
+    fn grid_takes_cells(&self) -> bool {
+        #[cfg(test)]
+        if self.cells_off {
+            return false;
+        }
+        self.damage_grid.is_some()
+            && (1.0..=4_194_304.).contains(&self.viewport.width)
+            && (1.0..=4_194_304.).contains(&self.viewport.height)
     }
     /// A moved leaf's damage where it was and where it lands (`leaf_damage`).
     fn add_moved_leaf_damage(&mut self, before: Option<Rect>, after: Option<Rect>) {
@@ -6274,7 +6344,7 @@ impl Scene {
     /// `context`: where it is damaged when it moves, shared with its
     /// siblings (`damage_subtree_with`).
     #[allow(clippy::too_many_arguments)]
-    fn arrange(
+    fn arrange<const CELLS: bool>(
         &mut self,
         id: NodeId,
         x: f32,
@@ -6312,8 +6382,21 @@ impl Scene {
         // other damage comes between, and nothing it paints changes.
         match (damage, leaf) {
             (true, true) => {
-                let (before, after) = self.leaf_damage(id, context, self.node(id).bounds, bounds);
-                self.add_moved_leaf_damage(before, after);
+                let was = self.node(id).bounds;
+                let (before, after) = self.leaf_damage::<CELLS>(id, context, was, bounds);
+                match (CELLS, &mut self.damage_grid) {
+                    (false, _) => self.add_moved_leaf_damage(before, after),
+                    (true, Some(grid)) => grid.mark_clipped_pair(before, after),
+                    // The grid stays for the walk (`arrange_from`): never
+                    // reached, but damage as `add_damage` takes it. Not
+                    // `add_moved_leaf_damage`, which a second caller would
+                    // take out of `arrange::<false>`.
+                    (true, None) => {
+                        for rect in [before, after].into_iter().flatten() {
+                            self.add_damage(rect);
+                        }
+                    }
+                }
             }
             (true, false) => self.damage_subtree_with(id, context),
             _ => {}
@@ -6350,7 +6433,7 @@ impl Scene {
             crate::deep(level + 1, || {
                 let covered = covered || changed;
                 let (x, y) = (x + rect.x, y + rect.y);
-                self.arrange(child, x, y, report, covered, level + 1, &mut children)
+                self.arrange::<CELLS>(child, x, y, report, covered, level + 1, &mut children)
             });
         }
         if damage && !leaf {
@@ -6510,10 +6593,20 @@ impl Scene {
                     (None, Some(bottom)) => origin_y + height - bottom - m.bottom - h,
                     (None, None) => start.y + content.top + m.top,
                 };
-                self.arrange(id, x, y, report, false, 0, &mut None);
+                self.arrange_from(id, x, y, report);
             }
         }
         self.escaped = placed;
+    }
+    /// `arrange` from `id` at `x`, `y`, a layout walk's start: moved leaves'
+    /// damage goes to the grid as cells if it takes them now
+    /// (`grid_takes_cells`), otherwise as rounded rectangles all walk long,
+    /// a grid made meanwhile taking them as `add_damage` gives them.
+    fn arrange_from(&mut self, id: NodeId, x: f32, y: f32, report: &mut FrameReport) {
+        match self.grid_takes_cells() {
+            true => self.arrange::<true>(id, x, y, report, false, 0, &mut None),
+            false => self.arrange::<false>(id, x, y, report, false, 0, &mut None),
+        }
     }
     pub(crate) fn geometry_revision(&self) -> u64 {
         self.geometry_revision
@@ -6532,7 +6625,7 @@ impl Scene {
         let mut report = FrameReport::default();
         if self.node(self.root).dirty & LAYOUT != 0 {
             self.measure_full(self.root, Constraints::default());
-            self.arrange(self.root, 0.0, 0.0, &mut report, false, 0, &mut None);
+            self.arrange_from(self.root, 0.0, 0.0, &mut report);
         }
         // Boundaries under clean ancestors keep their place and size; lay out
         // just their subtrees, outermost first.
@@ -6563,11 +6656,11 @@ impl Scene {
                 continue;
             }
             let bounds = self.node(id).bounds;
-            self.arrange(id, bounds.x, bounds.y, &mut report, false, 0, &mut None);
+            self.arrange_from(id, bounds.x, bounds.y, &mut report);
         }
         if relayout_all && self.node(self.root).dirty & LAYOUT != 0 {
             self.measure_full(self.root, Constraints::default());
-            self.arrange(self.root, 0.0, 0.0, &mut report, false, 0, &mut None);
+            self.arrange_from(self.root, 0.0, 0.0, &mut report);
         }
         if !self.escaped.is_empty() {
             self.place_escaped(&mut report);
@@ -10056,6 +10149,67 @@ mod set_box_tests {
         scene.set_box(bar, &again, &mut kept);
         assert_eq!(scene.style(bar), again);
         assert_eq!(kept, Some(scene.node(bar).style_writes));
+    }
+}
+#[cfg(test)]
+mod grid_walk_tests {
+    use super::*;
+
+    /// A layout walk starting with the damage grid active gives it moved
+    /// leaves' damage as cells (`arrange::<true>`): the same damage as list
+    /// mode's walk (`arrange::<false>`) gives it as rounded rectangles, with leaves
+    /// at fractional places in a viewport of a fractional width.
+    #[test]
+    fn grid_and_list_walks_damage_alike() {
+        for (first, then) in [(0, 5), (3, 40), (10, 11)] {
+            let mut scenes = [Scene::new(200.5, 4_000.25), Scene::new(200.5, 4_000.25)];
+            scenes[1].cells_off = true;
+            let laid = scenes.each_mut().map(|scene| {
+                // Its own size fixed: a row growing moves the rows after it,
+                // as leaves, not the column.
+                let column = scene.append(
+                    scene.root(),
+                    NodeKind::Container(Layout::Column),
+                    Style {
+                        width: Some(200.),
+                        height: Some(3_900.),
+                        ..Default::default()
+                    },
+                );
+                let rows: Vec<_> = (0..120)
+                    .map(|i| {
+                        let style = Style {
+                            width: Some(20. + (i % 7) as f32 * 13.3),
+                            height: Some(10.3 + (i % 3) as f32 * 0.35),
+                            // Apart: each moved row's damage is its own.
+                            margin: Insets {
+                                top: 20.,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        };
+                        scene.append(column, NodeKind::Rect(Color(1, 2, 3, 255)), style)
+                    })
+                    .collect();
+                scene.flush();
+                let grow = |scene: &mut Scene, id: NodeId, height: f32| {
+                    let mut style = scene.style(id).clone();
+                    style.height = Some(height);
+                    scene.set_style(id, style);
+                };
+                // More moved leaves than the list holds: the grid takes over.
+                grow(scene, rows[first], 17.6);
+                scene.prepare_layout();
+                assert!(scene.damage_grid.is_some());
+                // This walk starts with the grid active.
+                grow(scene, rows[then], 3.45);
+                scene.prepare_layout();
+                let report = scene.flush();
+                let bounds: Vec<_> = rows.iter().map(|id| scene.bounds(*id)).collect();
+                (report.damage, report.layout_nodes, bounds)
+            });
+            assert_eq!(laid[0], laid[1], "rows {first} then {then}");
+        }
     }
 }
 #[cfg(test)]
