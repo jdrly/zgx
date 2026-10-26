@@ -3753,18 +3753,16 @@ impl Host {
             self.sync_accessibility();
         }
         // A timed interaction due (a drag resting on a destination long
-        // enough to spring it open, a key sequence timing out): the event
-        // loop woke for it, and a frame runs it (`Ui::advance_interactions`),
-        // the pointer still or not.
-        if self
+        // enough to spring it open, a key sequence timing out, a caret
+        // blinking): the event loop woke for it, and a frame runs it
+        // (`Ui::advance_interactions`) below, as input draws at once, paced
+        // or not. Not a redraw request: elsewhere than macOS that repaints
+        // the whole window.
+        let due = self
             .context
             .ui
             .next_interaction_deadline()
-            .is_some_and(|at| at <= std::time::Instant::now())
-            && let Some(window) = &self.window
-        {
-            window.request_redraw();
-        }
+            .is_some_and(|at| at <= std::time::Instant::now());
         if self.scroll.pending() {
             // Each refresh applies the motion due by then; with no refreshes
             // coming (hidden, minimized), everything applies at once.
@@ -3868,7 +3866,7 @@ impl Host {
         #[cfg(not(any(target_os = "macos", windows)))]
         let paced = false;
         // Scene damage accumulates until the refresh paints it in one frame.
-        if !paced || self.frame_arrived || self.force {
+        if !paced || due || self.frame_arrived || self.force {
             self.frame_arrived = false;
             self.draw()?;
         }
