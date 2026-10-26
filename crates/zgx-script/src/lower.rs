@@ -73,6 +73,21 @@ impl Assets {
         let version = self.hosted(&src, runtime);
         version.update(|v| *v = v.wrapping_add(1));
     }
+    /// Whether the host set image `host:<name>`.
+    pub(crate) fn is_hosted(&self, name: &str) -> bool {
+        self.images.borrow().contains_key(&format!("host:{name}"))
+    }
+    /// Forget image `host:<name>` and its version, for good (what showed it
+    /// keeps its picture).
+    fn forget_hosted(&self, name: &str) {
+        let src = format!("host:{name}");
+        if let Ok(mut images) = self.images.try_borrow_mut() {
+            images.remove(&src);
+        }
+        if let Ok(mut hosted) = self.hosted.try_borrow_mut() {
+            hosted.remove(&src);
+        }
+    }
     pub(crate) fn connect(
         &self,
         timers: Rc<crate::timers::Timers>,
@@ -3719,6 +3734,18 @@ fn picture_of(src: &Owned, vm: &Vm) -> Option<Picture> {
             Some(Lit::Str(path)) => Some(Picture::Path(path)),
             _ => None,
         },
+    }
+}
+
+/// A picture a script took (`el:snapshot`, `term:snapshot`), as `host:<name>`
+/// while it is held: forgotten as it drops (its element's node goes, its
+/// terminal closes), so pictures of what is gone are not kept.
+pub(crate) struct HostedPicture(pub std::rc::Weak<Assets>, pub String);
+impl Drop for HostedPicture {
+    fn drop(&mut self) {
+        if let Some(assets) = self.0.upgrade() {
+            assets.forget_hosted(&self.1);
+        }
     }
 }
 

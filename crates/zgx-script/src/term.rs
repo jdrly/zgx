@@ -48,6 +48,8 @@ struct Entry {
     handlers: Rc<RefCell<Handlers>>,
     fields: Rc<Fields>,
     _subscription: TerminalSubscription,
+    /// Its picture (`term:snapshot`), forgotten as it closes.
+    picture: RefCell<Option<crate::lower::HostedPicture>>,
 }
 
 /// The fields of a session's state scripts read, each its own signal: a
@@ -149,9 +151,16 @@ impl Terms {
                 handlers,
                 fields: fields.clone(),
                 _subscription: subscription,
+                picture: RefCell::default(),
             },
         );
         Ok((term, fields))
+    }
+    /// Keep `picture` of session `id` until it closes.
+    fn hold_picture(&self, id: &str, picture: impl FnOnce() -> crate::lower::HostedPicture) {
+        if let Some(entry) = self.entries.borrow().get(id) {
+            entry.picture.borrow_mut().get_or_insert_with(picture);
+        }
     }
     fn remove(&self, id: &str) {
         let entry = self.entries.borrow_mut().remove(id);
@@ -314,8 +323,14 @@ impl UserData for TermUd {
             let Some(image) = t.term.snapshot(max_width.unwrap_or(480)) else {
                 return Ok(None);
             };
+            let env = crate::node::env(lua)?;
             let name = format!("zgx.term:{}", t.id);
-            Ok(Some(crate::node::env(lua)?.host_image(&name, image)))
+            if let Some(terms) = t.terms.upgrade() {
+                terms.hold_picture(&t.id, || {
+                    crate::lower::HostedPicture(Rc::downgrade(&env.assets), name.clone())
+                });
+            }
+            Ok(Some(env.host_image(&name, image)))
         });
         methods.add_method("focus", |_, t, ()| {
             t.term.focus();

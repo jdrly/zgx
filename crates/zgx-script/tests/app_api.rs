@@ -648,6 +648,91 @@ fn an_elements_snapshot_is_the_hosts_picture_of_its_box() {
     );
 }
 
+/// A picture of an element goes with its node: the host keeps none of what
+/// is gone.
+#[test]
+fn an_elements_snapshot_goes_with_its_node() {
+    let mut h = Harness::inline(
+        r##"local card = ui.ref()
+        local src = ui.state("src", "none")
+        local open = ui.state("open", true)
+        local look = ui.state("look", false)
+        return ui.column {
+            ui.show(open, ui.div { ref = card, w = 60, h = 30 }),
+            ui.button { id = "take", w = 20, h = 20, on_click = function()
+                src:set(card:get():snapshot(100) or "none")
+            end },
+            ui.button { id = "close", w = 20, h = 20, on_click = function() open:set(false) end },
+            ui.button { id = "look", w = 20, h = 20, on_click = function() look:set(true) end },
+            ui.show(look, ui.image { id = "picture", w = 40, h = 20, src = function()
+                return src:get()
+            end }),
+        }"##,
+    );
+    h.ui.on_snapshot(|rect, _| {
+        let (w, h) = (rect.width as u32, rect.height as u32);
+        zgx::image::ImageData::new(w, h, vec![255; (w * h * 4) as usize])
+            .ok()
+            .map(std::sync::Arc::new)
+    });
+    h.click("take");
+    h.settle();
+    h.click("close");
+    h.settle();
+    h.click("look");
+    h.settle();
+    let node = h.find("picture").unwrap();
+    let scene = h.ui.scene.borrow();
+    let mut stack = vec![node];
+    let mut found = None;
+    while let Some(n) = stack.pop() {
+        if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+            found = Some((image.width(), image.height()));
+        }
+        stack.extend(scene.children(n).iter().copied());
+    }
+    assert_eq!(found, Some((1, 1)), "its picture went with it");
+}
+
+/// A terminal's picture goes as it closes.
+#[test]
+fn a_terminals_snapshot_goes_as_it_closes() {
+    let mut h = Harness::inline(
+        r##"local term = ui.term("p1")
+        local src = ui.state("src", "none")
+        local look = ui.state("look", false)
+        return ui.column {
+            ui.terminal { term = term, w = 200, h = 100 },
+            ui.button { id = "take", w = 20, h = 20, on_click = function()
+                src:set(term:snapshot(120) or "none")
+            end },
+            ui.button { id = "close", w = 20, h = 20, on_click = function() term:close() end },
+            ui.button { id = "look", w = 20, h = 20, on_click = function() look:set(true) end },
+            ui.show(look, ui.image { id = "picture", w = 40, h = 20, src = function()
+                return src:get()
+            end }),
+        }"##,
+    );
+    terminal(&mut h).attach(std::rc::Rc::new(Pictured));
+    h.click("take");
+    h.settle();
+    h.click("close");
+    h.settle();
+    h.click("look");
+    h.settle();
+    let node = h.find("picture").unwrap();
+    let scene = h.ui.scene.borrow();
+    let mut stack = vec![node];
+    let mut found = None;
+    while let Some(n) = stack.pop() {
+        if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+            found = Some((image.width(), image.height()));
+        }
+        stack.extend(scene.children(n).iter().copied());
+    }
+    assert_eq!(found, Some((1, 1)), "its picture went as it closed");
+}
+
 #[test]
 fn a_terminals_snapshot_shows_in_an_image() {
     let mut h = Harness::inline(
