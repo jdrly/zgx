@@ -376,6 +376,7 @@ pub(crate) fn mount_links(
         node: NodeId,
         fragments: Rc<RefCell<Vec<NodeId>>>,
         action: Rc<RefCell<LinkTarget>>,
+        /// Focused and showing it (`:focus-visible`).
         focus: Rc<Cell<bool>>,
         hover: Rc<Cell<bool>>,
         /// Its Open Link and Copy Link menu is mounted.
@@ -549,7 +550,21 @@ pub(crate) fn mount_links(
                             cx.prevent_default();
                             return;
                         }
-                        InputEvent::Focus => focused.set(true),
+                        // Its ring as a browser's `:focus-visible`: focused
+                        // from the keyboard, not by a click, until a key
+                        // (not a shortcut) is pressed on it.
+                        InputEvent::Focus => focused.set(
+                            weak.upgrade()
+                                .is_some_and(|ui| ui.input.focus_visible_now()),
+                        ),
+                        InputEvent::KeyDown { modifiers, .. }
+                            if !focused.get()
+                                && !modifiers.meta
+                                && !modifiers.control
+                                && !modifiers.alt =>
+                        {
+                            focused.set(true)
+                        }
                         InputEvent::Blur => focused.set(false),
                         InputEvent::PointerEnter => {
                             hovered.set(true);

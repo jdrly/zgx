@@ -11,6 +11,7 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 
 ### Fixed
 
+- A rich-text link shows its focus ring when focused from the keyboard, as a browser's `:focus-visible` does, not after a click on it (a key pressed on it then shows it, as for any control).
 - A `display: none` node's children report a 0x0 box (`Scene::bounds`, `on_resize`, `zgx inspect`), as the node itself did and as CSS gives them: they reported their content's size at no width. They are no longer measured again each time their parent lays out.
 
 ## 0.1.2 (2026-10-26)
