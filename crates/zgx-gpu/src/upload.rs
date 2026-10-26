@@ -13,7 +13,7 @@
 //! cost NVIDIA's driver and wgpu some 40 K cycles).
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Buffers kept for reuse; more are only allocated while all are in flight.
@@ -28,6 +28,11 @@ struct Slot {
     mapped: Arc<AtomicBool>,
     /// Written for the coming submission; released once it completes.
     remap: bool,
+    /// Written in place with a kept frame's quads first (`write_kept`):
+    /// which (`KeptQuads::generation`), as of which patch, and how many
+    /// bytes of them. A slot made again (grown, replaced, trimmed) holds
+    /// none.
+    holds: Option<(u64, u64, usize)>,
     /// macOS: the buffer's memory, written in place.
     #[cfg(target_os = "macos")]
     contents: std::ptr::NonNull<u8>,
@@ -56,8 +61,51 @@ pub(crate) struct MappedRing {
     queue: wgpu::Queue,
     slots: Vec<Slot>,
     /// The slot `write` filled last.
-    #[cfg(target_os = "macos")]
     last: usize,
+}
+/// Kept frames told apart (`KeptQuads::generation`); 0 is none.
+static GENERATIONS: AtomicU64 = AtomicU64::new(1);
+/// Patches a kept frame remembers the writes of (`KeptQuads`).
+const CHANGES: usize = 8;
+/// What a kept frame's quads (lib.rs `Kept`: a window drawn whole, then
+/// patched) have had written by its recent patches, so that a buffer
+/// still holding them takes only what changed since (`write_kept`).
+#[derive(Default)]
+pub(crate) struct KeptQuads {
+    /// Which kept frame: unique, or 0 for none.
+    generation: u64,
+    /// Patches since it was made.
+    version: u64,
+    /// The quads each of the last `CHANGES` patches wrote, oldest first.
+    changes: std::collections::VecDeque<(u64, Vec<(u32, u32)>)>,
+}
+impl KeptQuads {
+    pub(crate) fn new() -> Self {
+        Self {
+            generation: GENERATIONS.fetch_add(1, Ordering::Relaxed),
+            ..Default::default()
+        }
+    }
+    /// A patch begins: what it writes counts as one version.
+    pub(crate) fn patch(&mut self) {
+        self.version += 1;
+        let mut wrote = match self.changes.len() == CHANGES {
+            true => self.changes.pop_front().map(|(_, wrote)| wrote).unwrap_or_default(),
+            false => Vec::new(),
+        };
+        wrote.clear();
+        self.changes.push_back((self.version, wrote));
+    }
+    /// This patch wrote quads `start..end`.
+    pub(crate) fn wrote(&mut self, start: u32, end: u32) {
+        if let Some((_, wrote)) = self.changes.back_mut() {
+            wrote.push((start, end));
+        }
+    }
+    /// Its quads moved (a splice): no buffer holds them as they are now.
+    pub(crate) fn moved(&mut self) {
+        *self = Self::new();
+    }
 }
 impl MappedRing {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
@@ -65,7 +113,6 @@ impl MappedRing {
             device: device.clone(),
             queue: queue.clone(),
             slots: Vec::new(),
-            #[cfg(target_os = "macos")]
             last: 0,
         }
     }
@@ -134,11 +181,83 @@ impl MappedRing {
         }
         slot.mapped.store(false, Ordering::Release);
         slot.remap = true;
-        #[cfg(target_os = "macos")]
-        {
-            self.last = index;
-        }
+        slot.holds = None;
+        self.last = index;
         (slot.buffer.clone(), allocated)
+    }
+    /// `write_parts`, where `parts[0]` begins with `kept_bytes` of kept
+    /// frame `kept`'s quads (`unit` bytes each): into a ready buffer still
+    /// holding them as of a patch `kept` remembers, only the quads written
+    /// since and what follows them; otherwise all of it, the buffer then
+    /// holding them. The buffer's bytes are those `write_parts` writes.
+    pub(crate) fn write_kept(
+        &mut self,
+        parts: &[&[u8]],
+        kept: &KeptQuads,
+        kept_bytes: usize,
+        unit: usize,
+    ) -> (wgpu::Buffer, bool) {
+        let len = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+        // (Versions after the first remembered one's predecessor are known.)
+        let known = kept.changes.front().map_or(kept.version, |(first, _)| first - 1);
+        let holding = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| {
+                slot.capacity >= len
+                    && slot.in_place().is_some()
+                    && slot.mapped.load(Ordering::Acquire)
+                    && slot.holds.is_some_and(|(generation, version, bytes)| {
+                        kept.generation != 0
+                            && generation == kept.generation
+                            && (known..=kept.version).contains(&version)
+                            && bytes == kept_bytes
+                    })
+            })
+            .max_by_key(|(_, slot)| slot.holds.map(|(_, version, _)| version))
+            .map(|(index, _)| index);
+        let (Some(index), Some(quads)) = (holding, parts.first()) else {
+            let written = self.write_parts(parts);
+            let slot = &mut self.slots[self.last];
+            if kept.generation != 0 && slot.in_place().is_some() {
+                slot.holds = Some((kept.generation, kept.version, kept_bytes));
+            }
+            return written;
+        };
+        let slot = &mut self.slots[index];
+        let contents = slot.in_place().expect("written in place");
+        let since = slot.holds.map_or(0, |(_, version, _)| version);
+        let copy = |from: usize, bytes: &[u8]| {
+            // SAFETY: As `write_parts`: `contents` is the buffer's memory,
+            // `capacity` bytes, at least `len`, and every write lies within
+            // the parts' `len` bytes; the slot is ready (no submission
+            // still reads it).
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    contents.as_ptr().add(from),
+                    bytes.len(),
+                )
+            };
+        };
+        for (_, wrote) in kept.changes.iter().filter(|(version, _)| *version > since) {
+            for &(start, end) in wrote {
+                let (from, to) = (start as usize * unit, end as usize * unit);
+                copy(from, &quads[from..to.min(kept_bytes)]);
+            }
+        }
+        copy(kept_bytes, &quads[kept_bytes..]);
+        let mut at = quads.len();
+        for part in &parts[1..] {
+            copy(at, part);
+            at += part.len();
+        }
+        slot.mapped.store(false, Ordering::Release);
+        slot.remap = true;
+        slot.holds = Some((kept.generation, kept.version, kept_bytes));
+        self.last = index;
+        (slot.buffer.clone(), false)
     }
     /// The Metal buffer `write` filled last.
     #[cfg(target_os = "macos")]
@@ -191,6 +310,7 @@ impl MappedRing {
             capacity,
             mapped: Arc::new(AtomicBool::new(true)),
             remap: false,
+            holds: None,
             contents,
             metal,
         }
@@ -218,6 +338,7 @@ impl MappedRing {
             capacity,
             mapped: Arc::new(AtomicBool::new(true)),
             remap: false,
+            holds: None,
             #[cfg(windows)]
             contents,
         }

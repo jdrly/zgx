@@ -833,6 +833,9 @@ struct Kept {
     background: Color,
     /// Whether a frame has patched it yet.
     patched: bool,
+    /// What its quads' patches wrote, for a vertex buffer still holding
+    /// them to take only that (`MappedRing::write_kept`).
+    upload: upload::KeptQuads,
 }
 /// What `render_flat` makes: a frame (`FRAME`, or the kept frame when
 /// `draw_made`), or items' quads and draws alone, with where each
@@ -2253,6 +2256,9 @@ pub struct GpuRenderer {
     /// their room.
     box_quads: Vec<Quad>,
     box_draws: Vec<Draw>,
+    /// While a frame draws from the kept frame: what its quads' patches
+    /// wrote, and their bytes, leading the frame's (`render_kept`).
+    kept_upload: Option<(upload::KeptQuads, usize)>,
     /// Whether the frame's quads, draws, polyline points and clips
     /// (`patch_clips`) are made already, for the next frame to draw as
     /// they are.
@@ -2721,6 +2727,7 @@ impl GpuRenderer {
             item_ranges: Vec::new(),
             patch_clips: Vec::new(),
             box_quads: Vec::new(),
+            kept_upload: None,
             box_draws: Vec::new(),
             draw_made: false,
             frame_draws: Vec::new(),
@@ -3695,6 +3702,7 @@ impl GpuRenderer {
             scale: self.scale,
             background: self.background,
             patched: false,
+            upload: upload::KeptQuads::new(),
         }));
         Ok(drawn)
     }
@@ -3737,6 +3745,8 @@ impl GpuRenderer {
         {
             return Ok(self.recycle_kept(*kept));
         }
+        // (What this frame's patches write counts as one version of it.)
+        kept.upload.patch();
         // The repainted items, worked out alone from what they inherited,
         // with their places: only leaves, painting as many items as before
         // (a box painting over what it holds has a border pass after it).
@@ -3907,6 +3917,7 @@ impl GpuRenderer {
         if fits {
             for (&(start, len, _, first, end), &place) in ranges.iter().zip(&places) {
                 let item = &mut kept.items[place];
+                kept.upload.wrote(item.start, item.start + item.room);
                 let (at, made) = (item.start as usize, len as usize);
                 kept.quads[at..at + made]
                     .copy_from_slice(&self.frame_quads[start as usize..(start + len) as usize]);
@@ -3943,6 +3954,7 @@ impl GpuRenderer {
         if !splices.is_empty() {
             match self.splice(scene, &mut kept, &splices, viewport)? {
                 Some(made) => {
+                    kept.upload.moved();
                     stats.add_made(&made);
                     stats.patched_items += made.patched_items;
                 }
@@ -3971,8 +3983,12 @@ impl GpuRenderer {
         self.patch_clips.clone_from(&kept.clips);
         self.frame_points.clear();
         self.draw_made = true;
+        // Its quads lead the frame's: a vertex buffer still holding them
+        // takes only what was written since.
+        self.kept_upload = Some((std::mem::take(&mut kept.upload), len * size_of::<Quad>()));
         let drawn =
             self.render_flat::<FRAME>(scene, Vec::new(), damage, Some(regions.to_vec()), false);
+        kept.upload = self.kept_upload.take().map(|(upload, _)| upload).unwrap_or_default();
         std::mem::swap(&mut self.frame_quads, &mut kept.quads);
         kept.quads.truncate(len);
         let mut drawn = drawn?;
@@ -4036,6 +4052,7 @@ impl GpuRenderer {
             return false;
         }
         kept.quads[at] = quad;
+        kept.upload.wrote(at as u32, at as u32 + 1);
         let draw = &mut kept.draws[kept_item.draws.start as usize];
         draw.shading = match self.split_shading {
             true => shading(&quad, self.scale),
@@ -4109,6 +4126,7 @@ impl GpuRenderer {
                     if kept_item.room == 0 || kept_item.draws.end - kept_item.draws.start != 1 {
                         return false;
                     }
+                    kept.upload.wrote(kept_item.start, kept_item.start + kept_item.room);
                     let at = kept_item.start as usize;
                     kept.quads[at] = quad;
                     // What a longer value left past this one's, emptied.
@@ -4165,6 +4183,7 @@ impl GpuRenderer {
         {
             return false;
         }
+        kept.upload.wrote(kept_item.start, kept_item.start + kept_item.room);
         let at = kept_item.start as usize;
         kept.quads[at..at + quads.len()].copy_from_slice(quads);
         // What a longer value left past this one's, emptied.
@@ -5841,7 +5860,13 @@ impl GpuRenderer {
         let needed = bytes.len() + records.len();
         let vertices = if let Some(mapped) = &mut self.mapped {
             let mapped = mapped.get_mut();
-            let (vertices, allocated) = mapped.write_parts(&[bytes, &records]);
+            let parts = [bytes, &records];
+            let (vertices, allocated) = match &self.kept_upload {
+                Some((kept, kept_bytes)) => {
+                    mapped.write_kept(&parts, kept, *kept_bytes, size_of::<Quad>())
+                }
+                None => mapped.write_parts(&parts),
+            };
             stats.vertex_buffer_allocations += usize::from(allocated);
             self.vertex_capacity = mapped.bytes();
             vertices
@@ -6078,7 +6103,10 @@ impl GpuRenderer {
                 bytemuck::cast_slice(&quads),
                 points.map_or(&[][..], bytemuck::cast_slice),
             ];
-            let (_, allocated) = mapped.write_parts(&parts);
+            let (_, allocated) = match &self.kept_upload {
+                Some((kept, bytes)) => mapped.write_kept(&parts, kept, *bytes, size_of::<Quad>()),
+                None => mapped.write_parts(&parts),
+            };
             stats.vertex_buffer_allocations += usize::from(allocated);
             self.vertex_capacity = mapped.bytes();
             mapped.last_metal().retain()
