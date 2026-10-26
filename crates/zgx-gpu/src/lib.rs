@@ -145,8 +145,11 @@ pub struct DebugCacheStats {
     pub canvas_raster_bytes: usize,
     /// Bytes of rasterized SVGs.
     pub svg_raster_bytes: usize,
-    /// The vertex buffer's bytes.
+    /// The vertex buffer's bytes (all of the ring's, `vertex_buffers`).
     pub vertex_buffer_bytes: usize,
+    /// Vertex buffers held: one with a staging copy; up to four with
+    /// vertices written in place, a ring of buffers in flight.
+    pub vertex_buffers: usize,
     /// Cached layer textures.
     pub layer_textures: usize,
     /// Their bytes.
@@ -1589,6 +1592,7 @@ struct Prepared {
     viewport_layout: wgpu::BindGroupLayout,
     quad_layout: wgpu::PipelineLayout,
     mapped_uploads: bool,
+    vertex_ring: bool,
 }
 /// A `GpuContext` being made on another thread (`GpuContext::prepare_in_background`).
 pub struct PendingGpuContext(Option<std::thread::JoinHandle<Result<Prepared, GpuError>>>);
@@ -1627,8 +1631,12 @@ struct GpuContextInner {
     /// Bind group layouts of the quad pipelines: texture and sampler, viewport.
     texture_layout: wgpu::BindGroupLayout,
     viewport_layout: wgpu::BindGroupLayout,
-    /// Vertex and small uniform uploads are CPU-mapped instead of copied.
+    /// Vertex and small uniform uploads are CPU-mapped instead of copied
+    /// (memory the CPU and GPU share).
     mapped_uploads: bool,
+    /// Per-frame vertices are CPU-written in a ring of buffers the GPU reads
+    /// (`upload::MappedRing`): with unified memory, and on Direct3D 12.
+    vertex_ring: bool,
     /// For dual-output (single-pass presentation) pipelines.
     quad_layout: wgpu::PipelineLayout,
 }
@@ -1747,14 +1755,21 @@ impl GpuContext {
         let info = adapter.get_info();
         // CPU-written vertex buffers avoid a GPU copy per frame; only worth it
         // where CPU and GPU share memory.
-        let mapped_uploads = info.device_type == wgpu::DeviceType::IntegratedGpu
-            && adapter
-                .features()
-                .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
+        let mappable = adapter
+            .features()
+            .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
+        let mapped_uploads = info.device_type == wgpu::DeviceType::IntegratedGpu && mappable;
+        // Direct3D 12 also takes vertices written in place, in upload-heap
+        // buffers the GPU reads directly (as Direct3D 11's dynamic buffers
+        // are): a frame then needs no staging copy, and no command list for
+        // it, each of which costs NVIDIA's driver some 30 K cycles. Measured
+        // on an RTX 4090: 0.7 to 3.3% fewer cycles a frame, the GPU's time
+        // the same. Textures and uniforms keep their copies.
+        let vertex_ring = mappable && (mapped_uploads || info.backend == wgpu::Backend::Dx12);
         zgx::profile::mark("GPU adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zgx shared device"),
-            required_features: if mapped_uploads {
+            required_features: if vertex_ring {
                 wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
             } else {
                 wgpu::Features::empty()
@@ -1840,6 +1855,7 @@ impl GpuContext {
             viewport_layout,
             quad_layout,
             mapped_uploads,
+            vertex_ring,
         })
     }
     /// The context of what `prepare` made, on the thread that uses it.
@@ -1856,6 +1872,7 @@ impl GpuContext {
             viewport_layout,
             quad_layout,
             mapped_uploads,
+            vertex_ring,
         } = prepared;
         let quads = QuadPipelines {
             device: device.clone(),
@@ -1884,6 +1901,7 @@ impl GpuContext {
                 viewport_layout,
                 quad_layout,
                 mapped_uploads,
+                vertex_ring,
             }),
         }
     }
@@ -1963,8 +1981,12 @@ pub struct GpuRenderer {
     /// Reused upload memory for per-frame vertices; `write_buffer` would
     /// allocate and free a staging buffer every frame.
     belt: RefCell<wgpu::util::StagingBelt>,
-    /// Replaces the belt on unified-memory adapters.
+    /// Replaces the belt for vertices on unified-memory adapters and on
+    /// Direct3D 12.
     mapped: Option<RefCell<upload::MappedRing>>,
+    /// The CPU and GPU share memory: textures and small uniforms are written
+    /// in place too (`texture_uploads`), not copied.
+    unified: bool,
     /// Texture writes awaiting the next render's upload passes (mapped adapters).
     texture_uploads: upload::TextureUploads,
     instance: wgpu::Instance,
@@ -2473,8 +2495,9 @@ impl GpuRenderer {
             belt: RefCell::new(wgpu::util::StagingBelt::new(device.clone(), 256 * 1024)),
             mapped: context
                 .inner
-                .mapped_uploads
+                .vertex_ring
                 .then(|| RefCell::new(upload::MappedRing::new(&device, &queue))),
+            unified: context.inner.mapped_uploads,
             texture_uploads: Default::default(),
             instance,
             window,
@@ -2605,6 +2628,7 @@ impl GpuRenderer {
             canvas_raster_bytes: self.canvases.bytes(),
             svg_raster_bytes: self.svgs.bytes(),
             vertex_buffer_bytes: self.vertex_capacity,
+            vertex_buffers: self.mapped.as_ref().map_or(1, |ring| ring.borrow().len()),
             layer_textures: self.layers.len(),
             layer_bytes: self.layers.values().map(|l| l.bytes).sum(),
         }
@@ -3264,7 +3288,7 @@ impl GpuRenderer {
             }
             let buffer = upload::init_buffer(
                 &self.device,
-                self.mapped.is_some(),
+                self.unified,
                 "viewport",
                 // Logical size, and device pixels per logical pixel.
                 bytemuck::cast_slice(&[width, height, self.scale, 0.]),
@@ -6548,7 +6572,7 @@ impl GpuRenderer {
         }
         let texture = sampled_texture(
             &self.device,
-            self.mapped.is_some(),
+            self.unified,
             image.width(),
             image.height(),
             "image",
@@ -6599,7 +6623,7 @@ impl GpuRenderer {
             upload::write_texels(target, (x, y, width, height), rgba);
             return;
         }
-        if self.mapped.is_some() {
+        if self.unified {
             self.texture_uploads
                 .push(target, (x, y, width, height), rgba);
         } else {
@@ -6637,13 +6661,7 @@ impl GpuRenderer {
         }
     }
     fn reset_atlas(&mut self, size: u32) {
-        self.atlas = sampled_texture(
-            &self.device,
-            self.mapped.is_some(),
-            size,
-            size,
-            "glyph atlas",
-        );
+        self.atlas = sampled_texture(&self.device, self.unified, size, size, "glyph atlas");
         self.atlas_size = size;
         self.bind = self.texture_bind(&self.atlas.create_view(&Default::default()), "glyph atlas");
         self.entries.clear();

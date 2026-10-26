@@ -339,6 +339,10 @@ fn thousand_streaming_frames_keep_caches_bounded_and_reuse_vertices() {
         gpu.render(&scene, &d).unwrap();
     }
     let initial = gpu.debug_cache_stats().vertex_buffer_bytes;
+    // Vertices written in place (unified memory, Direct3D 12) go round a
+    // ring of up to four buffers in flight; a staging copy keeps one. Each
+    // stays within the one buffer's bound.
+    let buffer = initial / gpu.debug_cache_stats().vertex_buffers.max(1);
     scene.set_transform(stable, Transform { x: 1., y: 0. });
     let d = scene.flush().damage;
     let stats = gpu.render(&scene, &d).unwrap();
@@ -378,7 +382,17 @@ fn thousand_streaming_frames_keep_caches_bounded_and_reuse_vertices() {
         assert!(c.shaped_bytes <= 8 * 1024 * 1024);
         assert_eq!(c.swash_images, 0);
         assert_eq!(c.swash_outlines, 0);
-        assert!(c.vertex_buffer_bytes <= initial.max(8192));
+        assert!(
+            c.vertex_buffers <= 4,
+            "frame {frame}: {} vertex buffers",
+            c.vertex_buffers
+        );
+        assert!(
+            c.vertex_buffer_bytes <= c.vertex_buffers * buffer.max(8192),
+            "frame {frame}: {} bytes in {} buffers",
+            c.vertex_buffer_bytes,
+            c.vertex_buffers
+        );
         assert!(c.atlas_entries < 5000);
     }
     gpu.readback().unwrap();

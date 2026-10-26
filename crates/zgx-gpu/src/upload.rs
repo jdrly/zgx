@@ -237,6 +237,10 @@ impl MappedRing {
         self.slots
             .retain(|slot| !slot.mapped.load(Ordering::Acquire));
     }
+    /// Buffers held.
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
     pub(crate) fn bytes(&self) -> usize {
         self.slots.iter().map(|slot| slot.capacity as usize).sum()
     }
