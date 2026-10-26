@@ -4,6 +4,11 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 
 ## Unreleased
 
+### Changed
+
+**Buttons, checkboxes, menu items and sliders keep the arrow cursor**, as Chrome's controls and AppKit's do; only links show the pointing hand, and text fields the I-beam. They showed the hand (sliders a resize arrow) when they stated no cursor.
+- *Migrate:* a control meant to show the hand states it: `.cursor(Cursor::Pointer)` (Luau `cursor = "pointer"`).
+
 ### Fixed
 
 - A `display: none` node's children report a 0x0 box (`Scene::bounds`, `on_resize`, `zgx inspect`), as the node itself did and as CSS gives them: they reported their content's size at no width. They are no longer measured again each time their parent lays out.

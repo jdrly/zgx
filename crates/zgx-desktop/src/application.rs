@@ -5777,11 +5777,14 @@ fn native_cursor(cursor: zgx::cursor::Cursor) -> CursorIcon {
         C::ZoomOut => CursorIcon::ZoomOut,
     }
 }
+/// The cursor a control shows unless it states one, as Chrome's defaults and
+/// AppKit's controls give it: the hand over links alone (a button, a
+/// checkbox, a menu item and a slider keep the arrow), the I-beam over text
+/// fields.
 fn cursor_for_role(role: Option<Role>) -> CursorIcon {
     match role {
-        Some(Role::Button | Role::Link | Role::CheckBox | Role::MenuItem) => CursorIcon::Pointer,
+        Some(Role::Link) => CursorIcon::Pointer,
         Some(Role::TextInput | Role::MultilineTextInput) => CursorIcon::Text,
-        Some(Role::Slider) => CursorIcon::EwResize,
         _ => CursorIcon::Default,
     }
 }
@@ -6358,13 +6361,16 @@ mod tests {
         );
     }
     #[test]
-    fn native_cursor_roles_distinguish_editable_and_actionable_controls() {
-        assert_eq!(cursor_for_role(Some(Role::Button)), CursorIcon::Pointer);
+    fn native_cursor_roles_distinguish_links_and_text_fields() {
+        assert_eq!(cursor_for_role(Some(Role::Link)), CursorIcon::Pointer);
         assert_eq!(
             cursor_for_role(Some(Role::MultilineTextInput)),
             CursorIcon::Text
         );
-        assert_eq!(cursor_for_role(Some(Role::Slider)), CursorIcon::EwResize);
+        // Chrome's and AppKit's controls keep the arrow.
+        for role in [Role::Button, Role::CheckBox, Role::MenuItem, Role::Slider] {
+            assert_eq!(cursor_for_role(Some(role)), CursorIcon::Default, "{role:?}");
+        }
         assert_eq!(cursor_for_role(None), CursorIcon::Default);
     }
     #[test]
