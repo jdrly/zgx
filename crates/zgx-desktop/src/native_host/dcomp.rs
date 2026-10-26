@@ -135,6 +135,8 @@ pub(crate) struct Router {
     pub natives: NativeViews,
     /// The pointer over native views (zgx's leave, pages' pointers).
     pub pointer: zgx::native_view::NativePointer,
+    /// The window's zoom (`Ui::zoom`): its points are zgx's times it.
+    pub zoom: std::cell::Cell<f32>,
 }
 impl Router {
     /// The pointer moved to window point `(x, y)`: what zgx hears.
@@ -231,7 +233,7 @@ impl Pointer {
     }
     /// Where the pointer at client point `(x, y)` goes.
     fn route(&self, hwnd: HWND, x: i32, y: i32) -> PointerRoute {
-        let scale = scale_of(hwnd);
+        let scale = scale_of(hwnd) * self.router.zoom.get();
         self.router.route(x as f32 / scale, y as f32 / scale)
     }
     /// A window message, before winit: whether it was a page's (winit then
@@ -572,6 +574,11 @@ impl Surfaces {
     }
     pub fn router(&self) -> &Router {
         &self.pointer.router
+    }
+    /// Follow the window's zoom (`Ui::zoom`): placements come in its points
+    /// (`PlaneSplit::zoomed`), the pointer goes back through it.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.pointer.router.zoom.set(zoom);
     }
     fn scale(&self) -> f32 {
         scale_of(self.hwnd)

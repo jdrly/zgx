@@ -1870,8 +1870,9 @@ impl Host {
         // over them; paint moving between planes repaints on both.
         let planned = match &mut self.renderer {
             Some(renderer) if self.native.active() => {
+                let zoom = self.context.ui.zoom() as f32;
                 self.native
-                    .plan(&scene, &window, renderer, self.scale_factor as f32)?
+                    .plan(&scene, &window, renderer, self.scale_factor as f32, zoom)?
             }
             _ => Vec::new(),
         };
@@ -2721,10 +2722,6 @@ impl Host {
             self.context.ui.on_zoom(move || {
                 let _ = proxy.send_event(Event::Zoom(token));
             });
-            // Not while it shows native views: they are placed in points of
-            // the display's scale, not the zoom's, as yet.
-            let natives = self.context.natives.clone();
-            self.context.ui.zoom_blocked_by(move || !natives.is_empty());
         }
         self.window = Some(window);
         #[cfg(target_os = "macos")]

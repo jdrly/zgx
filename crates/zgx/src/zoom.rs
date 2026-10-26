@@ -38,14 +38,6 @@ impl Ui {
             return;
         }
         let zoom = zoom.clamp(LEVELS[0], LEVELS[LEVELS.len() - 1]);
-        if zoom != self.zoom() && self.zoom_blocked() {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "zgx: the window stays at {:.0}%: it shows native views (web views, terminals), which do not zoom yet",
-                self.zoom() * 100.
-            );
-            return;
-        }
         if self.storage.zoom.replace(zoom) == zoom {
             return;
         }
@@ -87,17 +79,6 @@ impl Ui {
     /// Whether the zoom keys zoom this window (`set_zoomable`).
     pub fn zoomable(&self) -> bool {
         !self.storage.zoom_off.get()
-    }
-    /// The window does not zoom while `blocked` says so: the host's, while
-    /// the window shows native views (web views, terminals), which do not
-    /// follow a zoom yet.
-    #[doc(hidden)]
-    pub fn zoom_blocked_by(&self, blocked: impl Fn() -> bool + 'static) {
-        *self.storage.zoom_blocked.borrow_mut() = Some(Rc::new(blocked));
-    }
-    fn zoom_blocked(&self) -> bool {
-        let blocked = self.storage.zoom_blocked.borrow().clone();
-        blocked.is_some_and(|blocked| blocked())
     }
     /// The host, told each time the zoom changes, to apply it.
     #[doc(hidden)]
@@ -195,12 +176,10 @@ pub(crate) fn after_dispatch(ui: &Ui, event: &InputEvent) -> bool {
     if !is_zoom_key(key, *modifiers) || !ui.zoomable() || ui.storage.zoom_host.borrow().is_none() {
         return false;
     }
-    let zoom = ui.zoom();
     match key {
         Key::Character(key) if matches!(key.as_str(), "=" | "+") => ui.zoom_in(),
         Key::Character(key) if matches!(key.as_str(), "-" | "_") => ui.zoom_out(),
         _ => ui.reset_zoom(),
     }
-    // Blocked (`zoom_blocked_by`), the keys go on.
-    ui.zoom() != zoom || !ui.zoom_blocked()
+    true
 }

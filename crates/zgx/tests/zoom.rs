@@ -181,25 +181,3 @@ fn a_scroll_view_keeps_what_was_at_its_top_through_a_zoom() {
         top(&ui, "p12")
     );
 }
-
-#[test]
-fn a_window_showing_native_views_does_not_zoom_yet() {
-    let mut ui = Ui::new(400., 300.);
-    ui.mount(column().child(text("page")));
-    let told = hosted(&ui);
-    let natives = Rc::new(Cell::new(true));
-    let shown = natives.clone();
-    ui.zoom_blocked_by(move || shown.get());
-    assert!(!press(&mut ui, "="), "the keys go on");
-    ui.set_zoom(1.5);
-    ui.zoom_in();
-    assert_eq!((ui.zoom(), told.get()), (1., 0), "no zoom, nothing told");
-    // Gone, it zooms.
-    natives.set(false);
-    assert!(press(&mut ui, "="));
-    assert_eq!((ui.zoom(), told.get()), (1.1, 1));
-    // Back, it stays where it is.
-    natives.set(true);
-    ui.set_zoom(2.);
-    assert_eq!(ui.zoom(), 1.1);
-}
