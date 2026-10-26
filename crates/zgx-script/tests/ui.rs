@@ -3098,3 +3098,38 @@ fn a_buttons_variant_styles_what_its_props_leave_unset() {
     let error = host.reload().unwrap_err();
     assert!(error.contains("`variant` is"), "{error}");
 }
+#[test]
+fn a_subtree_provides_values_its_components_and_rows_read() {
+    let mut h = Harness::inline(
+        r##"local user = ui.state("user", "Ada")
+        local Badge = ui.component(function(props: { id: string })
+            local who = ui.use_context("user")
+            local tone = ui.use_context("tone", "plain")
+            return ui.text { id = props.id, function() return `{who:get()} {tone}` end }
+        end)
+        local names = ui.state("names", { "a" })
+        ui.command { id = "rename", run = function() user:set("Grace") end }
+        return ui.column {
+            provide = { user = user },
+            Badge { id = "outer" },
+            ui.column { provide = { tone = "loud" },
+                Badge { id = "inner" },
+                ui.each(names, function(n) return Badge { id = `row-{n}` } end),
+            },
+        }"##,
+    );
+    h.frames(1);
+    assert_eq!(h.text("outer"), "Ada plain");
+    assert_eq!(
+        h.text("inner"),
+        "Ada loud",
+        "nearer values over farther, the rest kept"
+    );
+    assert_eq!(h.text("row-a"), "Ada loud", "rows read it too");
+    // A state provided is the state: what reads it follows it.
+    assert!(h.host.run_command("rename"));
+    h.frames(1);
+    assert_eq!(h.text("inner"), "Grace loud");
+    assert_eq!(h.error(), None);
+}
+

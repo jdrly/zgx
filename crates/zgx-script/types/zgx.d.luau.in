@@ -1322,6 +1322,10 @@ export type NodeProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Reactive<ThemeSpec>?,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: { [string]: any }?,
 	-- Identity, for selectors, refs and animations.
 	id: string?,
 	-- Space-separated class names.
@@ -2320,6 +2324,9 @@ declare ui: {
 	-- Runs `f` when what is being built goes away: a component unmounting,
 	-- an effect running again, the script reloading.
 	on_cleanup: (f: () -> ()) -> (),
+	-- In a component's, row's or presence's build: what the nearest
+	-- `provide = { [name] = … }` above it gave, else `default`.
+	use_context: (name: string, default: any?) -> any,
 	-- Milliseconds since the epoch, to the microsecond (`os.time` counts
 	-- whole seconds). Not tracked.
 	now: () -> number,

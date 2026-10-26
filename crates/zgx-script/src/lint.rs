@@ -137,6 +137,7 @@ const NOT_ELEMENTS: &[&str] = &[
     "variants",
     "component",
     "on_cleanup",
+    "use_context",
     "now",
     "object",
     "call_sync",

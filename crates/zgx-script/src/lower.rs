@@ -181,9 +181,28 @@ fn decorated(view: View, node: &Rc<Node>, vm: &Rc<Vm>, low: &Rc<Lowering>) -> Vi
         ) => tooltip(view, tip, low),
         _ => view,
     };
-    match &node.theme {
+    let view = match &node.theme {
         None => view,
         Some(spec) => themed(spec, vm, view),
+    };
+    match &node.provide {
+        None => view,
+        // Its values over what its ancestors were given, for the
+        // components and rows built under it (`ui.use_context`).
+        Some(own) => {
+            let own = own.clone();
+            zgx::compose::provide_with(
+                move |cx| {
+                    let mut all = cx
+                        .try_service::<crate::node::Provided>()
+                        .map(|above| above.0.clone())
+                        .unwrap_or_default();
+                    all.extend(own.iter().cloned());
+                    crate::node::Provided(all)
+                },
+                view,
+            )
+        }
     }
 }
 
@@ -878,7 +897,10 @@ pub(crate) fn build_scoped(
     f: &mlua::Function,
     args: impl mlua::IntoLuaMulti,
 ) -> View {
-    let scope = Rc::new(Scope::default());
+    let scope = Rc::new(Scope {
+        provided: cx.try_service::<crate::node::Provided>(),
+        ..Scope::default()
+    });
     let previous = vm
         .lua
         .app_data_ref::<crate::node::Env>()

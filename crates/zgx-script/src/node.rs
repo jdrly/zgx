@@ -84,6 +84,9 @@ pub(crate) struct Node {
     pub source: Option<Rc<str>>,
     /// `theme = …`: the subtree's theme scope.
     pub theme: Option<ThemeSpec>,
+    /// `provide = { name = value }`: values the components and rows built
+    /// in this subtree read with `ui.use_context(name)`.
+    pub provide: Option<Rc<[Given]>>,
     /// `variants = …` chosen by state, with interaction styles: they follow
     /// it (see `crate::variants`).
     pub variant_interaction: Option<Rc<crate::variants::Selection>>,
@@ -427,6 +430,7 @@ impl Node {
             tooltip: None,
             source: None,
             theme: None,
+            provide: None,
             variant_interaction: None,
         }
     }
@@ -1324,7 +1328,14 @@ impl Env {
 pub(crate) struct Scope {
     pub retained: RefCell<Vec<Box<dyn Any>>>,
     pub mounted: RefCell<Vec<Function>>,
+    /// What the subtree being built was provided (`provide`).
+    pub provided: Option<Rc<Provided>>,
 }
+/// A value a node provides its subtree, by its name.
+pub(crate) type Given = (Rc<str>, mlua::Value);
+/// The values a subtree was provided, its own over its ancestors'.
+#[derive(Default)]
+pub(crate) struct Provided(pub std::collections::HashMap<Rc<str>, mlua::Value>);
 
 pub(crate) struct NodeUd(pub Rc<Node>);
 impl UserData for NodeUd {}
@@ -2522,6 +2533,19 @@ fn fill_from(
                     lits.push((prop, lit));
                 }
                 node.events.get_or_insert_default().context_menu_style = Some(lits.into());
+            }
+            "provide" => {
+                let mlua::Value::Table(values) = value else {
+                    return Err(mlua::Error::runtime(
+                        "`provide` takes a table of names and values: `provide = { user = user }`",
+                    ));
+                };
+                let mut provided: Vec<(Rc<str>, mlua::Value)> = Vec::new();
+                for pair in values.pairs::<String, mlua::Value>() {
+                    let (name, value) = pair?;
+                    provided.push((name.as_str().into(), value));
+                }
+                node.provide = Some(provided.into());
             }
             "theme" => {
                 node.theme = Some(if let Some(state) = state_of(&value) {
@@ -4312,6 +4336,25 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                 env.permits(&env.exposed_actions, &name, "ui.action")?;
             }
             action(lua, Action::Host(name.into(), arg))
+        })?,
+    )?;
+    // `ui.use_context(name, default)`: what the nearest `provide = { name =
+    // … }` above the component or row being built gave, else `default`.
+    ui.set(
+        "use_context",
+        lua.create_function(|lua, (name, default): (String, mlua::Value)| {
+            let env = env(lua)?;
+            let scope = env.scope.borrow();
+            let Some(scope) = scope.as_ref() else {
+                return Err(mlua::Error::runtime(
+                    "ui.use_context reads what a component, row or presence is built in: call it in one's build",
+                ));
+            };
+            Ok(scope
+                .provided
+                .as_ref()
+                .and_then(|p| p.0.get(name.as_str()).cloned())
+                .unwrap_or(default))
         })?,
     )?;
     // `ui.on_cleanup(f)`: `f` runs when what is being built goes away (a
