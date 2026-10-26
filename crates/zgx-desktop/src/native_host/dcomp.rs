@@ -649,10 +649,9 @@ impl Surfaces {
     /// Move native views to `split`'s placements.
     pub fn apply(&mut self, natives: &NativeViews, split: &PlaneSplit) {
         let scale = self.scale();
-        // A page's pixels to its CSS pixel: the display's times the window's
-        // zoom, as a browser's zoom scales its page (placements come in the
-        // zoomed window's points already).
-        let page_scale = scale * self.pointer.router.zoom.get();
+        // Pages zoom with the window, as a browser's do (placements come in
+        // the zoomed window's points already).
+        let zoom = self.pointer.router.zoom.get();
         let views = natives.views();
         // Unmounted: their cuts go (pages stay with their controllers).
         self.clips.retain(|(node, clip)| {
@@ -687,10 +686,9 @@ impl Surfaces {
             let (page, web) = match content {
                 // A closed page shows nothing (and gets no new page).
                 NativeContent::Web(web) if web.is_closed() => (None, Some(web.clone())),
-                NativeContent::Web(web) => (
-                    webview2::backend(web, self.hwnd, page_scale),
-                    Some(web.clone()),
-                ),
+                NativeContent::Web(web) => {
+                    (webview2::backend(web, self.hwnd, scale), Some(web.clone()))
+                }
                 _ => (None, None),
             };
             let same = match (&clip.page, &page) {
@@ -723,7 +721,7 @@ impl Surfaces {
                 clip,
                 split.native(*node).cloned(),
                 scale,
-                page_scale,
+                zoom,
             );
         }
         // Shown pages in paint order, between the base and the overlay.
@@ -800,7 +798,7 @@ impl Surfaces {
         clip: &mut Clip,
         placement: Option<NativePlacement>,
         scale: f32,
-        page_scale: f32,
+        zoom: f32,
     ) {
         let visible = placement
             .as_ref()
@@ -822,7 +820,10 @@ impl Surfaces {
             clip.placed = None;
             return;
         };
-        let key = (placement.clone(), page_scale);
+        if let Some(page) = &clip.page {
+            page.set_window_zoom(f64::from(zoom));
+        }
+        let key = (placement.clone(), scale);
         if clip.placed.as_ref() != Some(&key) {
             let frame = frame_px(placement.frame, scale);
             // SAFETY: our visual, on the window's thread.
@@ -831,7 +832,7 @@ impl Surfaces {
                 let _ = clip.inner.SetOffsetY2(frame.1 as f32);
             }
             if let Some(page) = &clip.page {
-                page.set_bounds(frame, page_scale);
+                page.set_bounds(frame, scale);
             }
             if clip.opacity != placement.opacity
                 && let Some(effect) = &clip.effect
