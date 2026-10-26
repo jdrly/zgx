@@ -40,7 +40,7 @@ def main():
     lines = [f"fn line_{i}() -> usize {{ {i} }} // a line of the file" for i in range(LINES)]
     document = args.output / "document.rs"
     document.write_text("\n".join(lines))
-    xvfb = wm = bus = ime = app = None
+    xvfb = wm = bus = ime = app = xim = None
     with tempfile.TemporaryDirectory(prefix="zgx-large-document-") as private:
         try:
             with (args.output / "xvfb.log").open("w") as log:
@@ -67,7 +67,7 @@ def main():
                 wm = subprocess.Popen(["openbox"], env=env, stdout=log, stderr=log)
             wait_for_wm(env)
             with (args.output / "ibus.log").open("w") as log:
-                ime = subprocess.Popen(["ibus-daemon", "--xim", "--replace", "--cache=none", "--emoji-extension=disable", "--config=" + memconf, "--verbose"], env=env, stdout=log, stderr=log, start_new_session=True)
+                ime = subprocess.Popen(["ibus-daemon", "--replace", "--cache=none", "--emoji-extension=disable", "--config=" + memconf, "--verbose"], env=env, stdout=log, stderr=log, start_new_session=True)
             deadline = time.monotonic() + 10
             while True:
                 ready = subprocess.run(["ibus", "list-engine"], env=env, capture_output=True, text=True)
@@ -76,6 +76,12 @@ def main():
                 if time.monotonic() > deadline or ime.poll() is not None:
                     raise RuntimeError("IBus failed: " + ready.stdout + ready.stderr)
                 time.sleep(.2)
+            # The XIM frontend started here, not by the daemon, its output and
+            # exit kept (#564: an app hung on its way out in a round trip to
+            # an ibus-x11 that had gone, how unknown).
+            xim_log = (args.output / "ibus-x11.log").open("w")
+            xim = subprocess.Popen(["/usr/libexec/ibus-x11", "--kill-daemon"], env=env, stdout=xim_log, stderr=xim_log,
+                                   start_new_session=True)
             wait_for_ibus_xim(env)
             log_path = args.output / "large-document.log"
             with log_path.open("w") as log:
@@ -187,6 +193,11 @@ def main():
             print(f"PASS: 100,000 lines open in {opened['open_ms']:.0f} ms; IME, typing, scrolling and undo")
         finally:
             stop(app)
+            if xim:
+                # Still running (None), exited (its status) or killed (minus
+                # the signal), before anything here stops it.
+                (args.output / "ibus-x11.log").open("a").write(f"\nibus-x11 status before cleanup: {xim.poll()}\n")
+                stop(xim)
             for owned in (ime, bus):
                 if owned:
                     try:
