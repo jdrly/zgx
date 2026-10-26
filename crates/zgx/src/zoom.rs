@@ -10,7 +10,7 @@
 //! what was at their top in place across it. An app's keymap or menu taking
 //! the keys keeps them; `Ui::set_zoomable(false)` turns zoom off.
 use crate::{
-    input::{InputEvent, Key},
+    input::{InputEvent, Key, Modifiers},
     scene::NodeId,
     widgets::Ui,
 };
@@ -165,29 +165,41 @@ impl Ui {
     }
 }
 
-/// The window's zoom keys, for keys nothing else took: Command (Control
-/// elsewhere) with plus or equals zooms in, with minus out, with 0 back to
-/// 100%. Whether it took the key.
+/// Whether `key` with `modifiers` zooms a window: Command (Control
+/// elsewhere) with plus or equals, minus, or 0 (not with Shift), never with
+/// Option or the other of Command and Control. An app's binding of one
+/// keeps it from zoom (a menu's, too: the zoom items stay out); the chords
+/// with Option or both (Command-Option-=, Command-Control-=) are the app's.
+pub fn is_zoom_key(key: &Key, modifiers: Modifiers) -> bool {
+    let Key::Character(key) = key else {
+        return false;
+    };
+    let both = modifiers.meta && modifiers.control;
+    modifiers.primary_shortcut()
+        && !modifiers.alt
+        && !both
+        && match key.as_str() {
+            "=" | "+" | "-" | "_" => true,
+            "0" => !modifiers.shift,
+            _ => false,
+        }
+}
+
+/// The window's zoom keys (`is_zoom_key`), for keys nothing else took: in
+/// with plus or equals, out with minus, back to 100% with 0. Whether it
+/// took the key.
 pub(crate) fn after_dispatch(ui: &Ui, event: &InputEvent) -> bool {
     let InputEvent::KeyDown { key, modifiers, .. } = event else {
         return false;
     };
-    if !modifiers.primary_shortcut()
-        || modifiers.alt
-        || !ui.zoomable()
-        || ui.storage.zoom_host.borrow().is_none()
-    {
+    if !is_zoom_key(key, *modifiers) || !ui.zoomable() || ui.storage.zoom_host.borrow().is_none() {
         return false;
     }
-    let Key::Character(key) = key else {
-        return false;
-    };
     let zoom = ui.zoom();
-    match key.as_str() {
-        "=" | "+" => ui.zoom_in(),
-        "-" | "_" => ui.zoom_out(),
-        "0" if !modifiers.shift => ui.reset_zoom(),
-        _ => return false,
+    match key {
+        Key::Character(key) if matches!(key.as_str(), "=" | "+") => ui.zoom_in(),
+        Key::Character(key) if matches!(key.as_str(), "-" | "_") => ui.zoom_out(),
+        _ => ui.reset_zoom(),
     }
     // Blocked (`zoom_blocked_by`), the keys go on.
     ui.zoom() != zoom || !ui.zoom_blocked()

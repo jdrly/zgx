@@ -65,6 +65,44 @@ fn the_keys_step_through_chromes_levels_and_the_host_hears_each_change() {
 }
 
 #[test]
+fn option_or_both_command_and_control_with_the_keys_are_the_apps() {
+    let mut ui = Ui::new(400., 300.);
+    ui.mount(column().child(text("page")));
+    let told = hosted(&ui);
+    let key = |key: &str| Key::Character(key.into());
+    let option = Modifiers {
+        alt: true,
+        ..command()
+    };
+    let shift = Modifiers {
+        shift: true,
+        ..command()
+    };
+    let both = Modifiers {
+        meta: true,
+        control: true,
+        ..Default::default()
+    };
+    // A terminal's font size on Command-Option, its panes evened out on
+    // Command-Control-=, say: never a zoom.
+    for modifiers in [option, both] {
+        for k in ["=", "-", "0"] {
+            assert!(!zgx::zoom::is_zoom_key(&key(k), modifiers), "{k}");
+            ui.dispatch(InputEvent::KeyDown {
+                key: key(k),
+                modifiers,
+                repeat: false,
+            });
+        }
+    }
+    assert_eq!((ui.zoom(), told.get()), (1., 0));
+    // Command-Shift-= is Command-+, in; Command-Shift-0 is no reset.
+    assert!(zgx::zoom::is_zoom_key(&key("+"), shift));
+    assert!(!zgx::zoom::is_zoom_key(&key("0"), shift));
+    assert!(!zgx::zoom::is_zoom_key(&key("="), Modifiers::default()));
+}
+
+#[test]
 fn an_apps_keymap_keeps_the_keys_and_zoom_can_be_turned_off() {
     #[derive(Debug)]
     struct Bigger;

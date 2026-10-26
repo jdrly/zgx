@@ -561,8 +561,9 @@ pub(crate) fn zoom_action(action: &MenuAction) -> Option<ZoomAction> {
         .find(|(id, ..)| *id == action.0)
         .map(|(.., what)| *what)
 }
-/// Whether the app's menus bind ⌘=, ⌘+, ⌘- or ⌘0 themselves: zgx's zoom
-/// items stay out of them.
+/// Whether the app's menus bind a zoom key themselves (⌘=, ⌘+, ⌘- or ⌘0;
+/// `zgx::zoom::is_zoom_key`): zgx's zoom items stay out of them. ⌘⌥ or ⌘⌃
+/// with them is the app's alone.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn binds_zoom_keys(menus: &[AppMenu]) -> bool {
     fn binds(entries: &[AppMenuEntry]) -> bool {
@@ -570,10 +571,7 @@ fn binds_zoom_keys(menus: &[AppMenu]) -> bool {
             AppMenuEntry::Item {
                 accelerator: Some(MenuAccelerator(stroke)),
                 ..
-            } => {
-                stroke.modifiers.primary_shortcut()
-                    && matches!(&stroke.key, zgx::input::Key::Character(k) if ["=", "+", "-", "0"].contains(&k.as_str()))
-            }
+            } => zgx::zoom::is_zoom_key(&stroke.key, stroke.modifiers),
             AppMenuEntry::Submenu(child) => binds(&child.entries),
             _ => false,
         })
@@ -1330,6 +1328,16 @@ mod dynamic_tests {
             assert!(binds_zoom_keys(&view(vec![
                 AppMenuEntry::item("Mine", "mine")
                     .accelerator(MenuAccelerator::primary(Key::Character(key.into())))
+            ])));
+            // With Option, or Command and Control both, the app's own:
+            // zoom never takes those.
+            let mut with_option = MenuAccelerator::primary(Key::Character(key.into()));
+            with_option.0.modifiers.alt = true;
+            let mut with_both = MenuAccelerator::primary(Key::Character(key.into()));
+            (with_both.0.modifiers.meta, with_both.0.modifiers.control) = (true, true);
+            assert!(!binds_zoom_keys(&view(vec![
+                AppMenuEntry::item("Mine", "mine").accelerator(with_option),
+                AppMenuEntry::item("Evenly", "evenly").accelerator(with_both),
             ])));
         }
         assert_eq!(
