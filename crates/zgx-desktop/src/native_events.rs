@@ -175,10 +175,7 @@ mod platform {
                 if let Some(list) = event.paramDescriptorForKeyword(DIRECT_OBJECT) {
                     if !(0..=256).contains(&list.numberOfItems()) { return; }
                     let urls = (1..=list.numberOfItems()).map(|index| {
-                        list.descriptorAtIndex(index)
-                            .and_then(|item| item.coerceToDescriptorType(FILE_URL))
-                            .and_then(|item| item.stringValue())
-                            .map(|url| url.to_string())
+                        list.descriptorAtIndex(index).and_then(|item| document_url(&item))
                     }).collect::<Option<Vec<_>>>();
                     // Preserve the batch as one transaction. A malformed entry
                     // must not silently turn a multi-document open into a subset.
@@ -193,6 +190,15 @@ mod platform {
             }
         }
     );
+    /// An opened document's file URL. The Finder and `open` send bookmarks
+    /// ('bmrk'), which do not coerce to file URLs: `fileURLValue` resolves
+    /// them.
+    pub(super) fn document_url(item: &NSAppleEventDescriptor) -> Option<String> {
+        item.fileURLValue()
+            .and_then(|url| url.absoluteString())
+            .or_else(|| item.coerceToDescriptorType(FILE_URL)?.stringValue())
+            .map(|url| url.to_string())
+    }
     impl EventHandler {
         fn deliver_urls(&self, urls: Vec<String>) {
             if !urls.is_empty()
@@ -608,6 +614,38 @@ mod tests {
         assert_eq!(urls[1], "myapp://open/thing");
         assert_eq!(platform::event(""), Some(ApplicationEvent::Reopen));
         assert_eq!(platform::event("not a url"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_documents_opened_as_bookmarks_are_file_urls() {
+        use objc2_foundation::{
+            NSAppleEventDescriptor, NSString, NSURL, NSURLBookmarkCreationOptions,
+        };
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let url = NSURL::fileURLWithPath(&NSString::from_str(dir.to_str().unwrap()));
+        let data = url
+            .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
+                NSURLBookmarkCreationOptions::empty(),
+                None,
+                None,
+            )
+            .unwrap();
+        // As the Finder and `open` send a document: a bookmark.
+        let bookmark = NSAppleEventDescriptor::descriptorWithDescriptorType_data(
+            u32::from_be_bytes(*b"bmrk"),
+            Some(&data),
+        )
+        .unwrap();
+        let opened = platform::document_url(&bookmark).expect("a bookmark is a file URL");
+        let path = opened
+            .strip_prefix("file://")
+            .unwrap()
+            .trim_end_matches('/');
+        assert_eq!(path, dir.to_str().unwrap().trim_end_matches('/'));
+        // As an AppleScript `open` sends one: a file URL.
+        let file_url = NSAppleEventDescriptor::descriptorWithFileURL(&url);
+        assert_eq!(platform::document_url(&file_url), Some(opened));
     }
 
     #[test]
