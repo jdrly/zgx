@@ -656,3 +656,85 @@ fn a_subtree_spliced_into_the_kept_window_is_the_subtree_drawn_afresh() {
     // panel: patched only by splicing.
     assert!(patched >= 16, "{patched} frames patched");
 }
+
+/// Boxes drawn as one quad that layout moves and resizes each frame, and
+/// whose colour, corners or border change in some of those frames too
+/// (`patch_box_moved` must make those again whole), beside a bar damaging
+/// most of the window: each frame as drawn afresh.
+fn resized(live: Signal<u32>) -> View {
+    let bar = live.clone();
+    let boxes = (0..4u32).map(move |at| {
+        let live = live.clone();
+        div()
+            .absolute()
+            .ml(12. + 110. * at as f32)
+            .mt(170.)
+            .reactive_style(move || {
+                let n = live.get();
+                let styles = Styles::new()
+                    .w(30. + ((n + at) % 5) as f32 * 4.5)
+                    .h(10. + ((n * 3 + at) % 4) as f32 * 2.5);
+                // Every third frame something besides the box changes.
+                let paint = n.is_multiple_of(3);
+                match at {
+                    0 => styles.bg(Color(
+                        94,
+                        177,
+                        if paint { (n * 40 % 256) as u8 } else { 255 },
+                        255,
+                    )),
+                    1 => styles.bg(Color(255, 196, 61, 255)).rounded(if paint {
+                        2. + (n % 4) as f32
+                    } else {
+                        4.
+                    }),
+                    2 => styles
+                        .bg(Color(40, 60, 90, 255))
+                        .border(if paint { 1. + (n % 3) as f32 } else { 1. })
+                        .border_color(Color(250, 250, 250, 255)),
+                    _ => styles.bg(Color(200, 80, 120, if paint { 120 } else { 255 })),
+                }
+            })
+    });
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .child(div().absolute().size(SIZE.0, 150.).reactive_style(move || {
+            Styles::new().bg(Color(30, (bar.get() * 37 % 200) as u8, 90, 255))
+        }))
+        .children(boxes)
+}
+
+#[test]
+fn a_box_layout_moved_alone_is_moved_and_one_also_restyled_is_made_again() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(resized(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(1);
+    draw(&mut ui, &mut gpu);
+    let mut patched = 0;
+    for value in 2..26 {
+        live.set(value);
+        let stats = draw(&mut ui, &mut gpu);
+        patched += usize::from(stats.patched_items > 0);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the boxes drawn afresh (patched {})",
+            stats.patched_items
+        );
+    }
+    assert!(patched >= 16, "{patched} frames patched");
+}

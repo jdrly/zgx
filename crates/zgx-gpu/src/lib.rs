@@ -3761,6 +3761,9 @@ impl GpuRenderer {
                 let (bounds, kind) = scene.box_in(id, &kept.items[first].inherited);
                 if plain_quad(kind) {
                     boxes += 1;
+                    if self.patch_box_moved(&mut kept, first, bounds, boxed.clip, viewport) {
+                        continue;
+                    }
                     let parts = PlainBox {
                         kind,
                         bounds,
@@ -3967,6 +3970,62 @@ impl GpuRenderer {
             self.frame_quads = quads;
         }
         None
+    }
+    /// Move kept plain box `place`, drawn as one quad, to `bounds` (layout
+    /// alone moved or resized it, `BOX_ONLY`): its quad's colours, corners
+    /// and border are what the same style and compositing made, so only
+    /// its box and what follows from it are made again (its shading, its
+    /// cull against `clip`, its draw), as `patch_box` makes them. False,
+    /// with nothing changed, unless it is drawn as one quad before and
+    /// after: then `patch_box` makes it.
+    fn patch_box_moved(
+        &self,
+        kept: &mut Kept,
+        place: usize,
+        bounds: Rect,
+        clip: Option<Rect>,
+        viewport: Rect,
+    ) -> bool {
+        let kept_item = &kept.items[place];
+        if kept_item.len != 1 || kept_item.draws.end - kept_item.draws.start != 1 {
+            return false;
+        }
+        let at = kept_item.start as usize;
+        let mut quad = kept.quads[at];
+        // (Made whole and untransformed: its box is its rectangle and fade.)
+        if quad.rect != quad.fade || quad.options[2] >= 0.5 {
+            return false;
+        }
+        let fade = [bounds.x, bounds.y, bounds.width, bounds.height];
+        (quad.rect, quad.fade) = (fade, fade);
+        // (A flat colour's quad isn't split; a box's is, past a size.)
+        if quad.shape[3] > 0.5 && !panel_whole(&quad, self.split_shading) {
+            return false;
+        }
+        let Some(clip) = clip
+            .unwrap_or(viewport)
+            .intersection(viewport)
+            .filter(|clip| viewport.intersects(*clip) && viewport.intersects(bounds))
+        else {
+            return false;
+        };
+        let rect = quad_rect(&quad);
+        let limit = snap_out(clip, self.scale);
+        if rect_outside(rect, limit) {
+            return false;
+        }
+        kept.quads[at] = quad;
+        let draw = &mut kept.draws[kept_item.draws.start as usize];
+        draw.shading = match self.split_shading {
+            true => shading(&quad, self.scale),
+            false => Shading::Full,
+        };
+        draw.clip = match rect_inside(rect, limit) {
+            true => viewport,
+            false => clip,
+        };
+        draw.bounds = rect;
+        true
     }
     /// Make plain box `item`'s quads and draws (`plain_box`), as
     /// `render_flat::<PATCH>` makes them, into its place in `kept`: false
@@ -9569,17 +9628,7 @@ fn rounded_damage(rect: Rect, viewport: Rect, scale: f32) -> Option<Rect> {
 /// between pieces lie on whole device pixels, where rounding cannot move a
 /// pixel centre across them.
 fn push_panel(quads: &mut Vec<Quad>, quad: Quad, scale: f32, split: bool) {
-    // What can't split, known before its bands are worked out: the
-    // interior lies inside the box, so a box under `PANEL_INTERIOR` has
-    // none large enough.
-    if !split
-        || quad.color[3] < 1.
-        || quad.options[..3] != [0.; 3]
-        || quad.shape[2] > 0.
-        || quad.shape[3] <= 0.5
-        || quad.rect != quad.fade
-        || quad.rect[2] * quad.rect[3] < PANEL_INTERIOR
-    {
+    if panel_whole(&quad, split) {
         quads.push(quad);
         return;
     }
@@ -9625,6 +9674,19 @@ fn push_panel(quads: &mut Vec<Quad>, quad: Quad, scale: f32, split: bool) {
         border: [0.; 4],
         ..quad
     });
+}
+/// Whether `push_panel` draws `quad` whole, known before its bands are
+/// worked out: the interior lies inside the box, so a box under
+/// `PANEL_INTERIOR` has none large enough.
+#[inline(always)]
+fn panel_whole(quad: &Quad, split: bool) -> bool {
+    !split
+        || quad.color[3] < 1.
+        || quad.options[..3] != [0.; 3]
+        || quad.shape[2] > 0.
+        || quad.shape[3] <= 0.5
+        || quad.rect != quad.fade
+        || quad.rect[2] * quad.rect[3] < PANEL_INTERIOR
 }
 /// Nodes `shaped_like` remembers at most by what they show: past it, it
 /// starts again.

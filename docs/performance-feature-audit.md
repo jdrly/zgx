@@ -145,6 +145,13 @@ found and made, rather than 1,250. Heavy `stream` renders 6% fewer instructions 
 (3,150 K to 2,955 K a frame), and a single bound colour write about 1.5%
 fewer.
 
+One that layout alone moved or resized (the flush marks it `BOX_ONLY`)
+and that is drawn as one quad keeps its quad's colours, corners and
+border. Only its box is written, with its shading, its cull against the
+clip and its draw worked out again. That costs about a third of making it
+again, and heavy `stream` renders 7% fewer instructions (2,424 K to
+2,243 K a frame).
+
 A repainted subtree (a container repainting, a composite change, nodes
 mounted or removed under it) is walked again from what its root
 inherited, its items made as a frame makes them, and spliced over the
