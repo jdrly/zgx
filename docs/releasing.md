@@ -1,10 +1,10 @@
 # Releasing
 
-zgx 0.1.1 is on crates.io (2026-10-26, tag `v0.1.1`; 0.1.0, the first, on 2026-10-25). This is how a release goes, and what it checks.
+zgx 0.1.2 is on crates.io (2026-10-26, tag `v0.1.2`; 0.1.0, the first, on 2026-10-25). This is how a release goes, and what it checks.
 
 ## Version scheme
 
-- Every published crate shares one version, the workspace's (`[workspace.package] version` in `Cargo.toml`). Path dependencies between them name it (`version = "0.1.1"`), as crates.io needs.
+- Every published crate shares one version, the workspace's (`[workspace.package] version` in `Cargo.toml`). Path dependencies between them name it (`version = "0.1.2"`), as crates.io needs.
 - It follows [semver](https://semver.org) as Cargo reads it before 1.0: `0.MINOR.PATCH`, where a new minor may break apps (each break listed in `CHANGELOG.md` with what to check and how to migrate) and a patch does not.
 - A release is a tag `v<version>` on `main` (`v0.2.0`), made once its changelog section is written: `CHANGELOG.md`'s "Unreleased" becomes `## 0.2.0 (date)`.
 - The oldest Rust the workspace builds with is `rust-version` (1.95: `AtomicU64::try_update`). CI's Linux job checks it: its no-default-features check runs on that toolchain.
@@ -20,7 +20,7 @@ And four forks, as zgx's own crates, published first:
 | `zgx-harfrust` | harfrust 0.5.2 | a variable font's glyph advances worked out once for its instance, not for every run shaped | `vendor/harfrust/ZGX_PATCH.md` |
 | `zgx-cosmic-text` | cosmic-text 0.19.0 | text shaping that streams without rebuilding every word's key; shapes with `zgx-harfrust` | `vendor/cosmic-text/ZGX_PATCH.md` |
 | `zgx-taffy` | taffy 0.9.0 | auto margins that keep a flex line's gaps | `vendor/taffy/ZGX_PATCH.md` |
-| `zgx-mlua` | mlua 0.12.2 | table walks and userdata without a copy per key | `vendor/mlua/ZGX_PATCH.md` |
+| `zgx-mlua` | mlua 0.12.2 | table walks and userdata without a copy per key; Luau held at 740 (0.12.3), as 744 fails mlua's setup | `vendor/mlua/ZGX_PATCH.md` |
 
 Each keeps its upstream's license files, authors and library name (`harfrust`, `cosmic_text`, `taffy`, `mlua`), and its version (a fix of our own bumps the patch: `zgx-cosmic-text` is 0.19.1 since it shapes with `zgx-harfrust`; `zgx-harfrust` is 0.5.3, as 0.5.2, uploaded on 2026-10-26, never reached crates.io's index). zgx's crates depend on them by path and version under their upstream names (`cosmic-text = { package = "zgx-cosmic-text", version = "0.19.1", path = "../../vendor/cosmic-text" }`, and `zgx-cosmic-text` on `zgx-harfrust` likewise), so code reads `cosmic_text::` as before. Only zgx's crates use them, so an app never sees two of one. Drop a fork, back to the upstream crate, once a release of it has the fix.
 
