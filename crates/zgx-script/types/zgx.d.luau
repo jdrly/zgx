@@ -10333,14 +10333,22 @@ export type ListProps = {
 	-- Its rows are one Tab stop, and the arrows, Page Up and Down, Home and
 	-- End move focus through every row (mounting it), as a list box's do.
 	keyboard: boolean?,
+	-- The list its rows show, as `ui.each`'s (not with `count` or
+	-- `heights`): `key` is given an item, and `row` an item and its index
+	-- as a state; built again when the item changes, or, taking a third
+	-- parameter, its item as a state kept current (it updates in place).
+	data: Readable<{ any }>?,
 	-- Builds row `index` (from 1); with `key`, the row of item `key`, given
-	-- its index as a state that follows where the row is.
-	row: ((index: number) -> Node) | ((key: any, index: State<number>) -> Node),
+	-- its index as a state that follows where the row is. With `data`,
+	-- the row of an item.
+	row: ((index: number) -> Node)
+		| ((key: any, index: State<number>) -> Node)
+		| ((item: any, index: State<number>, row: State<any>) -> Node),
 	-- Each row's item's key (a number, string or boolean), as a function of
-	-- its index: a row follows its item as the list changes, moved rather
-	-- than written again (rows a removal or an insertion shifts keep their
-	-- nodes, text and layout).
-	key: ((index: number) -> any)?,
+	-- its index (with `data`, of its item): a row follows its item as the
+	-- list changes, moved rather than written again (rows a removal or an
+	-- insertion shifts keep their nodes, text and layout).
+	key: (((index: number) -> any) | ((item: any) -> any))?,
 	-- Every row's height in points (28 by default); with `measured`, the
 	-- estimate for rows not yet measured.
 	height: number?,

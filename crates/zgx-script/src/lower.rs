@@ -3901,6 +3901,7 @@ fn canvas_options(
 fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut Context>) -> View {
     let Kind::List {
         count,
+        items,
         height,
         heights,
         sticky,
@@ -3918,6 +3919,9 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
     else {
         unreachable!("lower_list takes lists")
     };
+    if let Some(items) = items {
+        return lower_item_list(kind, items, vm, low, cx);
+    }
     // Keyed rows follow their items: built once a key, given the key and
     // their index as a state that follows where the row is.
     let keyed = key.clone().map(|key| (key, vm.clone()));
@@ -4086,6 +4090,272 @@ fn lower_list(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>, cx: &mut Option<&mut
         .keyboard_navigation(keyboard)
         .row_text(copy)
     }
+}
+
+/// Whether a row's item `now` is the one it shows, `was`: the same table
+/// (kept by a write elsewhere in the list), or an equal value.
+fn same_item(was: &Value, now: &Value) -> bool {
+    let at = crate::value::identity(was);
+    (at != 0 && at == crate::value::identity(now)) || was == now
+}
+
+/// Keys of a list's items by the item (its table's address), each item
+/// kept so an address names it alone: a list written in one row (a token
+/// streaming in) asks `key` of that row's item alone.
+#[derive(Default)]
+struct KeptKeys(HashMap<usize, (Value, ListKey)>);
+impl KeptKeys {
+    fn get(&self, item: &Value) -> Option<ListKey> {
+        let at = crate::value::identity(item);
+        (at != 0)
+            .then(|| self.0.get(&at).map(|(_, k)| k.clone()))
+            .flatten()
+    }
+    fn keep(&mut self, item: &Value, key: &ListKey) {
+        let at = crate::value::identity(item);
+        if at != 0 {
+            self.0.insert(at, (item.clone(), key.clone()));
+        }
+    }
+}
+
+/// `key(item)` as a list key: a number, string or boolean, else (or if it
+/// fails) the item's index.
+fn item_key(vm: &Vm, key: &mlua::Function, item: &Value, index: usize) -> ListKey {
+    match vm.call::<Value>(key, item.clone()) {
+        Ok(value) => ListKey::of(&value).unwrap_or(ListKey::Index(index)),
+        Err(e) => {
+            vm.report(e);
+            ListKey::Index(index)
+        }
+    }
+}
+
+/// The keys of `items`, `key(item)` asked only of the items not kept from
+/// the last pass (in one Luau loop when there are many, as `list_keys`
+/// asks them); `kept` then holds this pass's.
+fn item_keys(vm: &Vm, key: &mlua::Function, items: &Value, kept: &mut KeptKeys) -> Vec<ListKey> {
+    const LOOP: &str = "zgx_item_keys";
+    let list = items.list();
+    let mut keys: Vec<Option<ListKey>> = list.iter().map(|item| kept.get(item)).collect();
+    let missing: Vec<usize> = (0..list.len()).filter(|&i| keys[i].is_none()).collect();
+    if missing.len() <= 8 {
+        for &i in &missing {
+            keys[i] = Some(item_key(vm, key, &list[i], i));
+        }
+    } else {
+        let lua = &vm.lua;
+        let all = lua
+            .named_registry_value::<mlua::Function>(LOOP)
+            .or_else(|_| {
+                let all: mlua::Function = lua
+                    .load(
+                        "local key, items = ...\n\
+                     local keys = table.create(#items)\n\
+                     for i, item in items do keys[i] = key(item) end\n\
+                     return keys",
+                    )
+                    .set_name("=ui.list keys")
+                    .into_function()?;
+                lua.set_named_registry_value(LOOP, &all)?;
+                Ok::<_, mlua::Error>(all)
+            });
+        let asked = Value::List(
+            missing
+                .iter()
+                .map(|&i| list[i].clone())
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        match all.and_then(|all| vm.call::<mlua::Table>(&all, (key, asked))) {
+            Ok(table) => {
+                for (n, &i) in missing.iter().enumerate() {
+                    let key = match table.raw_get::<mlua::Value>(n + 1) {
+                        Ok(mlua::Value::Number(v)) => ListKey::of(&Value::Num(v)),
+                        Ok(mlua::Value::Integer(v)) => ListKey::of(&Value::Num(v as f64)),
+                        Ok(mlua::Value::Boolean(b)) => Some(ListKey::Bool(b)),
+                        Ok(mlua::Value::String(s)) => {
+                            Some(ListKey::Str(Rc::from(&*s.to_string_lossy())))
+                        }
+                        _ => None,
+                    };
+                    keys[i] = Some(key.unwrap_or(ListKey::Index(i)));
+                }
+            }
+            Err(e) => {
+                vm.report(e);
+                return (0..list.len()).map(ListKey::Index).collect();
+            }
+        }
+    }
+    let keys: Vec<ListKey> = keys.into_iter().map(|k| k.unwrap()).collect();
+    kept.0.clear();
+    for (item, key) in list.iter().zip(&keys) {
+        kept.keep(item, key);
+    }
+    keys
+}
+
+/// A `ui.list` of `data` (a list state), whose rows are built from their
+/// items as `ui.each`'s are: `row(item, index)`, built again when the item
+/// changes, or `row(item, index, row)` built once, `row` its item as a
+/// state kept current (a reply streaming in updates its own row alone).
+/// `index` is a state, following the row as the list changes; with `key`
+/// (given an item) rows follow their items.
+fn lower_item_list(
+    kind: &Kind,
+    items: &Signal<Value>,
+    vm: &Rc<Vm>,
+    low: &Rc<Lowering>,
+    cx: &mut Option<&mut Context>,
+) -> View {
+    let Kind::List {
+        height,
+        overscan,
+        build: builder,
+        key,
+        measured,
+        row_text,
+        follow,
+        offset,
+        keyboard,
+        ..
+    } = kind
+    else {
+        unreachable!("lower_item_list takes lists")
+    };
+    let live = builder.info().num_params >= 3;
+    let row = {
+        let (items, builder, vm, low) = (items.clone(), builder.clone(), vm.clone(), low.clone());
+        move |index: Signal<usize>, _: ListKey, cx: &mut Context| -> View {
+            let at = |list: &Value, i: usize| list.list().get(i).cloned().unwrap_or(Value::Nil);
+            let runtime = cx.runtime();
+            let first = index.with_untracked(|i| *i);
+            let item = runtime.signal(items.with_untracked(|l| at(l, first)));
+            let shown = runtime.signal(Value::Num((first + 1) as f64));
+            // Bumped as the item changes: a two-parameter row is built again.
+            let changes = runtime.signal(0_u64);
+            {
+                let (items, item, shown, changes) =
+                    (items.clone(), item.clone(), shown.clone(), changes.clone());
+                let mut was = first;
+                cx.retain(runtime.effect(move || {
+                    let i = index.get();
+                    let now = items.with(|l| at(l, i));
+                    if i != was {
+                        was = i;
+                        shown.set(Value::Num((i + 1) as f64));
+                    }
+                    if !item.with_untracked(|was| same_item(was, &now)) {
+                        item.set(now);
+                        changes.update(|n| *n += 1);
+                    }
+                }));
+            }
+            let index = crate::value::State(shown, None);
+            if live {
+                let value = item.with_untracked(Clone::clone);
+                let row = crate::value::State(item, None);
+                return build_scoped(&vm, cx, &low, &builder, (value, index, row));
+            }
+            let (builder, vm, low) = (builder.clone(), vm.clone(), low.clone());
+            switch(
+                move || changes.get(),
+                move |_, cx| {
+                    let value = item.with_untracked(Clone::clone);
+                    build_scoped(&vm, cx, &low, &builder, (value, index.clone()))
+                },
+            )
+            .contents()
+        }
+    };
+    let keyboard = *keyboard;
+    let mut cx = cx.as_deref_mut();
+    let offset = match offset {
+        Some(offset) => bridge(need(&mut cx), offset, number, |x| Value::Num(x as f64)),
+        None => need(&mut cx).state(0_f32),
+    };
+    let count = {
+        let items = items.clone();
+        move || items.with(|l| l.list().len())
+    };
+    let list_key = {
+        let (items, key, vm) = (items.clone(), key.clone(), vm.clone());
+        let kept = std::cell::RefCell::new(KeptKeys::default());
+        move |index: usize| -> ListKey {
+            let Some(key) = &key else {
+                return ListKey::Index(index);
+            };
+            let item = items.with(|l| l.list().get(index).cloned().unwrap_or(Value::Nil));
+            if let Some(known) = kept.borrow().get(&item) {
+                return known;
+            }
+            let found = item_key(&vm, key, &item, index);
+            let mut kept = kept.borrow_mut();
+            // The items gone since stop being kept as the list's length.
+            if kept.0.len() > 4 * items.with_untracked(|l| l.list().len()) + 64 {
+                kept.0.clear();
+            }
+            kept.keep(&item, &found);
+            found
+        }
+    };
+    // A row the list has not mounted copies as `row_text` says (given its
+    // index), or as its row would show.
+    let copy = {
+        let (items, builder, vm, explicit) =
+            (items.clone(), builder.clone(), vm.clone(), row_text.clone());
+        let runtime = need(&mut cx).runtime();
+        move |index: usize| -> Option<String> {
+            let item = items.with_untracked(|l| l.list().get(index).cloned())?;
+            if let Some(text) = &explicit {
+                return Some(match vm.call::<Value>(text, index + 1) {
+                    Ok(Value::Nil) => String::new(),
+                    Ok(value) => value.to_string(),
+                    Err(e) => {
+                        vm.report(e);
+                        String::new()
+                    }
+                });
+            }
+            let shown = crate::value::State(runtime.signal(Value::Num((index + 1) as f64)), None);
+            let node = if live {
+                let row = crate::value::State(runtime.signal(item.clone()), None);
+                described(&vm, &builder, (item, shown, row))
+            } else {
+                described(&vm, &builder, (item, shown))
+            };
+            Some(node.map_or_else(String::new, |node| node_text(&node, &vm)))
+        }
+    };
+    if *measured {
+        let cx = need(&mut cx);
+        let mut rows = zgx::compose::VariableHeights::new(&cx.runtime(), 0, *height);
+        if *follow {
+            rows = rows.anchor_end();
+        }
+        let list = match key {
+            None => {
+                let r = rows.clone();
+                cx.retain(cx.runtime().effect(move || {
+                    let _ = r.resize(count());
+                }));
+                measured_virtual_list(offset, rows, *overscan, list_key, row)
+            }
+            // Heights by key, kept as rows move.
+            Some(key) => {
+                let (key, vm, items) = (key.clone(), vm.clone(), items.clone());
+                let mut kept = KeptKeys::default();
+                let keys = move || items.with(|l| item_keys(&vm, &key, l, &mut kept));
+                let estimate = |_: &[ListKey], _: usize| f32::NAN;
+                measured_rows(offset, rows, *overscan, keys, estimate, row)
+            }
+        };
+        return list.keyboard_navigation(keyboard).row_text(copy);
+    }
+    virtual_list(offset, *height, *overscan, count, list_key, row)
+        .keyboard_navigation(keyboard)
+        .row_text(copy)
 }
 
 /// A variable list with sticky rows: the list, and over it the sticky row

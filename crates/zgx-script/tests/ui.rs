@@ -2966,3 +2966,69 @@ fn a_controlled_input_keeps_its_typing_and_shows_changes_from_elsewhere() {
     assert_eq!(h.text("field"), "B");
     assert_eq!(h.error(), None);
 }
+
+#[test]
+fn a_list_of_data_builds_rows_from_items_and_runs_only_the_row_that_changed() {
+    let mut h = Harness::inline(
+        r##"local messages = ui.state("messages", {
+            { id = "a", text = "one" }, { id = "b", text = "two" }, { id = "c", text = "three" },
+        })
+        local built = ui.state("built", 0)
+        ui.command { id = "grow", run = function()
+            messages:set_key({ 2, "text" }, messages:peek()[2].text .. "!")
+        end }
+        ui.command { id = "first", run = function() messages:remove(1) end }
+        ui.command { id = "retitle", run = function() messages:set_key({ 1, "title" }, "x") end }
+        return ui.column { w = 300, h = 400,
+            ui.text { id = "built", "{built}" },
+            -- Built once each, following its item.
+            ui.list { id = "live", w = 300, h = 120, height = 20,
+                data = messages, key = function(m) return m.id end,
+                row = function(m, index, row)
+                    built:set(built:peek() + 1)
+                    return ui.text { id = `live-{m.id}`, function()
+                        return `{index:get()} {row:get().text}`
+                    end }
+                end },
+            -- Built again when its item changes, by place.
+            ui.list { id = "plain", w = 300, h = 120, height = 20, data = messages,
+                row = function(m, index)
+                    return ui.text { id = `plain-{index:peek()}`, m.text, literal = true }
+                end },
+        }"##,
+    );
+    h.frames(1);
+    assert_eq!(h.text("live-b"), "2 two");
+    assert_eq!(h.text("plain-3"), "three");
+    assert_eq!(h.text("built"), "3");
+    // One item changes: its row's function runs, no row is built.
+    let calls = h.calls();
+    assert!(h.host.run_command("grow"));
+    h.frames(1);
+    assert_eq!(h.text("live-b"), "2 two!");
+    assert_eq!(h.text("plain-2"), "two!");
+    assert_eq!(h.text("built"), "3");
+    // The command, the live row's text and the plain row's build.
+    assert!(h.calls() - calls <= 4, "{} calls", h.calls() - calls);
+    // Keyed rows move with their items; their index follows.
+    assert!(h.host.run_command("first"));
+    h.frames(1);
+    assert!(h.find("live-a").is_none());
+    assert_eq!(h.text("live-b"), "1 two!");
+    assert_eq!(h.text("live-c"), "2 three");
+    assert_eq!(h.text("plain-1"), "two!");
+    assert_eq!(h.text("built"), "3");
+    assert_eq!(h.error(), None);
+}
+
+#[test]
+fn a_list_of_data_takes_no_count() {
+    let runtime = zgx::reactive::Runtime::new();
+    let host = zgx_script::ScriptHost::inline(
+        &runtime,
+        "app",
+        r#"return ui.list { data = ui.state("l", {}), count = 3, row = function() return ui.div {} end }"#,
+    );
+    let error = host.reload().unwrap_err();
+    assert!(error.contains("not with `count`"), "{error}");
+}

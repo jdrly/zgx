@@ -754,6 +754,11 @@ pub(crate) enum Kind {
     /// A virtualized list: only visible rows are built.
     List {
         count: Source,
+        /// `data`: the list state its rows show, as `ui.each`'s: its length
+        /// is the count, `key` is given an item, and `row` an item (built
+        /// again when it changes) or, taking a third parameter, its item as
+        /// a state too, kept current (it updates in place).
+        items: Option<Signal<Value>>,
         height: f32,
         /// Each row's own height (`heights`), instead of one `height`: the
         /// row count is its length.
@@ -1927,6 +1932,7 @@ const WIDGET_FIELDS: &[&str] = &[
     "view",
     "bg_grid",
     "count",
+    "data",
     "height",
     "overscan",
     "heights",
@@ -3368,9 +3374,18 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                     "ui.list `measured` and `heights` don't go together: measured rows take their content's height",
                 ));
             }
-            let count = match (&heights, table.get::<mlua::Value>("count")?) {
-                (Some(_), mlua::Value::Nil) => Source::Lit(Lit::Num(0.)),
-                (_, count) => source(lua, Ty::Num, "count", count)?,
+            let items = match table.get::<mlua::Value>("data")? {
+                mlua::Value::Nil => None,
+                data => Some(expect_state(&data, "ui.list's `data`")?),
+            };
+            if items.is_some() && (heights.is_some() || table.contains_key("count")?) {
+                return Err(mlua::Error::runtime(
+                    "ui.list `data` gives the rows: not with `count` or `heights`",
+                ));
+            }
+            let count = match (&heights, &items, table.get::<mlua::Value>("count")?) {
+                (Some(_), _, mlua::Value::Nil) | (_, Some(_), _) => Source::Lit(Lit::Num(0.)),
+                (_, _, count) => source(lua, Ty::Num, "count", count)?,
             };
             let build: Function = table
                 .get("row")
@@ -3397,6 +3412,7 @@ pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
                         owner(lua)?,
                         Kind::List {
                             count,
+                            items,
                             height,
                             heights,
                             sticky,
