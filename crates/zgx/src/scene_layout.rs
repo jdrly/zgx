@@ -524,14 +524,27 @@ impl Scene {
     pub(super) fn measure_hidden(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
         self.node_mut(id).advanced_layout = None;
         let ids = self.node(id).children.clone();
+        // A width no laid out box is forced to, and equal to itself (a NaN
+        // was not: no result measured with it was found again, and each
+        // arranging of the parent measured the subtree afresh, to its
+        // content's size at no width rather than this one's 0x0).
         let hidden = Constraints {
-            force_width: Some(f32::NAN),
+            force_width: Some(f32::INFINITY),
             ..Constraints::default()
         };
         let children = ids
             .into_iter()
             .map(|child| {
-                crate::deep(0, || self.measure_hidden(child, hidden));
+                // Unchanged since it was measured hidden, it measures the same.
+                let node = self.node(child);
+                let kept = node.dirty & LAYOUT == 0
+                    && node
+                        .measurement
+                        .as_ref()
+                        .is_some_and(|m| m.constraints == self.relevant(child, hidden));
+                if !kept {
+                    crate::deep(0, || self.measure_hidden(child, hidden));
+                }
                 (child, Rect::default())
             })
             .collect::<Vec<_>>();

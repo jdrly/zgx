@@ -8357,6 +8357,77 @@ mod measure_work_tests {
         assert_eq!(scene.bounds(bars[4]), Rect::new(24., 0., 4., 10.));
     }
     #[test]
+    fn a_hidden_subtree_is_measured_once_to_no_box() {
+        let mut scene = Scene::new(400., 300.);
+        let column = scene.append(
+            scene.root(),
+            NodeKind::Container(Layout::Column),
+            Style {
+                width: Some(200.),
+                ..Default::default()
+            },
+        );
+        let shown = scene.append(
+            column,
+            NodeKind::Rect(Color(1, 2, 3, 255)),
+            Style {
+                width: Some(50.),
+                height: Some(10.),
+                ..Default::default()
+            },
+        );
+        let hidden = scene.append(
+            column,
+            NodeKind::Container(Layout::Column),
+            Style {
+                layout_options: Some(Arc::new(LayoutOptions {
+                    display: Some(crate::layout::Display::None),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        );
+        let inner = scene.append(
+            hidden,
+            NodeKind::Container(Layout::Column),
+            Style::default(),
+        );
+        let leaf = scene.append(
+            inner,
+            NodeKind::Rect(Color(4, 5, 6, 255)),
+            Style {
+                width: Some(5.),
+                height: Some(5.),
+                ..Default::default()
+            },
+        );
+        scene.flush();
+        for frame in 0..10 {
+            let mut style = scene.style(shown);
+            style.height = Some(11. + frame as f32);
+            scene.set_style(shown, style);
+            scene.flush();
+            assert_eq!(
+                scene.bounds(shown),
+                Rect::new(0., 0., 50., 11. + frame as f32)
+            );
+        }
+        // Measured once hidden, its one result serves every frame after:
+        // none piles up beside it.
+        for id in [inner, leaf] {
+            assert!(
+                scene.node(id).alternates.is_empty(),
+                "{} kept beside the result",
+                scene.node(id).alternates.len()
+            );
+            // No box, as CSS gives `display: none` content (not the 5 high
+            // its own size made it at no width).
+            let bounds = scene.bounds(id);
+            assert_eq!((bounds.width, bounds.height), (0., 0.), "{id:?}");
+            assert!(!scene.layout_visible(id));
+        }
+    }
+    #[test]
     fn a_box_resized_frame_after_frame_lands_where_a_fresh_layout_puts_it() {
         let build = |height: f32| {
             let mut scene = Scene::new(200., 200.);
