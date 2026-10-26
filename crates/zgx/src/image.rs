@@ -125,10 +125,10 @@ impl ImageData {
     ///
     /// Its node's shader parameters (`Scene::set_shader_uniforms`, animated as
     /// `shaderParam0` to `shaderParam5`) reveal it from a point of the window
-    /// out to a rounded box, cell by cell: params[0] is the front (the box's
+    /// out to a rounded box, cell by cell: `params[0]` is the front (the box's
     /// size, 0 to 1 of the window's half-extents), the band of characters
     /// ahead of the image (0: no reveal, all of it shown) and how ragged the
-    /// front is; params[1] the centre's offset from the window's middle, in
+    /// front is; `params[1]` the centre's offset from the window's middle, in
     /// fractions of it. Ahead of the front, nothing; in its band, characters
     /// scattered alone, sparse and faint at its outer edge and denser inward,
     /// scrambling as the front moves; behind it, the image, fading in pixel
