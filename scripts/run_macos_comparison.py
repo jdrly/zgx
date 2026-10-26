@@ -403,7 +403,17 @@ def pacing(scene, framework, mode, repeat, out):
         process = launch(SCENES[scene]['binaries'][framework], mode, seconds, out / f'{framework}.{mode}.{repeat}.pacing.log')
         try:
             result = json.loads(run([str(PACER), str(process.pid), str(WARMUP - 0.5), str(PACING_SECONDS)]))
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
+            # Keep the probe's JSON error for each attempt, including the
+            # first one: the exception's string only names the command.
+            failure = {'framework': framework, 'mode': mode, 'repeat': repeat,
+                       'attempt': attempt + 1, 'command': error.cmd,
+                       'returncode': error.returncode, 'stdout': error.stdout,
+                       'stderr': error.stderr}
+            (out / f'{framework}.{mode}.{repeat}.pacing-error.{attempt + 1}.json').write_text(
+                json.dumps(failure, indent=1) + '\n')
+            print(f'{framework} {mode}: frame pacing failed: '
+                  f'{error.stdout or error.stderr or error}', flush=True)
             exit_code, terminated = finish(process, seconds)
             if abnormal(exit_code, terminated):
                 crash(scene, framework, mode, 'pacing', exit_code)
