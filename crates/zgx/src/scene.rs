@@ -1313,9 +1313,10 @@ struct Node {
     /// out, cleared with its layout.
     reads: std::cell::Cell<u8>,
     isolated: bool,
-    /// Scale, rotation and skew; a node with one paints as a layer. Boxed:
-    /// few nodes have one, and every node's size costs each tree walk.
-    local: Option<Box<LocalTransform>>,
+    /// Scale, rotation and skew, and its zoom; a node with either paints as
+    /// a layer. Boxed: few nodes have one, and every node's size costs each
+    /// tree walk.
+    local: Option<Box<Local>>,
     /// An alpha mask over the subtree (`Scene::set_mask`): a layer too.
     image_mask: Option<Box<ImageMask>>,
     /// Its clip inset (`Scene::set_clip_inset`).
@@ -1346,15 +1347,48 @@ struct Node {
     /// write knows the style is still the one it gave (`set_box`).
     style_writes: u32,
 }
+/// A node's local transform and zoom (`Node::local`).
+#[derive(Clone, Copy, PartialEq)]
+struct Local {
+    transform: LocalTransform,
+    /// Its subtree's lengths times this on screen (`Scene::set_zoom`).
+    zoom: f32,
+}
 impl Node {
     fn local(&self) -> LocalTransform {
-        self.local.as_deref().copied().unwrap_or_default()
+        self.local
+            .as_deref()
+            .map_or(LocalTransform::IDENTITY, |local| local.transform)
     }
-    /// Whether it has a local transform other than the identity.
+    /// Its zoom (`Scene::set_zoom`): 1 unless set.
+    fn zoom(&self) -> f32 {
+        self.local.as_deref().map_or(1., |local| local.zoom)
+    }
+    /// Whether it has a local transform other than the identity, or a
+    /// zoom: either maps its subtree through `matrix`.
     fn transformed(&self) -> bool {
         self.local
             .as_deref()
-            .is_some_and(|local| !local.is_identity())
+            .is_some_and(|local| !local.transform.is_identity() || local.zoom != 1.)
+    }
+    /// Its subtree's mapping onto its parent's space, for its box at
+    /// `bounds`: its local transform, then its zoom about its top-left.
+    fn matrix(&self, bounds: Rect) -> crate::affine::Affine {
+        let Some(local) = self.local.as_deref() else {
+            return crate::affine::Affine::default();
+        };
+        let matrix = local.transform.matrix(bounds);
+        match local.zoom {
+            1. => matrix,
+            zoom => matrix.then(crate::affine::Affine {
+                a: zoom,
+                b: 0.,
+                c: 0.,
+                d: zoom,
+                tx: bounds.x * (1. - zoom),
+                ty: bounds.y * (1. - zoom),
+            }),
+        }
     }
     /// Whether it composites through a content blur.
     fn filtered(&self) -> bool {
@@ -1366,10 +1400,15 @@ impl Node {
         self.filtered() || self.image_mask.is_some()
     }
     fn set_local(&mut self, transform: LocalTransform) {
+        let zoom = self.zoom();
+        self.set_local_and_zoom(transform, zoom);
+    }
+    fn set_local_and_zoom(&mut self, transform: LocalTransform, zoom: f32) {
+        let local = Local { transform, zoom };
         match &mut self.local {
-            _ if transform == LocalTransform::IDENTITY => self.local = None,
-            Some(local) => **local = transform,
-            None => self.local = Some(Box::new(transform)),
+            _ if transform == LocalTransform::IDENTITY && zoom == 1. => self.local = None,
+            Some(old) => **old = local,
+            None => self.local = Some(Box::new(local)),
         }
     }
 }
@@ -1406,6 +1445,21 @@ struct Constraints {
     percent_height: Option<f32>,
     force_width: Option<f32>,
     force_height: Option<f32>,
+}
+impl Constraints {
+    /// Every length times `factor`: a zoomed node's room in its own points
+    /// (`Scene::set_zoom`).
+    fn scaled(self, factor: f32) -> Self {
+        let scale = |length: Option<f32>| length.map(|length| length * factor);
+        Self {
+            width: scale(self.width),
+            height: scale(self.height),
+            percent_width: scale(self.percent_width),
+            percent_height: scale(self.percent_height),
+            force_width: scale(self.force_width),
+            force_height: scale(self.force_height),
+        }
+    }
 }
 type ChildPlacement = (NodeId, Rect, Constraints);
 struct Measurement {
@@ -2045,6 +2099,14 @@ pub struct Scene {
     /// Nodes with a local transform: none keeps every geometry query on
     /// the translation-only paths.
     transformed: usize,
+    /// Nodes with a zoom (`set_zoom`): none, and `zoom_around` looks no
+    /// further.
+    zoomed: usize,
+    /// The window's zoom (`set_window_zoom`), which `fixed` nodes undo.
+    window_zoom: f32,
+    /// Nodes that keep their size whatever the zooms around them
+    /// (`set_zoom_fixed`).
+    fixed_zooms: Vec<NodeId>,
     /// Nodes with a content blur: with `transformed`, whether damage takes
     /// the placed paths (`descend`).
     filtered: usize,
@@ -2245,6 +2307,9 @@ impl Scene {
             repaints_unread: REPAINTS_UNREAD,
             isolation_count: 0,
             transformed: 0,
+            zoomed: 0,
+            window_zoom: 1.,
+            fixed_zooms: Vec::new(),
             filtered: 0,
             promoted_count: 0,
             text_measurer: None,
@@ -2558,22 +2623,113 @@ impl Scene {
             self.node_mut(id).set_local(transform);
             return;
         }
-        self.damage_subtree(id);
-        if old.is_identity() != transform.is_identity() {
-            if transform.is_identity() {
-                self.transformed -= 1;
-            } else {
-                self.transformed += 1;
-            }
+        let zoom = self.node(id).zoom();
+        self.set_local_parts(id, transform, zoom);
+        self.invalidate(id, COMPOSITE);
+    }
+    /// `id`'s zoom (`set_zoom`): 1 unless set.
+    pub fn zoom(&self, id: NodeId) -> f32 {
+        self.node(id).zoom()
+    }
+    /// How much `id` shows zoomed: its own zoom times its ancestors'. A
+    /// native view's content follows it (a page's zoom, a terminal's text).
+    pub fn zoom_around(&self, id: NodeId) -> f32 {
+        if self.zoomed == 0 {
+            return 1.;
         }
+        std::iter::once(id)
+            .chain(self.ancestors(id))
+            .map(|id| self.node(id).zoom())
+            .product()
+    }
+    /// Zoom `id`'s subtree by `zoom`, as CSS's `zoom`: it lays out in its own
+    /// points, under its parent's room divided by `zoom`, and takes `zoom`
+    /// times the room it needs there; it paints scaled about its top-left,
+    /// as a layer rasterized at the scale it shows at (crisp, not
+    /// resampled). Its own box (`bounds`) is in its own points;
+    /// `transformed_bounds` gives where it shows. Hit testing, damage and
+    /// clips follow it as a local transform's do. Nonfinite or nonpositive
+    /// zooms are 1.
+    pub fn set_zoom(&mut self, id: NodeId, zoom: f32) {
+        if !self.fixed_zooms.is_empty() {
+            self.fixed_zooms.retain(|fixed| *fixed != id);
+        }
+        self.zoom_to(id, zoom);
+        self.refresh_fixed_zooms();
+    }
+    /// Keep `id` at its own size whatever zooms its ancestors and the window
+    /// have (a toolbar, a canvas zooming itself): its zoom undoes theirs,
+    /// kept so as they change. `false` leaves it at 1.
+    pub fn set_zoom_fixed(&mut self, id: NodeId, fixed: bool) {
+        let was = self.fixed_zooms.contains(&id);
+        match (was, fixed) {
+            (false, true) => self.fixed_zooms.push(id),
+            (true, false) => {
+                self.fixed_zooms.retain(|other| *other != id);
+                self.zoom_to(id, 1.);
+            }
+            _ => return,
+        }
+        self.refresh_fixed_zooms();
+    }
+    /// The window's zoom (`Ui::zoom`), which fixed nodes undo
+    /// (`set_zoom_fixed`).
+    pub fn set_window_zoom(&mut self, zoom: f32) {
+        self.window_zoom = if zoom.is_finite() && zoom > 0. {
+            zoom
+        } else {
+            1.
+        };
+        self.refresh_fixed_zooms();
+    }
+    /// Each fixed node's zoom, undoing the window's and its ancestors'.
+    fn refresh_fixed_zooms(&mut self) {
+        for index in 0..self.fixed_zooms.len() {
+            let id = self.fixed_zooms[index];
+            if !self.contains(id) {
+                continue;
+            }
+            let around: f32 = self.ancestors(id).map(|id| self.node(id).zoom()).product();
+            self.zoom_to(id, (self.window_zoom * around).recip());
+        }
+    }
+    fn zoom_to(&mut self, id: NodeId, zoom: f32) {
+        let zoom = if zoom.is_finite() && zoom > 0. {
+            zoom
+        } else {
+            1.
+        };
+        if self.node(id).zoom() == zoom {
+            return;
+        }
+        match (self.node(id).zoom() == 1., zoom == 1.) {
+            (true, false) => self.zoomed += 1,
+            (false, true) => self.zoomed -= 1,
+            _ => {}
+        }
+        let transform = self.node(id).local();
+        self.set_local_parts(id, transform, zoom);
+        // Its room and the room it takes change: laid out again.
+        self.invalidate(id, LAYOUT | COMPOSITE);
+    }
+    /// Give `id` `transform` and `zoom`, damaging its subtree where it
+    /// showed and where it shows, and counting it as transformed.
+    fn set_local_parts(&mut self, id: NodeId, transform: LocalTransform, zoom: f32) {
+        self.damage_subtree(id);
+        let was = self.node(id).transformed();
         let node = self.node_mut(id);
-        node.set_local(transform);
+        node.set_local_and_zoom(transform, zoom);
+        let is = node.transformed();
         if !std::mem::replace(&mut node.promoted, true) {
             self.promoted_count += 1;
         }
+        match (was, is) {
+            (false, true) => self.transformed += 1,
+            (true, false) => self.transformed -= 1,
+            _ => {}
+        }
         self.geometry_revision = self.geometry_revision.wrapping_add(1);
         self.damage_subtree(id);
-        self.invalidate(id, COMPOSITE);
     }
     /// Whether `id` paints as a cached layer: isolated, transformed, blurred
     /// (`Effects::filter_blur`) or masked.
@@ -3213,7 +3369,7 @@ impl Scene {
                 (point, parent_clip)
             } else {
                 // Clipped around it, or flattened to nothing, nothing in it is hit.
-                let Some(inverse) = node.local().matrix(bounds).inverse() else {
+                let Some(inverse) = node.matrix(bounds).inverse() else {
                     continue;
                 };
                 if !inside(parent_clip, point) {
@@ -4075,6 +4231,10 @@ impl Scene {
             self.directions.remove(&id);
         }
         self.transformed -= usize::from(node.transformed());
+        self.zoomed -= usize::from(node.zoom() != 1.);
+        if !self.fixed_zooms.is_empty() {
+            self.fixed_zooms.retain(|fixed| *fixed != id);
+        }
         self.filtered -= usize::from(node.filtered());
         self.promoted_count -= usize::from(node.promoted);
     }
@@ -5030,7 +5190,7 @@ impl Scene {
         // A content blur starts a layer as a transform does: it spreads
         // what the layer paints, in the layer's space, and its own clip
         // applies inside, before the blur.
-        let matrix = node.local().matrix(bounds);
+        let matrix = node.matrix(bounds);
         let spread = match node.filtered() {
             true => filter_spread(node.effects.filter_blur) * stretch(matrix),
             false => 0.,
@@ -5132,7 +5292,7 @@ impl Scene {
             .map(|ink| match node.transformed() {
                 false => ink,
                 // About its untranslated box: translating after commutes.
-                true => node.local().matrix(node.bounds).bounds(ink),
+                true => node.matrix(node.bounds).bounds(ink),
             })
             .map(|ink| ink.translated(node.transform));
         node.ink.set(ink);
@@ -5428,13 +5588,17 @@ impl Scene {
         if style.relative || style.absolute {
             return None;
         }
+        if self.node(parent).zoom() != 1. {
+            return None;
+        }
         let mut current = self.node(parent).parent;
         while let Some(ancestor) = current {
             let node = self.node(ancestor);
             if node.style.relative {
                 return Some(ancestor);
             }
-            if node.style.absolute {
+            // A zoomed node holds what is placed within it, in its points.
+            if node.style.absolute || node.zoom() != 1. {
                 return None;
             }
             current = node.parent;
@@ -5601,7 +5765,26 @@ impl Scene {
             self.measure_calls += 1;
         }
         self.visit(id);
+        self.measured_in::<false>(id, constraints, full)
+    }
+    /// `measured`; `OWN`: in `id`'s own points, its zoom already applied.
+    fn measured_in<const OWN: bool>(
+        &mut self,
+        id: NodeId,
+        constraints: Constraints,
+        full: bool,
+    ) -> ((f32, f32), Constraints) {
         let node = self.node(id);
+        // Zoomed: laid out in its own points, its room divided by its zoom,
+        // the room it takes times it. Its results are kept in its points.
+        if !OWN && node.local.is_some() {
+            let zoom = node.zoom();
+            if zoom != 1. {
+                let inner = constraints.scaled(zoom.recip());
+                let (size, _) = self.measured_in::<true>(id, inner, full);
+                return ((size.0 * zoom, size.1 * zoom), constraints);
+            }
+        }
         let constraints = self.relevant_in(id, node, constraints);
         let pass = self.layout_pass;
         let clean = node.dirty & LAYOUT == 0;
@@ -6436,9 +6619,21 @@ impl Scene {
         context: &mut Option<DamageContext>,
     ) {
         self.visit(id);
-        let (x, y) = match self.node(id).style.snap {
+        let node = self.node(id);
+        let (snap, local) = (node.style.snap, node.local.is_some());
+        let (x, y) = match snap {
             true => self.snap(id, x, y),
             false => (x, y),
+        };
+        // Zoomed: on a whole device pixel, so its layer shows texel for
+        // pixel (`set_zoom`).
+        let (x, y) = match local && self.node(id).zoom() != 1. {
+            false => (x, y),
+            true if self.pixel_scale > 0. => {
+                let scale = self.pixel_scale;
+                ((x * scale).round() / scale, (y * scale).round() / scale)
+            }
+            true => (x.round(), y.round()),
         };
         // What it holds, read at once: laying it out leaves these as they are.
         let node = self.node(id);
@@ -6524,8 +6719,10 @@ impl Scene {
     /// A `snap` node placed at `x`, `y`: its edges on whole points, laid
     /// out again at the size between them if that differs.
     fn snap(&mut self, id: NodeId, x: f32, y: f32) -> (f32, f32) {
+        // A zoomed node's edges are whole points where it shows.
+        let zoom = self.node(id).zoom();
         let measurement = self.node(id).measurement.as_ref().unwrap();
-        let (w, h) = measurement.size;
+        let (w, h) = (measurement.size.0 * zoom, measurement.size.1 * zoom);
         let (x0, y0) = (x.round(), y.round());
         let size = (
             ((x + w).round() - x0).max(0.),
@@ -6535,7 +6732,7 @@ impl Scene {
             let constraints = Constraints {
                 force_width: Some(size.0),
                 force_height: Some(size.1),
-                ..measurement.constraints
+                ..measurement.constraints.scaled(zoom)
             };
             self.measure_full(id, constraints);
         }
@@ -7453,7 +7650,7 @@ impl Scene {
             }
             // A transformed layer clips itself, inside, to its rotated box; a
             // blurred or masked one clips inside, before its effect.
-            let matrix = (isolated && transformed).then(|| node.local().matrix(bounds));
+            let matrix = (isolated && transformed).then(|| node.matrix(bounds));
             // A border pass (its border and outline over what it holds)
             // isn't cut by its own clip, as CSS doesn't cut an outline.
             let clip = match (isolated && (transformed || effect)) || border {

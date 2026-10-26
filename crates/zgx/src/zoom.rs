@@ -41,6 +41,10 @@ impl Ui {
         if self.storage.zoom.replace(zoom) == zoom {
             return;
         }
+        // Fixed nodes undo it (`Scene::set_zoom_fixed`).
+        if let Ok(mut scene) = self.scene.try_borrow_mut() {
+            scene.set_window_zoom(zoom as f32);
+        }
         let host = self.storage.zoom_host.borrow().clone();
         if let Some(host) = host {
             host();
