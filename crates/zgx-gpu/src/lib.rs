@@ -759,6 +759,42 @@ impl Shaped {
             + self.quads.capacity() * std::mem::size_of::<Quad>()
     }
 }
+/// The atlas's key: cosmic-text's, losslessly, with its scalar fields
+/// packed into words so it hashes and compares in a few operations.
+/// Four-byte aligned, its table's buckets are the size of those holding
+/// cosmic-text's key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AtlasKey {
+    font: cosmic_text::fontdb::ID,
+    words: [u32; 4],
+}
+impl From<CacheKey> for AtlasKey {
+    fn from(key: CacheKey) -> Self {
+        // Bins take 2 bits each (4 variants), the glyph, weight and optical
+        // size 16 each: 52 bits.
+        let glyph = (key.x_bin as u64)
+            | ((key.y_bin as u64) << 2)
+            | (u64::from(key.glyph_id) << 4)
+            | (u64::from(key.font_weight.0) << 20)
+            | (u64::from(key.font_optical) << 36);
+        Self {
+            font: key.font_id,
+            words: [
+                key.font_size_bits,
+                key.flags.bits(),
+                glyph as u32,
+                (glyph >> 32) as u32,
+            ],
+        }
+    }
+}
+impl std::hash::Hash for AtlasKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.font, state);
+        state.write_u64(u64::from(self.words[0]) | (u64::from(self.words[1]) << 32));
+        state.write_u64(u64::from(self.words[2]) | (u64::from(self.words[3]) << 32));
+    }
+}
 #[derive(Clone, Copy)]
 struct AtlasEntry {
     x: u32,
@@ -2252,7 +2288,7 @@ pub struct GpuRenderer {
     blit_bind: Option<wgpu::BindGroup>,
     atlas: wgpu::Texture,
     atlas_size: u32,
-    entries: FxHashMap<CacheKey, Option<AtlasEntry>>,
+    entries: FxHashMap<AtlasKey, Option<AtlasEntry>>,
     cursor: (u32, u32, u32),
     fonts: Rc<RefCell<FontSystem>>,
     text_cache: Rc<RefCell<prepared::TextCache>>,
@@ -7554,7 +7590,7 @@ impl GpuRenderer {
                     "glyph font size exceeds atlas raster limit".into(),
                 ));
             }
-            let entry = match self.entries.get_mut(&glyph.key) {
+            let entry = match self.entries.get_mut(&AtlasKey::from(glyph.key)) {
                 Some(entry) => *entry,
                 None => self.raster_glyph(glyph.key, stats)?,
             };
@@ -7578,7 +7614,7 @@ impl GpuRenderer {
                 "glyph font size exceeds atlas raster limit".into(),
             ));
         }
-        if let Some(entry) = get_in::<MODE, _, _>(&mut self.entries, &key) {
+        if let Some(entry) = get_in::<MODE, _, _>(&mut self.entries, &AtlasKey::from(key)) {
             return Ok(*entry);
         }
         self.raster_glyph(key, stats)
@@ -7600,12 +7636,12 @@ impl GpuRenderer {
             .swash
             .get_image_uncached(&mut self.fonts.borrow_mut(), key)
         else {
-            self.entries.insert(key, None);
+            self.entries.insert(AtlasKey::from(key), None);
             return Ok(None);
         };
         let p = image.placement;
         if p.width == 0 || p.height == 0 {
-            self.entries.insert(key, None);
+            self.entries.insert(AtlasKey::from(key), None);
             return Ok(None);
         }
         let cell_width = p.width + 2;
@@ -7658,7 +7694,7 @@ impl GpuRenderer {
             left: p.left,
             top: p.top,
         };
-        self.entries.insert(key, Some(entry));
+        self.entries.insert(AtlasKey::from(key), Some(entry));
         stats.glyph_uploads += 1;
         Ok(Some(entry))
     }
