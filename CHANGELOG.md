@@ -2,6 +2,15 @@
 
 zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps, newest first.
 
+## 0.1.2 (2026-10-26)
+
+### Fixed
+
+**A Luau app starts in a new project.** Since luau0-src 0.22.1 (Luau 744, 2026-10-24), an app depending on zgx-script 0.1.0 or 0.1.1 that resolved its dependencies afresh panicked as its first script loaded: "Error configuring Luau … attempt to load a text chunk (mode is 'b')". zgx's own lockfile held 0.22.0, so its tests never met it. `zgx-mlua` 0.12.3 holds Luau at 0.22.0 (Luau 740) until mlua works with 744, and a release now checks that a new app, resolving every dependency afresh, runs a script.
+- *Migrate:* depend on 0.1.2 (`cargo update -p zgx-script`). On 0.1.0 or 0.1.1, `cargo update -p luau0-src --precise 0.22.0+luau740` fixes an app.
+
+Nothing else changed since 0.1.1.
+
 ## 0.1.1 (2026-10-26)
 
 A patch: a Luau app runs as before, and Rust code builds as before unless it matches every variant of one of the enums below or writes one of the structs below field by field (each says what to add). Two fixes change what a box looks like, as CSS draws it; each says what to check.
