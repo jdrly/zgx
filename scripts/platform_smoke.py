@@ -10,6 +10,7 @@ import ctypes
 import json
 import os
 import pathlib
+import re
 import select
 import shutil
 import subprocess
@@ -186,11 +187,44 @@ def wait_for_exit(app, env, output, seconds):
         # The input method's side too (#564: blocked in an XIM round trip,
         # the app waits on ibus-x11 or the two wait on each other).
         with (output / "display.log").open("a") as log:
-            for pid in display_processes(env, "ibus-x11"):
+            # Who holds each input method's selection (`@server=…`): with
+            # #578 an app asks before a round trip, and one still hung.
+            log.write("\n" + input_method_owners(env))
+            ibus = [pid for name in ("ibus-x11", "ibus-daemon", "ibus-ui-gtk3", "ibus-engine-lib")
+                    for pid in display_processes(env, name)]
+            for pid in ibus:
+                state = subprocess.run(["ps", "-o", "pid,stat,wchan:30,comm", "-p", str(pid)], capture_output=True,
+                                       text=True).stdout
                 stacks = subprocess.run(["sudo", "-n", "gdb", "-q", "-batch", "-p", str(pid), "-ex",
                                          "thread apply all bt 25"], capture_output=True, text=True, timeout=60)
-                log.write(f"\n$ gdb -p {pid} (ibus-x11)\n{stacks.stdout}{stacks.stderr}")
+                log.write(f"\n$ ps; gdb -p {pid}\n{state}{stacks.stdout}{stacks.stderr}")
+            if not ibus:
+                log.write("\nno IBus process on this display\n")
         raise
+
+
+def input_method_owners(env):
+    """Each XIM server the root names (`XIM_SERVERS`) and who owns its
+    selection: the window, and what xwininfo says of it."""
+    import ctypes
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes, x11.XOpenDisplay.restype = [ctypes.c_char_p], ctypes.c_void_p
+    x11.XInternAtom.argtypes, x11.XInternAtom.restype = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int], ctypes.c_ulong
+    x11.XGetSelectionOwner.argtypes, x11.XGetSelectionOwner.restype = [ctypes.c_void_p, ctypes.c_ulong], ctypes.c_ulong
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    servers = subprocess.run(["xprop", "-root", "XIM_SERVERS"], env=env, capture_output=True, text=True).stdout
+    names = re.findall(r"@server=[^,\s]+", servers)
+    display = x11.XOpenDisplay(env["DISPLAY"].encode())
+    if not display:
+        return "input method owners: no display\n"
+    report = f"input method owners ({servers.strip()}):\n"
+    for name in names:
+        owner = x11.XGetSelectionOwner(display, x11.XInternAtom(display, name.encode(), 1))
+        info = subprocess.run(["xwininfo", "-id", hex(owner)], env=env, capture_output=True, text=True).stdout \
+            if owner else ""
+        report += f"{name}: owner {hex(owner)}\n{info}"
+    x11.XCloseDisplay(display)
+    return report
 
 
 def display_processes(env, name):
