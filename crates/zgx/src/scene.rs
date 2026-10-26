@@ -1470,6 +1470,11 @@ impl From<&Measurement> for ProbeSize {
 /// `Scene::relevant` for `node`, whose `reads_bits` are `bits`.
 #[inline(always)]
 fn relevant_to(node: &Node, bits: u8, mut constraints: Constraints) -> Constraints {
+    relevant_to_in_place(node, bits, &mut constraints);
+    constraints
+}
+#[inline(always)]
+fn relevant_to_in_place(node: &Node, bits: u8, constraints: &mut Constraints) {
     if bits & OWN_PERCENT_WIDTH == 0 {
         constraints.percent_width = None;
     }
@@ -1493,7 +1498,6 @@ fn relevant_to(node: &Node, bits: u8, mut constraints: Constraints) -> Constrain
     if constraints.force_height.is_some() || bits & READS_HEIGHT == 0 {
         constraints.height = constraints.force_height;
     }
-    constraints
 }
 /// Put `evicted` (most recent first) ahead of `sizes`' older entries, each
 /// constraint kept once, at most `PROBE_SIZES`.
@@ -5407,13 +5411,13 @@ impl Scene {
     /// `relevant` for `id`'s node, already in hand: one lookup for
     /// `measured`, which reads the node too.
     #[inline(always)]
-    fn relevant_in(&self, id: NodeId, node: &Node, constraints: Constraints) -> Constraints {
+    fn relevant_in(&self, id: NodeId, node: &Node, constraints: &mut Constraints) {
         let cached = node.reads.get();
         let bits = match cached & READS_KNOWN {
             0 => self.reads_bits(id),
             _ => cached,
         };
-        relevant_to(node, bits, constraints)
+        relevant_to_in_place(node, bits, constraints);
     }
     /// The room `id`'s border takes in layout (`QuadStyle::layout_border`).
     pub(super) fn layout_border(&self, id: NodeId) -> Insets {
@@ -5595,64 +5599,64 @@ impl Scene {
     }
     /// `id`'s size under `constraints`, for a probe: a kept size serves,
     /// leaving whichever result `id` holds whole as it was.
-    fn measure(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
-        self.measured(id, constraints, false).0
+    fn measure(&mut self, id: NodeId, mut constraints: Constraints) -> (f32, f32) {
+        self.measured(id, &mut constraints, false)
     }
     /// `measure`, and `constraints` as `id`'s results are kept under them
     /// (`relevant`): a parent stores those, so that `arrange` finds the
     /// child's result without asking again.
-    fn measure_kept(&mut self, id: NodeId, constraints: Constraints) -> ((f32, f32), Constraints) {
-        self.measured(id, constraints, false)
+    fn measure_kept(
+        &mut self,
+        id: NodeId,
+        mut constraints: Constraints,
+    ) -> ((f32, f32), Constraints) {
+        let size = self.measured(id, &mut constraints, false);
+        (size, constraints)
     }
     /// `id` laid out under `constraints`, the result it then holds (with its
     /// children's places) for `arrange`.
-    fn measure_full(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
-        self.measured(id, constraints, true).0
+    fn measure_full(&mut self, id: NodeId, mut constraints: Constraints) -> (f32, f32) {
+        self.measured(id, &mut constraints, true)
     }
-    fn measured(
-        &mut self,
-        id: NodeId,
-        constraints: Constraints,
-        full: bool,
-    ) -> ((f32, f32), Constraints) {
+    fn measured(&mut self, id: NodeId, constraints: &mut Constraints, full: bool) -> (f32, f32) {
         #[cfg(test)]
         {
             self.measure_calls += 1;
         }
         self.visit(id);
         let node = self.node(id);
-        let constraints = self.relevant_in(id, node, constraints);
+        self.relevant_in(id, node, constraints);
         let pass = self.layout_pass;
         let clean = node.dirty & LAYOUT == 0;
         // The pass first: a changed node's older results never serve.
-        let usable = |m: &Measurement| (clean || m.pass == pass) && m.constraints == constraints;
+        let usable = |m: &Measurement| (clean || m.pass == pass) && m.constraints == *constraints;
         if let Some(current) = &node.measurement
             && usable(current)
         {
-            return (current.size, constraints);
+            return current.size;
         }
         if let Some(index) = node.alternates.iter().position(usable) {
             // Promote it: `arrange` places children from the current result.
             let node = self.node_mut(id);
             let size = promote_measurement(&mut node.measurement, &mut node.alternates, index);
             node.arrange_dirty = true;
-            return (size, constraints);
+            return size;
         }
         if !full
             && let Some(kept) = node
                 .sizes
                 .iter()
-                .find(|m| (clean || m.pass == pass) && m.constraints == constraints)
+                .find(|m| (clean || m.pass == pass) && m.constraints == *constraints)
         {
-            return (kept.size, constraints);
+            return kept.size;
         }
         // Measuring recurses into the children: one level of the tree more.
         self.measure_depth += 1;
         let size = crate::deep(self.measure_depth, || {
-            self.measure_uncached(id, constraints)
+            self.measure_uncached(id, *constraints)
         });
         self.measure_depth -= 1;
-        (size, constraints)
+        size
     }
     /// `measured`, when nothing kept serves.
     fn measure_uncached(&mut self, id: NodeId, constraints: Constraints) -> (f32, f32) {
