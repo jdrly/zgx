@@ -855,6 +855,42 @@ struct KeptItem {
     draws: std::ops::Range<u32>,
     /// A plain box's clip and compositing, to patch a move of it alone.
     boxed: Option<KeptBox>,
+    /// The item after its subtree's (its own, its descendants' and its
+    /// border pass): the run a splice replaces.
+    end: u32,
+}
+/// Where each of `items`' subtrees ends (`KeptItem::end`), numbered from
+/// `base`: items in paint order, each node's descendants after it and its
+/// border pass after them.
+fn subtree_ends(scene: &Scene, items: &mut [KeptItem], base: u32) {
+    let mut open: Vec<(NodeId, usize)> = Vec::new();
+    for at in 0..items.len() {
+        let id = items[at].id;
+        let after = base + at as u32;
+        if open.iter().any(|&(node, _)| node == id) {
+            // Its border pass closes it.
+            while let Some((node, first)) = open.pop() {
+                items[first].end = after + u32::from(node == id);
+                if node == id {
+                    break;
+                }
+            }
+            items[at].end = after + 1;
+            continue;
+        }
+        let parent = scene.parent(id);
+        while let Some(&(node, first)) = open.last()
+            && Some(node) != parent
+        {
+            items[first].end = after;
+            open.pop();
+        }
+        open.push((id, at));
+    }
+    let after = base + items.len() as u32;
+    for (_, first) in open {
+        items[first].end = after;
+    }
 }
 /// Paint that changes without the scene marking its node: a native
 /// surface shows each frame its source gives it.
@@ -879,6 +915,14 @@ const KEEP_AGAIN: u8 = 2;
 /// Kept frames lost in a row before they patched once, after which a frame
 /// drawn whole keeps none (`GpuRenderer::unpatched_keeps`).
 const UNPATCHED_KEEPS: u8 = 2;
+/// The share of a kept window's items its spliced subtrees may hold
+/// (`render_kept`): past it, walking them again costs more than drawing
+/// the frame as usual.
+const SPLICE_SHARE: f32 = 0.25;
+/// The share of a window a frame's damage must cover for its repainted
+/// subtrees to be spliced (`render_kept`): below it, drawing the frame as
+/// usual walks less.
+const SPLICE_DAMAGE: f32 = 0.5;
 /// A plain box (`plain_box`) as `patch_box` makes it: what it paints, its
 /// box, its clip and how it composites.
 #[derive(Clone, Copy)]
@@ -1062,6 +1106,20 @@ struct Patchable {
     revision: u64,
     skip: u8,
     backoff: u8,
+    /// A kept frame was given up since one last drew from it, its splices
+    /// walking too much of it (`SPLICE_SHARE`): frames repainting more than
+    /// leaves don't count as frames that would patch until one does.
+    refused: bool,
+}
+/// The items a frame loop leaves (`render_flat`, which may return early),
+/// dropped out of line: their drop inlined at each of its exits grows the
+/// loop, which then costs every frame more instructions (measured: 0.5%).
+struct LeftItems<'a, T>(&'a mut std::vec::IntoIter<T>);
+impl<T> Drop for LeftItems<'_, T> {
+    #[inline(never)]
+    fn drop(&mut self) {
+        self.0.by_ref().for_each(drop);
+    }
 }
 /// Spare quads a text keeps for its value to grow into, past its own.
 fn text_room(glyphs: u32) -> u32 {
@@ -3009,6 +3067,7 @@ impl GpuRenderer {
             && let Some(stats) = self.render_kept(scene, damage, regions, viewport)?
         {
             self.unpatched_keeps = 0;
+            self.patchable.refused = false;
             if let Some(kept) = &mut self.kept {
                 kept.patched = true;
             }
@@ -3050,7 +3109,6 @@ impl GpuRenderer {
         let keep = !maintained
             && self.plane.is_none()
             && !self.in_layer
-            && self.copies.is_empty()
             && !self.atlas_filling()
             && !scene.has_backdrop_blur()
             && !scene.has_overflow_fades()
@@ -3504,15 +3562,19 @@ impl GpuRenderer {
         let area = |r: &Rect| r.width * r.height;
         // (Flushes unread since, while skipping: read again from the next.)
         let read = *covered.start() == last.flushes + 1;
+        // (Repainted subtrees and nodes mounted or removed are spliced;
+        // since a splice walked too much, only leaves alone, patched in
+        // place.)
         let patches = read
-            && last.revision == scene.content_revision()
             && !repaints.is_empty()
             && regions.iter().map(area).sum::<f32>() >= KEPT_SHARE * area(&viewport)
-            && repaints.iter().all(|&(id, flags)| {
-                flags & zgx::scene::repaint::COMPOSITE == 0
-                    && scene.contains(id)
-                    && scene.children(id).is_empty()
-            });
+            && (!last.refused
+                || last.revision == scene.content_revision()
+                    && repaints.iter().all(|&(id, flags)| {
+                        flags & zgx::scene::repaint::COMPOSITE == 0
+                            && scene.contains(id)
+                            && scene.children(id).is_empty()
+                    }));
         (last.run, last.skip, last.backoff) = match (read, patches) {
             (_, true) => (last.run.saturating_add(1), 0, 0),
             (false, false) => (0, 0, last.backoff),
@@ -3591,9 +3653,12 @@ impl GpuRenderer {
                     room,
                     draws: first..end,
                     boxed,
+                    end: 0,
                 },
             )
             .collect();
+        let mut items = items;
+        subtree_ends(scene, &mut items, 0);
         let mut by_node = FxHashMap::default();
         for (index, item) in items.iter().enumerate().rev() {
             by_node.insert(item.id, index as u32);
@@ -3638,8 +3703,8 @@ impl GpuRenderer {
         let (covered, repaints) = scene.repaints();
         // Kept while the scene and target are those it was drawn for, and
         // the atlas keeps its glyphs where they were.
+        // (Nodes mounted or removed lie in subtrees spliced below.)
         if *covered.start() != kept.flushes + 1
-            || kept.revision != scene.content_revision()
             || kept.identity != scene.identity()
             || kept.atlas_epoch != self.atlas_epoch
             || kept.viewport != viewport
@@ -3648,7 +3713,6 @@ impl GpuRenderer {
             || self.fresh
             || self.plane.is_some()
             || self.in_layer
-            || !self.copies.is_empty()
             || !self.effect_jobs.is_empty()
             || scene.has_backdrop_blur()
             || scene.has_overflow_fades()
@@ -3668,29 +3732,37 @@ impl GpuRenderer {
             std::mem::take(&mut self.box_quads),
             std::mem::take(&mut self.box_draws),
         );
+        // Subtrees repainted (a container, a composite change, a changed
+        // list of children, a node not worked out alone): each walked again
+        // whole from what its root inherited and spliced over the items it
+        // had (`splice`). Kept items of removed nodes and mounted nodes not
+        // kept must lie in one.
+        let mut splices: Vec<(usize, usize, NodeId)> = Vec::new();
+        let (mut leaving, mut entering) = (Vec::new(), Vec::new());
         for &(id, flags) in repaints {
-            if flags & zgx::scene::repaint::COMPOSITE != 0
-                || !scene.contains(id)
+            let first = kept.by_node.get(&id).map(|&first| first as usize);
+            if !scene.contains(id) {
+                leaving.extend(first);
+                continue;
+            }
+            let Some(first) = first else {
+                entering.push(id);
+                continue;
+            };
+            if flags & (zgx::scene::repaint::COMPOSITE | zgx::scene::repaint::CHILDREN) != 0
                 || !scene.children(id).is_empty()
             {
-                (self.box_quads, self.box_draws) = (box_quads, box_draws);
-                return Ok(self.recycle_kept(*kept));
+                splices.push((first, kept.items[first].end as usize, id));
+                continue;
             }
-            let Some(&first) = kept.by_node.get(&id) else {
-                (self.box_quads, self.box_draws) = (box_quads, box_draws);
-                return Ok(self.recycle_kept(*kept));
-            };
             // A kept box layout alone moved or resized (`BOX_ONLY`): the same
             // paint and compositing at its new box, without working its item
             // out.
             if flags & zgx::scene::repaint::BOX_ONLY != 0
-                && let Some(boxed) = kept.items[first as usize].boxed
-                && kept
-                    .items
-                    .get(first as usize + 1)
-                    .is_none_or(|next| next.id != id)
+                && let Some(boxed) = kept.items[first].boxed
+                && kept.items.get(first + 1).is_none_or(|next| next.id != id)
             {
-                let (bounds, kind) = scene.box_in(id, &kept.items[first as usize].inherited);
+                let (bounds, kind) = scene.box_in(id, &kept.items[first].inherited);
                 if plain_quad(kind) {
                     boxes += 1;
                     let parts = PlainBox {
@@ -3703,7 +3775,7 @@ impl GpuRenderer {
                     boxes_fit = boxes_fit
                         && self.patch_box(
                             &mut kept,
-                            first as usize,
+                            first,
                             parts,
                             viewport,
                             &mut box_quads,
@@ -3715,20 +3787,19 @@ impl GpuRenderer {
             let over = matches!(scene.kind(id),
                 NodeKind::Quad(quad) | NodeKind::Panel { quad, .. } if quad.paints_over());
             let count = 1 + usize::from(over);
-            let first = first as usize;
             if kept.items[first..]
                 .iter()
                 .take_while(|item| item.id == id)
                 .count()
                 != count
             {
-                (self.box_quads, self.box_draws) = (box_quads, box_draws);
-                return Ok(self.recycle_kept(*kept));
+                splices.push((first, kept.items[first].end as usize, id));
+                continue;
             }
             for place in first..first + count {
                 let Some(item) = scene.item_in(id, &kept.items[place].inherited) else {
-                    (self.box_quads, self.box_draws) = (box_quads, box_draws);
-                    return Ok(self.recycle_kept(*kept));
+                    splices.push((first, kept.items[first].end as usize, id));
+                    break;
                 };
                 let plain = plain_box(&item);
                 kept.items[place].boxed = KeptBox::of(&item, plain);
@@ -3748,6 +3819,46 @@ impl GpuRenderer {
                     places.push(place);
                 }
             }
+        }
+        // Outermost first, nested ones dropped.
+        splices.sort_unstable_by_key(|&(first, _, _)| first);
+        splices.dedup_by(|inner, outer| inner.0 < outer.1);
+        let spliced = |place: usize| {
+            let at = splices.partition_point(|&(first, _, _)| first <= place);
+            at > 0 && place < splices[at - 1].1
+        };
+        // Drawn from the kept frame only with damage over `KEPT_SHARE` of
+        // the window: kept up to date otherwise only where that is cheap
+        // (leaves alone).
+        let area = |r: &Rect| r.width * r.height;
+        let from_kept = regions.iter().map(area).sum::<f32>() >= KEPT_SHARE * area(&viewport);
+        // Walked again, a subtree costs about what drawing it as usual does,
+        // and drawing from the kept frame about what drawing half the window
+        // does: spliced only while the subtrees are a small part of the
+        // window and the damage most of it.
+        let walked: usize = splices.iter().map(|&(first, end, _)| end - first).sum();
+        let splices_pay = walked as f32 <= SPLICE_SHARE * kept.items.len() as f32
+            && regions.iter().map(area).sum::<f32>() >= SPLICE_DAMAGE * area(&viewport);
+        // (Such frames count as frames that wouldn't patch: keeping again
+        // backs off, `would_patch`.)
+        if !splices.is_empty() && !splices_pay {
+            self.patchable.refused = true;
+        }
+        if (!splices.is_empty() && (!from_kept || !splices_pay))
+            || !leaving.iter().all(|&place| spliced(place))
+            || !entering.iter().all(|&id| {
+                splices
+                    .iter()
+                    .any(|&(_, _, root)| scene.is_within(id, root))
+            })
+        {
+            (self.box_quads, self.box_draws) = (box_quads, box_draws);
+            return Ok(self.recycle_kept(*kept));
+        }
+        if !splices.is_empty() {
+            let mut keeps = places.iter().map(|&place| !spliced(place));
+            items.retain(|_| keeps.next().unwrap());
+            places.retain(|&place| !spliced(place));
         }
         // (Plain boxes alone, as a bound colour's: nothing for it to make.)
         let mut stats = GpuStats::default();
@@ -3809,6 +3920,20 @@ impl GpuRenderer {
             self.patch_stats = stats;
             return Ok(self.recycle_kept(*kept));
         }
+        if !splices.is_empty() {
+            match self.splice(scene, &mut kept, &splices, viewport)? {
+                Some(made) => {
+                    stats.add_made(&made);
+                    stats.patched_items += made.patched_items;
+                }
+                None => {
+                    stats.patched_items = 0;
+                    self.patch_stats = stats;
+                    return Ok(self.recycle_kept(*kept));
+                }
+            }
+        }
+        kept.revision = scene.content_revision();
         kept.flushes = *covered.end();
         // Drawn from it when the damage covers enough of the window that
         // making each damaged item again costs more than sending all of
@@ -3981,6 +4106,168 @@ impl GpuRenderer {
         }
         true
     }
+    /// Walk each of `splices`' subtrees again (`first` and `end` of its
+    /// items in `kept`, and its root) from what its root inherited, make
+    /// their items (`render_flat::<PATCH>`, recording as a kept frame does)
+    /// and put them over the old ones, moving what follows. `None` when
+    /// they can't be kept (a layer, an effect, a shader fill or polyline):
+    /// then the frame is drawn as usual.
+    fn splice(
+        &mut self,
+        scene: &Scene,
+        kept: &mut Kept,
+        splices: &[(usize, usize, NodeId)],
+        viewport: Rect,
+    ) -> Result<Option<GpuStats>, GpuError> {
+        let mut walked = Vec::new();
+        let mut inherited = Vec::new();
+        let mut counts = Vec::with_capacity(splices.len());
+        let mut out = Vec::new();
+        for &(first, _, root) in splices {
+            let items = scene.layer_items_from(root, &kept.items[first].inherited, &mut out);
+            if out.len() != items.len()
+                || items
+                    .iter()
+                    .any(|item| item.isolated || changes_unmarked(item.kind))
+            {
+                return Ok(None);
+            }
+            counts.push(items.len());
+            walked.extend(items);
+            inherited.append(&mut out);
+        }
+        let ids: Vec<NodeId> = walked.iter().map(|item| item.id).collect();
+        self.patch_clips = std::mem::take(&mut kept.clips);
+        let made =
+            self.render_flat::<PATCH>(scene, walked, &[viewport], Some(vec![viewport]), true)?;
+        kept.clips = std::mem::take(&mut self.patch_clips);
+        let ranges = std::mem::take(&mut self.item_ranges);
+        let keeps = ranges.len() == ids.len()
+            && self.frame_points.is_empty()
+            && !self
+                .frame_draws
+                .iter()
+                .any(|draw| matches!(draw.shading, Shading::Fill(_) | Shading::Polyline));
+        if !keeps {
+            self.item_ranges = ranges;
+            return Ok(None);
+        }
+        // Each splice's items, numbered where they were made.
+        let mut ids = ids.into_iter();
+        let mut inherited = inherited.into_iter();
+        let mut made_items: Vec<Vec<KeptItem>> = Vec::with_capacity(splices.len());
+        let mut at = 0;
+        for &count in &counts {
+            let new: Vec<KeptItem> = ranges[at..at + count]
+                .iter()
+                .map(|&(start, len, room, first, end)| KeptItem {
+                    id: ids.next().expect("an item"),
+                    inherited: inherited.next().expect("an item"),
+                    start,
+                    len,
+                    room,
+                    draws: first..end,
+                    boxed: None,
+                    end: 0,
+                })
+                .collect();
+            made_items.push(new);
+            at += count;
+        }
+        // The nodes whose items were spliced over, and whether any splice
+        // changed how many items there are: if none did, only the spliced
+        // items are found again by node (`by_node`).
+        let mut replaced = Vec::new();
+        let mut renumbered = false;
+        // Last first: what a splice moves lies after it, spliced already.
+        for (&(first, end, _), mut new) in splices.iter().zip(made_items).rev() {
+            let old = &kept.items[first..end];
+            replaced.extend(old.iter().map(|item| item.id));
+            let quads_from = old[0].start;
+            let quads_to = old.last().map_or(quads_from, |item| item.start + item.room);
+            let draws_from = old[0].draws.start;
+            let draws_to = old.last().map_or(draws_from, |item| item.draws.end);
+            // The new items' quads and draws, where they were made.
+            let (made_from, made_to) = match (new.first(), new.last()) {
+                (Some(a), Some(b)) => (a.start, b.start + b.room),
+                _ => (0, 0),
+            };
+            let (made_draws_from, made_draws_to) = match (new.first(), new.last()) {
+                (Some(a), Some(b)) => (a.draws.start, b.draws.end),
+                _ => (0, 0),
+            };
+            kept.quads.splice(
+                quads_from as usize..quads_to as usize,
+                self.frame_quads[made_from as usize..made_to as usize]
+                    .iter()
+                    .copied(),
+            );
+            let moved = |at: u32| at - made_from + quads_from;
+            kept.draws.splice(
+                draws_from as usize..draws_to as usize,
+                self.frame_draws[made_draws_from as usize..made_draws_to as usize]
+                    .iter()
+                    .map(|draw| Draw {
+                        start: moved(draw.start),
+                        end: moved(draw.end),
+                        ..draw.clone()
+                    }),
+            );
+            let quad_shift = (made_to - made_from) as i64 - (quads_to - quads_from) as i64;
+            let draw_shift =
+                (made_draws_to - made_draws_from) as i64 - (draws_to - draws_from) as i64;
+            let item_shift = new.len() as i64 - (end - first) as i64;
+            let shift = |value: &mut u32, by: i64| *value = (*value as i64 + by) as u32;
+            for item in &mut new {
+                item.start = moved(item.start);
+                item.draws = item.draws.start - made_draws_from + draws_from
+                    ..item.draws.end - made_draws_from + draws_from;
+            }
+            subtree_ends(scene, &mut new, first as u32);
+            renumbered |= item_shift != 0;
+            // What follows moves; the subtrees holding this one end later.
+            // (Nothing, when it is as long as what it replaces.)
+            if (quad_shift, draw_shift, item_shift) != (0, 0, 0) {
+                for item in &mut kept.items[end..] {
+                    shift(&mut item.start, quad_shift);
+                    shift(&mut item.draws.start, draw_shift);
+                    shift(&mut item.draws.end, draw_shift);
+                    shift(&mut item.end, item_shift);
+                }
+                for item in &mut kept.items[..first] {
+                    if item.end as usize >= end {
+                        shift(&mut item.end, item_shift);
+                    }
+                }
+                let moved_from = draws_from as usize + (made_draws_to - made_draws_from) as usize;
+                for draw in &mut kept.draws[moved_from..] {
+                    shift(&mut draw.start, quad_shift);
+                    shift(&mut draw.end, quad_shift);
+                }
+            }
+            kept.items.splice(first..end, new);
+        }
+        // (Each node's first item: a box's border pass comes after it.)
+        if renumbered {
+            kept.by_node.clear();
+            for (index, item) in kept.items.iter().enumerate().rev() {
+                kept.by_node.insert(item.id, index as u32);
+            }
+        } else {
+            for id in replaced {
+                kept.by_node.remove(&id);
+            }
+            for &(first, end, _) in splices {
+                for index in (first..end).rev() {
+                    kept.by_node.insert(kept.items[index].id, index as u32);
+                }
+            }
+        }
+        self.item_ranges = ranges;
+        let mut made = made;
+        made.patched_items = counts.iter().sum();
+        Ok(Some(made))
+    }
     /// `merged`: `damage` merged into regions already (`merge_damage`).
     fn render_flat<const MODE: u8>(
         &mut self,
@@ -4120,7 +4407,9 @@ impl GpuRenderer {
         };
         ranges.clear();
         let mut text = false;
-        for item in items {
+        let mut items = items.into_iter();
+        let items = LeftItems(&mut items);
+        for item in items.0.by_ref() {
             if MODE == PATCH {
                 close_range(&mut quads, &draws, &mut ranges, record && text);
                 ranges.push((quads.len() as u32, 0, 0, draws.len() as u32, u32::MAX));

@@ -522,3 +522,137 @@ fn a_box_moved_as_it_hides_or_changes_is_drawn_as_afresh() {
         );
     }
 }
+
+/// Subtrees a frame splices into its kept frame (`splice`): a list whose
+/// rows are mounted and removed, a box whose opacity changes over what it
+/// holds and a panel recoloured under its children, beside a bar repainting
+/// most of the window, so that frames draw from the kept frame. Static
+/// boxes keep the subtrees a small part of the window. Each frame as drawn
+/// afresh.
+fn spliced(live: Signal<u32>) -> View {
+    let (bar, rows, fade, tint) = (live.clone(), live.clone(), live.clone(), live.clone());
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .text_color(Color(229, 237, 247, 255))
+        .font_family("Geist")
+        .child(div().absolute().size(SIZE.0, 140.).reactive_style(move || {
+            Styles::new().bg(Color(30, (bar.get() * 37 % 200) as u8, 90, 255))
+        }))
+        .children((0..60).map(|at| {
+            div()
+                .absolute()
+                .ml(8. + 23. * (at % 20) as f32)
+                .mt(146. + 12. * (at / 20) as f32)
+                .size(18., 8.)
+                .bg(Color(40, 50, 64, 255))
+        }))
+        .child(switch(
+            move || rows.get() % 3,
+            |count, _| {
+                div()
+                    .absolute()
+                    .ml(8.)
+                    .mt(184.)
+                    .size(220., 70.)
+                    .children((0..=count).map(|row| {
+                        div()
+                            .absolute()
+                            .mt(22. * row as f32)
+                            .size(220., 20.)
+                            .bg(Color(25, 32, 43, 255))
+                            .child(
+                                text(format!("row {row} of {}", count + 1))
+                                    .text_size(12.)
+                                    .absolute()
+                                    .ml(6.)
+                                    .mt(2.)
+                                    .size(150., 16.),
+                            )
+                    }))
+            },
+        ))
+        .child(
+            div()
+                .absolute()
+                .ml(240.)
+                .mt(184.)
+                .size(110., 70.)
+                .bg(Color(60, 80, 110, 255))
+                .reactive_style(move || Styles::new().opacity(0.4 + (fade.get() % 4) as f32 * 0.2))
+                .child(
+                    text("faded")
+                        .text_size(12.)
+                        .absolute()
+                        .ml(8.)
+                        .mt(8.)
+                        .size(80., 16.),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .ml(8.)
+                        .mt(40.)
+                        .size(60., 12.)
+                        .bg(Color(255, 196, 61, 255)),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(360.)
+                .mt(184.)
+                .size(110., 70.)
+                .rounded(6.)
+                .reactive_style(move || {
+                    Styles::new().bg(Color((tint.get() * 53 % 256) as u8, 60, 90, 255))
+                })
+                .child(
+                    text("panel")
+                        .text_size(12.)
+                        .absolute()
+                        .ml(8.)
+                        .mt(8.)
+                        .size(80., 16.),
+                ),
+        )
+}
+
+#[test]
+fn a_subtree_spliced_into_the_kept_window_is_the_subtree_drawn_afresh() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        FontData::new(GEIST.to_vec())
+            .unwrap()
+            .install(&mut gpu.text_system().borrow_mut());
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(spliced(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(1);
+    draw(&mut ui, &mut gpu);
+    let mut patched = 0;
+    for value in 2..26 {
+        live.set(value);
+        let stats = draw(&mut ui, &mut gpu);
+        patched += usize::from(stats.patched_items > 0);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the subtrees drawn afresh (patched {})",
+            stats.patched_items
+        );
+    }
+    // Each frame remounts the list's rows, fades a box and recolours a
+    // panel: patched only by splicing.
+    assert!(patched >= 16, "{patched} frames patched");
+}

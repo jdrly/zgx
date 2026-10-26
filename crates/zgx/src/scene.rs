@@ -6892,8 +6892,8 @@ impl Scene {
         damage: Option<&[Rect]>,
     ) -> Vec<PaintItem<'_>> {
         match self.popups.is_empty() {
-            true => self.layer_items_walk::<false, false>(root, damage, &mut Vec::new()),
-            false => self.layer_items_walk::<true, false>(root, damage, &mut Vec::new()),
+            true => self.layer_items_walk::<false, false>(root, damage, &mut Vec::new(), None),
+            false => self.layer_items_walk::<true, false>(root, damage, &mut Vec::new(), None),
         }
     }
     /// The window's paint items (as [`Scene::layer_items`] with `None`), and
@@ -6902,8 +6902,26 @@ impl Scene {
     pub fn layer_items_recorded(&self, inherited: &mut Vec<Inherited>) -> Vec<PaintItem<'_>> {
         inherited.clear();
         match self.popups.is_empty() {
-            true => self.layer_items_walk::<false, true>(None, None, inherited),
-            false => self.layer_items_walk::<true, true>(None, None, inherited),
+            true => self.layer_items_walk::<false, true>(None, None, inherited, None),
+            false => self.layer_items_walk::<true, true>(None, None, inherited, None),
+        }
+    }
+    /// The paint items of `id`'s subtree as the window's walk makes them,
+    /// from what `id` `inherited` in the walk that recorded it (its
+    /// ancestors unchanged since), and into `out` what each inherits: for a
+    /// renderer splicing a repainted subtree into a frame it kept.
+    /// Renderer plumbing, not a stable API.
+    #[doc(hidden)]
+    pub fn layer_items_from(
+        &self,
+        id: NodeId,
+        inherited: &Inherited,
+        out: &mut Vec<Inherited>,
+    ) -> Vec<PaintItem<'_>> {
+        out.clear();
+        match self.popups.is_empty() {
+            true => self.layer_items_walk::<false, true>(None, None, out, Some((id, inherited))),
+            false => self.layer_items_walk::<true, true>(None, None, out, Some((id, inherited))),
         }
     }
     /// Plain node `id`'s box as [`Scene::item_in`] places it, from what it
@@ -6970,11 +6988,14 @@ impl Scene {
     }
     /// `POPUPS`: popup roots exist, which this walk leaves out below `root`.
     /// `RECORD`: what each item inherits goes into `inherited`.
+    /// `from`: a subtree alone, from what its root inherited (`root` and
+    /// `damage` are then `None`).
     fn layer_items_walk<const POPUPS: bool, const RECORD: bool>(
         &self,
         root: Option<NodeId>,
         damage: Option<&[Rect]>,
         inherited: &mut Vec<Inherited>,
+        from: Option<(NodeId, &Inherited)>,
     ) -> Vec<PaintItem<'_>> {
         let reach = damage.map(|damage| {
             damage
@@ -6994,7 +7015,7 @@ impl Scene {
             ink.intersects(reach) && damage.iter().any(|d| d.intersects(ink))
         };
         let start = root.unwrap_or(self.root);
-        if !self.layout_visible(start) {
+        if from.is_none() && !self.layout_visible(start) {
             return Vec::new();
         }
         let mut transform = Transform::default();
@@ -7011,19 +7032,32 @@ impl Scene {
             Some(self.viewport)
         };
         // Sized as the last walk was, rather than grown from nothing each frame.
-        let (stack_hint, items_hint) = self.walk_hints.get();
+        let (stack_hint, items_hint) = match from {
+            None => self.walk_hints.get(),
+            Some(_) => (1, 0),
+        };
         let mut stack = Vec::with_capacity(stack_hint.max(1));
         // Each entry: a node, what its parent passes on (translation,
         // opacity, clip, and the fade mask, rounded clips and colour filters
         // as shared `PaintExtras`), and whether it is a border pass.
-        stack.push((
-            start,
-            transform,
-            1.,
-            clip,
-            None::<std::rc::Rc<PaintExtras>>,
-            false,
-        ));
+        stack.push(match from {
+            None => (
+                start,
+                transform,
+                1.,
+                clip,
+                None::<std::rc::Rc<PaintExtras>>,
+                false,
+            ),
+            Some((id, from)) => (
+                id,
+                from.transform,
+                from.opacity,
+                from.clip,
+                from.extras.clone(),
+                from.border,
+            ),
+        });
         let mut result = Vec::with_capacity(items_hint);
         let mut deepest = 0;
         while let Some((id, parent_transform, parent_opacity, parent_clip, context, border)) =
@@ -7233,7 +7267,10 @@ impl Scene {
                 extras,
             });
         }
-        self.walk_hints.set((deepest, result.len()));
+        // (A subtree's walk leaves the window's hints.)
+        if from.is_none() {
+            self.walk_hints.set((deepest, result.len()));
+        }
         result
     }
     /// Every paint item, in paint order from the root.
