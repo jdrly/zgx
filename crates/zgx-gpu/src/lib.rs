@@ -729,6 +729,43 @@ struct Glyph {
     x: f32,
     y: f32,
 }
+/// A text's cached quad, in its own place: its box, atlas cell, colour and
+/// paint (corner radius, glyph flag, rounded-background flag). The rest of
+/// the GPU `Quad` is the same for every one of a text's and is made where it
+/// is placed (`render_flat`): half the bytes cached, copied and read.
+#[derive(Clone, Copy)]
+struct TextQuad {
+    rect: [f32; 4],
+    uv: [f32; 4],
+    color: [f32; 4],
+    paint: [f32; 4],
+}
+/// A kept text's quads at `x`, `y`, each coloured by `color`.
+fn place_text_quads(
+    quads: &mut Vec<Quad>,
+    source: &[TextQuad],
+    x: f32,
+    y: f32,
+    fade: [f32; 4],
+    edge_fade: f32,
+    mut color: impl FnMut(&TextQuad) -> [f32; 4],
+) {
+    quads.extend(source.iter().map(|cached| Quad {
+        rect: [
+            cached.rect[0] + x,
+            cached.rect[1] + y,
+            cached.rect[2],
+            cached.rect[3],
+        ],
+        uv: cached.uv,
+        color: color(cached),
+        fade,
+        options: [edge_fade, cached.paint[1], 0., 0.],
+        shape: [cached.paint[0], 0., 0., cached.paint[3]],
+        border: [0.; 4],
+        mask: NO_MASK,
+    }));
+}
 struct Shaped {
     rich: Option<Arc<zgx::rich_text::RichText>>,
     text_options: zgx::text_layout::TextOptions,
@@ -742,7 +779,7 @@ struct Shaped {
     /// raster scale differs from the window's.
     scale: f32,
     glyphs: Vec<Glyph>,
-    quads: Vec<Quad>,
+    quads: Vec<TextQuad>,
     atlas_epoch: u64,
     last_used: u64,
     /// The prepared text these glyphs were laid out from, kept while drawn.
@@ -756,6 +793,8 @@ impl Shaped {
             + self.font.storage_bytes()
             + self.decorations.capacity() * std::mem::size_of::<text::RichDecoration>()
             + self.glyphs.capacity() * std::mem::size_of::<Glyph>()
+            // (Charged as the GPU quads they are placed as: the cache keeps
+            // as many shapes as when it held those.)
             + self.quads.capacity() * std::mem::size_of::<Quad>()
     }
 }
@@ -2323,7 +2362,7 @@ pub struct GpuRenderer {
     frame_peaks: (usize, usize),
     /// The quads of the lines of a text partly in its clip, made each frame
     /// (see `render_flat`), kept for their allocation.
-    visible_glyphs: Vec<Quad>,
+    visible_glyphs: Vec<TextQuad>,
     background: Color,
     /// Image textures: each bound for the quads, its size in bytes, and,
     /// where the CPU wrote its texels, the texture (see `render_direct`).
@@ -5538,38 +5577,49 @@ impl GpuRenderer {
                     // Its quads from the shape's, placed and coloured.
                     // (One extend, written straight into the room it makes: a
                     // push a glyph would check that room each time.)
-                    let place = |quads: &mut Vec<Quad>, source: &[Quad]| {
-                        quads.extend(source.iter().map(|cached| {
-                            let mut quad = *cached;
-                            quad.rect[0] += x;
-                            quad.rect[1] += y;
-                            if quad.shape[3] > 0.5 {
-                                quad.fade[0] += x;
-                                quad.fade[1] += y;
-                            }
-                            let recolor =
-                                selected.filter(|_| cached.options[1] > 0.5).and_then(|h| {
-                                    h.glyph_color(
-                                        cached.rect[0] + cached.rect[2] * 0.5,
-                                        cached.rect[1] + cached.rect[3] * 0.5,
-                                    )
-                                });
-                            quad.color = if let Some(color) = recolor {
-                                rgba(color, item.effects.opacity)
-                            } else if rich.is_some() {
-                                [
-                                    cached.color[0],
-                                    cached.color[1],
-                                    cached.color[2],
-                                    cached.color[3] * item.effects.opacity,
-                                ]
-                            } else {
-                                plain_color
-                            };
-                            quad.fade = fade;
-                            quad.options[0] = item.effects.edge_fade;
-                            quad
-                        }));
+                    let place = |quads: &mut Vec<Quad>, source: &[TextQuad]| {
+                        // Plain and unselected: one colour, chosen once.
+                        if selected.is_none() && rich.is_none() {
+                            place_text_quads(
+                                quads,
+                                source,
+                                x,
+                                y,
+                                fade,
+                                item.effects.edge_fade,
+                                |_| plain_color,
+                            );
+                        } else {
+                            place_text_quads(
+                                quads,
+                                source,
+                                x,
+                                y,
+                                fade,
+                                item.effects.edge_fade,
+                                |cached| {
+                                    let recolor =
+                                        selected.filter(|_| cached.paint[1] > 0.5).and_then(|h| {
+                                            h.glyph_color(
+                                                cached.rect[0] + cached.rect[2] * 0.5,
+                                                cached.rect[1] + cached.rect[3] * 0.5,
+                                            )
+                                        });
+                                    if let Some(color) = recolor {
+                                        rgba(color, item.effects.opacity)
+                                    } else if rich.is_some() {
+                                        [
+                                            cached.color[0],
+                                            cached.color[1],
+                                            cached.color[2],
+                                            cached.color[3] * item.effects.opacity,
+                                        ]
+                                    } else {
+                                        plain_color
+                                    }
+                                },
+                            );
+                        }
                     };
                     // Its shape as it was, inside its clip and with the atlas it
                     // was placed in: its quads, borrowed where they are kept.
@@ -5623,7 +5673,7 @@ impl GpuRenderer {
                             shaped.quads.reserve(shaped.glyphs.len());
                             for glyph in &shaped.glyphs {
                                 if let Some(a) = self.glyph::<MODE>(glyph.key, &mut stats)? {
-                                    shaped.quads.push(Quad {
+                                    shaped.quads.push(TextQuad {
                                         rect: [
                                             (glyph.x + a.left as f32) / self.scale,
                                             (glyph.y - a.top as f32) / self.scale,
@@ -5637,11 +5687,7 @@ impl GpuRenderer {
                                             a.height as f32 / self.atlas_size as f32,
                                         ],
                                         color: glyph.color.map_or([0.; 4], |c| rgba(c, 1.)),
-                                        fade: [0.; 4],
-                                        options: [0., 1., 0., 0.],
-                                        shape: [0.; 4],
-                                        border: [0.; 4],
-                                        mask: NO_MASK,
+                                        paint: [0., 1., 0., 0.],
                                     });
                                 }
                             }
@@ -7536,7 +7582,7 @@ impl GpuRenderer {
         }
         let mut visible = std::mem::take(&mut self.visible_glyphs);
         visible.clear();
-        let lines = |quad: &Quad| quad.rect[1] + quad.rect[3] >= top && quad.rect[1] <= bottom;
+        let lines = |quad: &TextQuad| quad.rect[1] + quad.rect[3] >= top && quad.rect[1] <= bottom;
         let decorations = |background: bool| {
             shaped
                 .decorations
@@ -8783,8 +8829,8 @@ fn texture(device: &wgpu::Device, width: u32, height: u32, label: &str) -> wgpu:
 /// into the loops building a text's quads: called, its return copied each
 /// glyph's quad again.
 #[inline(always)]
-fn glyph_quad(glyph: &Glyph, a: AtlasEntry, scale: f32, atlas_size: u32) -> Quad {
-    Quad {
+fn glyph_quad(glyph: &Glyph, a: AtlasEntry, scale: f32, atlas_size: u32) -> TextQuad {
+    TextQuad {
         rect: [
             (glyph.x + a.left as f32) / scale,
             (glyph.y - a.top as f32) / scale,
@@ -8798,30 +8844,21 @@ fn glyph_quad(glyph: &Glyph, a: AtlasEntry, scale: f32, atlas_size: u32) -> Quad
             a.height as f32 / atlas_size as f32,
         ],
         color: glyph.color.map_or([0.; 4], |c| rgba(c, 1.)),
-        fade: [0.; 4],
-        options: [0., 1., 0., 0.],
-        shape: [0.; 4],
-        border: [0.; 4],
-        mask: NO_MASK,
+        paint: [0., 1., 0., 0.],
     }
 }
-fn rich_decoration_quad(d: &text::RichDecoration) -> Quad {
+fn rich_decoration_quad(d: &text::RichDecoration) -> TextQuad {
     let rect = [d.bounds.x, d.bounds.y, d.bounds.width, d.bounds.height];
-    Quad {
+    TextQuad {
         rect,
         color: rgba(d.color, 1.),
         uv: [0.; 4],
-        // A rounded background (an inline code chip) is a rounded rect over
-        // its own box; `fade` carries that box and moves with the text.
-        fade: if d.radius > 0. { rect } else { [0.; 4] },
-        options: [0.; 4],
-        shape: if d.radius > 0. {
+        // A rounded background (an inline code chip): a rounded rect.
+        paint: if d.radius > 0. {
             [d.radius, 0., 0., 1.]
         } else {
             [0.; 4]
         },
-        border: [0.; 4],
-        mask: NO_MASK,
     }
 }
 /// A shader fill's module: the quad shader (draw.wgsl), the `FillInput` its
