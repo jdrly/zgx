@@ -883,7 +883,15 @@ fn any_theme_styles_it_the_light_theme_too() {
 
 /// A plugin with a panel, as terminal.rs would find it and load it.
 fn notes_plugin(status: &str) -> (Value, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("zterm-notes-{}-{status}", std::process::id()));
+    // A directory of its own: tests run side by side, and one rewriting a
+    // shared file (truncated, then written) as another loads it gave that
+    // one an empty plugin, no panel.
+    static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let made = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "zterm-notes-{}-{made}-{status}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("init.luau");
     std::fs::write(
