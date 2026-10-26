@@ -15,7 +15,7 @@ zgx is a retained-mode GUI framework in Rust for macOS, Windows and Linux. Compo
 
 ## Quick start
 
-In Rust, with the dependencies [getting started](docs/getting-started.md#in-rust) lists (`zgx = "0.1.1"` and `zgx-desktop = "0.1.1"` from crates.io):
+In Rust, with the dependencies [getting started](docs/getting-started.md#in-rust) lists (`zgx = "0.1.2"` and `zgx-desktop = "0.1.2"` from crates.io):
 
 ```rust,no_run
 use zgx::compose::prelude::*;
