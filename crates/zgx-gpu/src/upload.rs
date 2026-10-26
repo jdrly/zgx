@@ -67,6 +67,9 @@ pub(crate) struct MappedRing {
 static GENERATIONS: AtomicU64 = AtomicU64::new(1);
 /// Patches a kept frame remembers the writes of (`KeptQuads`).
 const CHANGES: usize = 8;
+/// Draws in a row finding a kept frame as long after which its writes are
+/// remembered again (`KeptQuads::drawn`).
+const STEADY: u8 = 2;
 /// What a kept frame's quads (lib.rs `Kept`: a window drawn whole, then
 /// patched) have had written by its recent patches, so that a buffer
 /// still holding them takes only what changed since (`write_kept`).
@@ -85,8 +88,10 @@ pub(crate) struct KeptQuads {
     /// one frame drawn from it to the next (a splice mounting rows), when
     /// every buffer takes it whole anyway (`drawn`).
     tracking: bool,
-    /// Its bytes when last drawn from.
+    /// Its bytes when last drawn from, and how many draws in a row since
+    /// found it as long.
     drawn_bytes: usize,
+    steady: u8,
 }
 impl KeptQuads {
     pub(crate) fn new() -> Self {
@@ -98,19 +103,22 @@ impl KeptQuads {
     }
     /// A frame draws from it, `bytes` of its quads: writes stop being
     /// remembered when that differs from the last, and are remembered again,
-    /// as a new kept frame no buffer holds, once it doesn't.
+    /// as a new kept frame no buffer holds, after `STEADY` draws in a row
+    /// find it as long (a list mounting a row now and then keeps it off).
     pub(crate) fn drawn(&mut self, bytes: usize) {
-        let steady = bytes == self.drawn_bytes;
+        self.steady = match bytes == self.drawn_bytes {
+            true => self.steady.saturating_add(1),
+            false => 0,
+        };
         self.drawn_bytes = bytes;
-        match (self.tracking, steady) {
-            (true, false) => self.tracking = false,
-            (false, true) => {
-                *self = Self {
-                    drawn_bytes: bytes,
-                    ..Self::new()
-                }
-            }
-            _ => {}
+        if self.steady == 0 {
+            self.tracking = false;
+        } else if !self.tracking && self.steady >= STEADY {
+            self.generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
+            self.version = 0;
+            self.changes.clear();
+            self.writing.clear();
+            self.tracking = true;
         }
     }
     /// A patch begins: what it writes counts as one version.
