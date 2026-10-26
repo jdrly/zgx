@@ -4624,8 +4624,11 @@ impl Scene {
             }
             size
         };
+        // ASCII holds none: a reply streaming in is checked a word at a
+        // time, not a character at a time.
         let rtl = |text: &str| {
-            text.chars().any(|c| {
+            !text.is_ascii()
+                && text.chars().any(|c| {
                 matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
             })
         };
