@@ -227,6 +227,37 @@ fn bg_shader_and_uniforms_reach_the_scene() {
     assert_eq!(scene.shader_uniforms(node), uniforms);
 }
 
+/// An image draws with the uniforms of the box it alone fills, and its own
+/// cached layer repaints as they change; its own, once set, are its own.
+#[test]
+fn an_image_borrows_its_boxs_uniforms_and_its_layer_follows_them() {
+    use zgx::decoration::ShaderUniforms;
+    let at = |front: f32| ShaderUniforms {
+        time: 0.,
+        params: [[front, 0., 0., 0.], [0.; 4], [0.; 4], [0.; 4]],
+    };
+    let mut ui = Ui::new(400., 300.);
+    let picture = std::sync::Arc::new(zgx::image::ImageData::new(2, 1, vec![255; 8]).unwrap());
+    let view = ui.mount(div().id("box").child(image("pic", picture).w(40.).h(20.)));
+    ui.prepare_frame();
+    let wrapper = view.find("box").unwrap();
+    let mut scene = ui.scene.borrow_mut();
+    let mut pic = wrapper;
+    while !matches!(scene.kind(pic), zgx::scene::NodeKind::Image(_)) {
+        pic = scene.children(pic)[0];
+    }
+    scene.set_isolated(pic, true);
+    scene.flush();
+    let revision = scene.layer_revision(pic);
+    scene.set_shader_uniforms(wrapper, at(0.5));
+    assert_eq!(scene.shader_uniforms(pic), at(0.5));
+    assert_ne!(scene.layer_revision(pic), revision, "its layer repaints");
+    // Its own, the same as the box's: kept apart from the box's later ones.
+    scene.set_shader_uniforms(pic, at(0.5));
+    scene.set_shader_uniforms(wrapper, at(0.75));
+    assert_eq!(scene.shader_uniforms(pic), at(0.5));
+}
+
 #[test]
 fn colour_filter_styles_animate_without_layout() {
     let mut ui = Ui::new(400., 300.);

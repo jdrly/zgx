@@ -2577,11 +2577,37 @@ impl Scene {
         if let Some(fps) = fps {
             uniforms.time = (uniforms.time * fps).floor() / fps;
         }
-        if self.shader_uniforms(id) == uniforms {
+        // Against its own: an image's borrowed ones (`shader_uniforms`) are
+        // not its own, and setting those makes them so.
+        let node = self.node(id);
+        let unchanged = match node.shader_uniforms.as_deref() {
+            Some(own) => *own == uniforms,
+            None => uniforms == Default::default() && !matches!(node.kind, NodeKind::Image(_)),
+        };
+        if unchanged {
             return;
         }
         self.node_mut(id).shader_uniforms = Some(Box::new(uniforms));
         self.invalidate(id, PAINT);
+        // The image drawing with them, if this box lends it them: its own
+        // cached layer (an isolated or promoted image) repaints too.
+        let mut at = id;
+        loop {
+            let node = self.node(at);
+            if !matches!(node.kind, NodeKind::Container(_)) || node.children.len() != 1 {
+                break;
+            }
+            let child = node.children[0];
+            let inner = self.node(child);
+            if inner.shader_uniforms.is_some() {
+                break;
+            }
+            if matches!(inner.kind, NodeKind::Image(_)) {
+                self.invalidate(child, PAINT);
+                break;
+            }
+            at = child;
+        }
     }
     /// `id`'s clip inset, if it has one.
     pub fn clip_inset(&self, id: NodeId) -> Option<ClipInset> {
