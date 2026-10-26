@@ -4446,7 +4446,8 @@ impl Scene {
             }
         }
     }
-    /// `add_damage` for a moved leaf (`arrange`), the grid first.
+    /// `add_damage` for a moved leaf (`arrange`), the grid first. `rect`
+    /// is quantized already (`leaf_damage`).
     #[inline(never)]
     fn add_leaf_damage(&mut self, rect: Rect) {
         self.add_damage_as::<true>(rect);
@@ -4462,7 +4463,10 @@ impl Scene {
         // Raster coverage rounds fractional edges outwards. Quantize before merging
         // so adjacent subpixel rectangles cannot repaint the same alpha pixel twice,
         // and every primitive covering a touched pixel participates in its repaint.
-        let rect = quantized(rect);
+        // A moved leaf's (`GRID_FIRST`) comes quantized from `leaf_damage`, or
+        // as the union of two that did: whole points, which quantize to
+        // themselves.
+        let rect = if GRID_FIRST { rect } else { quantized(rect) };
         let Some(mut rect) = rect.intersection(self.viewport) else {
             return;
         };
