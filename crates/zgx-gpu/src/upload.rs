@@ -76,8 +76,11 @@ pub(crate) struct KeptQuads {
     generation: u64,
     /// Patches since it was made.
     version: u64,
-    /// The quads each of the last `CHANGES` patches wrote, oldest first.
+    /// The quads each of the `CHANGES` patches before this one wrote,
+    /// oldest first.
     changes: std::collections::VecDeque<(u64, Vec<(u32, u32)>)>,
+    /// And this one's (version `version`).
+    writing: Vec<(u32, u32)>,
 }
 impl KeptQuads {
     pub(crate) fn new() -> Self {
@@ -88,24 +91,37 @@ impl KeptQuads {
     }
     /// A patch begins: what it writes counts as one version.
     pub(crate) fn patch(&mut self) {
-        self.version += 1;
-        let mut wrote = match self.changes.len() == CHANGES {
+        let mut spare = match self.changes.len() == CHANGES {
             true => self.changes.pop_front().map(|(_, wrote)| wrote).unwrap_or_default(),
             false => Vec::new(),
         };
-        wrote.clear();
-        self.changes.push_back((self.version, wrote));
+        spare.clear();
+        let wrote = std::mem::replace(&mut self.writing, spare);
+        if self.version > 0 {
+            self.changes.push_back((self.version, wrote));
+        }
+        self.version += 1;
     }
     /// This patch wrote quads `start..end` (one run with the last, when
     /// they meet: neighbouring items' writes copy at once).
+    #[inline]
     pub(crate) fn wrote(&mut self, start: u32, end: u32) {
-        let Some((_, wrote)) = self.changes.back_mut() else {
-            return;
-        };
-        match wrote.last_mut() {
+        match self.writing.last_mut() {
             Some(last) if last.1 == start => last.1 = end,
-            _ => wrote.push((start, end)),
+            _ => self.writing.push((start, end)),
         }
+    }
+    /// The runs of quads written after `version`, if it is one it knows
+    /// (no older than the patch before the first it remembers).
+    fn since(&self, version: u64) -> Option<impl Iterator<Item = (u32, u32)> + '_> {
+        let known = self.changes.front().map_or(self.version, |(first, _)| first - 1);
+        (known..=self.version).contains(&version).then(|| {
+            self.changes
+                .iter()
+                .filter(move |(at, _)| *at > version)
+                .flat_map(|(_, wrote)| wrote.iter().copied())
+                .chain(self.writing.iter().copied().filter(move |_| self.version > version))
+        })
     }
 }
 impl MappedRing {
@@ -199,8 +215,6 @@ impl MappedRing {
         unit: usize,
     ) -> (wgpu::Buffer, bool) {
         let len = parts.iter().map(|part| part.len() as u64).sum::<u64>();
-        // (Versions after the first remembered one's predecessor are known.)
-        let known = kept.changes.front().map_or(kept.version, |(first, _)| first - 1);
         let holding = self
             .slots
             .iter()
@@ -212,7 +226,7 @@ impl MappedRing {
                     && slot.holds.is_some_and(|(generation, version, bytes)| {
                         kept.generation != 0
                             && generation == kept.generation
-                            && (known..=kept.version).contains(&version)
+                            && kept.since(version).is_some()
                             && bytes == kept_bytes
                     })
             })
@@ -242,11 +256,9 @@ impl MappedRing {
                 )
             };
         };
-        for (_, wrote) in kept.changes.iter().filter(|(version, _)| *version > since) {
-            for &(start, end) in wrote {
-                let (from, to) = (start as usize * unit, end as usize * unit);
-                copy(from, &quads[from..to.min(kept_bytes)]);
-            }
+        for (start, end) in kept.since(since).expect("a version it knows") {
+            let (from, to) = (start as usize * unit, end as usize * unit);
+            copy(from, &quads[from..to.min(kept_bytes)]);
         }
         copy(kept_bytes, &quads[kept_bytes..]);
         let mut at = quads.len();
