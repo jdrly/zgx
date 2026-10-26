@@ -1123,7 +1123,7 @@ impl<T> Drop for LeftItems<'_, T> {
 }
 /// Spare quads a text keeps for its value to grow into, past its own.
 fn text_room(glyphs: u32) -> u32 {
-    (glyphs / 2).max(8)
+    (glyphs / 4).max(2)
 }
 /// `map.get(key)`, or in a patch (`PATCH`) the same through `entry`: the
 /// frame loop stays the one caller of each map's `get` (and of its search,
