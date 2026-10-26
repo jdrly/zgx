@@ -6697,9 +6697,6 @@ impl GpuRenderer {
     /// consecutive draws sharing a clip, texture source and shading join.
     fn batches(&self, region: Rect, draws: &[Draw], first: u32, mut emit: impl FnMut(Batch)) {
         let mut batch: Option<Batch> = None;
-        // Instances of draws outside `region` since the open batch's last:
-        // drawn by it if it goes on (the GPU sets each up, to scissor away).
-        let mut skipped = 0;
         // Skipping blending pays for its extra draws only over many pixels:
         // a small region (a scrolled-in strip) blends plain quads in one draw.
         let pixels = region.width * region.height * self.scale * self.scale;
@@ -6710,7 +6707,6 @@ impl GpuRenderer {
                 shading => shading,
             };
             if !region.intersects(draw.bounds) || draw.end <= draw.start.max(first) {
-                skipped += draw.end.saturating_sub(draw.start.max(first));
                 continue;
             }
             let start = draw.start.max(first);
@@ -6727,14 +6723,14 @@ impl GpuRenderer {
                 .map_or(0., |covered| covered.width * covered.height)
                 * self.scale
                 * self.scale;
-            // Past `SKIPPED_SPLIT` such instances (or a kept text's spare
-            // room, empty quads), a draw call costs less.
-            let room = batch.as_ref().map_or(0, |open| start.saturating_sub(open.end));
-            let spans = std::mem::take(&mut skipped).max(room) < SKIPPED_SPLIT;
             if let Some(open) = &mut batch
-                && spans
                 && open.rect == rect
                 && open.source == source
+                // The instances it would span to this draw (draws outside
+                // `region`, a kept text's spare room) are set up by the GPU
+                // to be scissored away: past `SKIPPED_SPLIT`, a draw call
+                // costs less.
+                && start - open.end < SKIPPED_SPLIT
             {
                 // Another shading joins when what it promotes (quads drawn
                 // with a costlier shader than theirs) stays small.
@@ -9746,10 +9742,10 @@ fn panel_whole(quad: &Quad, split: bool) -> bool {
 /// starts again.
 const SHAPED_LIKE: usize = 4096;
 
-/// Instances of draws outside a region past which a batch for it ends
-/// rather than spanning them (`batches`): from a kept frame, the window's
-/// every draw, a batch would otherwise take blocks of rows the damage
-/// misses.
+/// Instances between draws for a region (of draws outside it, or empty
+/// spare room) past which a batch ends rather than spanning them
+/// (`batches`): from a kept frame, the window's every draw, a batch would
+/// otherwise take blocks of rows the damage misses.
 const SKIPPED_SPLIT: u32 = 32;
 /// Panels split only with an interior of at least this many logical pixels:
 /// below, five quads cost more than shading one.
