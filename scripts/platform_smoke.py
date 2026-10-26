@@ -183,7 +183,27 @@ def wait_for_exit(app, env, output, seconds):
         return app.wait(timeout=seconds)
     except subprocess.TimeoutExpired:
         dump_display(env, output, app.pid)
+        # The input method's side too (#564: blocked in an XIM round trip,
+        # the app waits on ibus-x11 or the two wait on each other).
+        with (output / "display.log").open("a") as log:
+            for pid in display_processes(env, "ibus-x11"):
+                stacks = subprocess.run(["sudo", "-n", "gdb", "-q", "-batch", "-p", str(pid), "-ex",
+                                         "thread apply all bt 25"], capture_output=True, text=True, timeout=60)
+                log.write(f"\n$ gdb -p {pid} (ibus-x11)\n{stacks.stdout}{stacks.stderr}")
         raise
+
+
+def display_processes(env, name):
+    """The processes called `name` on `env`'s display (by their DISPLAY)."""
+    found = []
+    for proc in pathlib.Path("/proc").iterdir():
+        try:
+            if proc.name.isdigit() and (proc / "comm").read_text().strip() == name and \
+                    f"DISPLAY={env.get('DISPLAY')}\0".encode() in (proc / "environ").read_bytes():
+                found.append(int(proc.name))
+        except OSError:
+            continue
+    return found
 
 
 def dump_display(env, output, pid=None):
