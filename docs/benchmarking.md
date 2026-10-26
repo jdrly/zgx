@@ -214,6 +214,57 @@ presenting, beside its frame without the encode. So judge renderer changes by
 the main thread's retired instructions, and quote a frame's process CPU against
 this floor.
 
+## Changes to zgx, A/B on a Mac: cells
+
+The comparison measures frameworks; `scripts/perf/cells.py` measures
+candidate changes to zgx against each other, windowed. A cell is a base commit
+with PR heads merged in and environment variables set. Cells merging the same
+commits share one binary, so a change behind a toggle is A/B'd with no build
+noise.
+
+```sh
+python3 scripts/perf/cells.py build cells.json   # builds each distinct cell from git
+python3 scripts/perf/cells.py run cells.json     # measures, interleaved (quiet desktop)
+python3 scripts/perf/cells.py report             # /tmp/zgx-cells/out/results.json
+```
+
+```json
+{"base": "e5d796d1",
+ "cells": {"base":       {"merge": ["5f242aaf"]},
+           "base+warm":  {"merge": ["5f242aaf"], "env": {"ZGX_GPU_WARM": "1"}},
+           "timer":      {"merge": ["4b06f949", "5f242aaf"]}},
+ "parts": {"gestures": ["base", "base+warm", "timer"],
+           "animate":  ["base", "base+warm"],
+           "scroll":   ["base", "timer"]},
+ "rounds": {"gestures": 4, "animate": 3, "scroll": 3}}
+```
+
+Builds happen in a worktree of their own under `$ZGX_CELLS_DIR` (default
+`/tmp/zgx-cells`), and merges stay local. A run waits for a quiet desktop
+(`preflight.py`). It launches staged copies from `/tmp` (`staging.py`), and
+it stops at a system dialog without touching it. There are three parts:
+
+- **gestures**, the first frame after idle. The mail example runs under
+  `zgx-run --inspect` with `ZGX_PRESENT_LOG=1`. Each round idles 4 s, so the
+  window trims (at 1.5 s), then plays a wheel tape (`scripts/perf/tapes/`,
+  modeled flings) through `zgx inspect replay`, twice, and samples 5 s at
+  rest. Per cell, the first frame after each trim gives:
+  - whether it was forced whole (`render forced=`) or caught up from the
+    shown surface (`catch_up=1`);
+  - its render to present, and first to second present;
+  - whether a warm-up came first, and how far ahead.
+
+  The tapes also give late frames (over 1.5 refreshes), CPU and
+  instructions per frame shown, and CPU at rest.
+- **animate**: the animation workload at the display's rate. This gives CPU,
+  GPU power, instructions and WindowServer CPU (`macsample`), and counts any
+  warm-ups in its present log (it has no input, so there should be none).
+- **scroll**: the heavy and lab workloads scrolling, as 15 s trials plus
+  pacing captures (`framepace`: p99, long intervals).
+
+Pacing depends on the display: a 60 Hz Mac (most M1 MacBooks) cannot judge
+pacing at 120 Hz, so those cells need a ProMotion Mac.
+
 ## The macOS comparison, quick and full
 
 `python3 scripts/run_macos_comparison.py --scene heavy --quick` measures zgx
