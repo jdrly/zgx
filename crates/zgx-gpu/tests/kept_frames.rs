@@ -413,3 +413,77 @@ fn frames_drawn_whole_stop_keeping_once_their_kept_frames_go_unpatched() {
         "a bar after one frame drawn whole patches again"
     );
 }
+
+/// Boxes layout moves in the same frame something else changes about them
+/// (hidden, shown, made relative): each frame as drawn afresh, whatever a
+/// patch of the move alone would have drawn.
+fn moved_and_changed(live: Signal<u32>) -> View {
+    let (hide, place) = (live.clone(), live.clone());
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .child(
+            div()
+                .absolute()
+                .ml(20.)
+                .mt(20.)
+                .w(240.)
+                .bg(Color(94, 177, 255, 255))
+                .reactive_style(move || {
+                    let n = hide.get();
+                    let styles = Styles::new().h(70. + (n % 5) as f32 * 9.);
+                    match n % 4 {
+                        0 => styles.invisible(),
+                        1 => styles.hidden(),
+                        _ => styles.visible(),
+                    }
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .ml(20.)
+                .mt(150.)
+                .w(240.)
+                .bg(Color(255, 196, 61, 255))
+                .reactive_style(move || {
+                    let n = place.get();
+                    let styles = Styles::new().h(40. + (n % 4) as f32 * 11.);
+                    if n % 2 == 0 {
+                        styles.relative()
+                    } else {
+                        styles
+                    }
+                }),
+        )
+}
+
+#[test]
+fn a_box_moved_as_it_hides_or_changes_is_drawn_as_afresh() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(moved_and_changed(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(1);
+    draw(&mut ui, &mut gpu);
+    for value in 2..20 {
+        live.set(value);
+        draw(&mut ui, &mut gpu);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the boxes drawn afresh"
+        );
+    }
+}

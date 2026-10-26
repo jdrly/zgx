@@ -6759,6 +6759,19 @@ impl Scene {
             false => self.layer_items_walk::<true, true>(None, None, inherited),
         }
     }
+    /// Plain node `id`'s box as [`Scene::item_in`] places it, from what it
+    /// `inherited`, and what it paints: for a renderer patching a node
+    /// layout alone moved, whose item is otherwise as it was. Plumbing for
+    /// zgx-gpu, not a stable API.
+    #[doc(hidden)]
+    pub fn box_in(&self, id: NodeId, inherited: &Inherited) -> (Rect, &NodeKind) {
+        let node = self.node(id);
+        let transform = Transform {
+            x: inherited.transform.x + node.transform.x,
+            y: inherited.transform.y + node.transform.y,
+        };
+        (node.bounds.translated(transform), &node.kind)
+    }
     /// Paint item `id` worked out alone, from what it `inherited` in the walk
     /// that recorded it (`layer_items_recorded`), its ancestors unchanged
     /// since: the walk's step for a plain node, one adding no layer, colour

@@ -838,6 +838,8 @@ struct KeptItem {
     room: u32,
     /// Its draws: those of its quads' shadings, in turn.
     draws: std::ops::Range<u32>,
+    /// A plain box's clip and compositing, to patch a move of it alone.
+    boxed: Option<KeptBox>,
 }
 /// Paint that changes without the scene marking its node: a native
 /// surface shows each frame its source gives it.
@@ -862,6 +864,54 @@ const KEEP_AGAIN: u8 = 2;
 /// Kept frames lost in a row before they patched once, after which a frame
 /// drawn whole keeps none (`GpuRenderer::unpatched_keeps`).
 const UNPATCHED_KEEPS: u8 = 2;
+/// A plain box (`plain_box`) as `patch_box` makes it: what it paints, its
+/// box, its clip and how it composites.
+#[derive(Clone, Copy)]
+struct PlainBox<'a> {
+    kind: &'a NodeKind,
+    bounds: Rect,
+    clip: Option<Rect>,
+    opacity: f32,
+    edge_fade: f32,
+}
+impl<'a> PlainBox<'a> {
+    fn of(item: &zgx::scene::PaintItem<'a>) -> Self {
+        PlainBox {
+            kind: item.kind,
+            bounds: item.bounds,
+            clip: item.clip,
+            opacity: item.effects.opacity,
+            edge_fade: item.effects.edge_fade,
+        }
+    }
+}
+/// What a kept box (a plain `Quad` or `Panel`) keeps to be patched when
+/// layout alone moved or resized it: its clip (its parent's) and how it
+/// composites, which only a repaint of more than its box changes.
+#[derive(Clone, Copy)]
+struct KeptBox {
+    clip: Option<Rect>,
+    opacity: f32,
+    edge_fade: f32,
+}
+impl KeptBox {
+    /// `item`'s, if it is one; `plain`: whether it is a plain box.
+    fn of(item: &zgx::scene::PaintItem<'_>, plain: bool) -> Option<Self> {
+        let boxed = matches!(item.kind, NodeKind::Quad(_) | NodeKind::Panel { .. });
+        (boxed && plain).then_some(KeptBox {
+            clip: item.clip,
+            opacity: item.effects.opacity,
+            edge_fade: item.effects.edge_fade,
+        })
+    }
+}
+/// Whether `kind` paints as a plain box would (`plain_box`): a box without
+/// decoration, shadows or a pass over its content.
+#[inline(always)]
+fn plain_quad(kind: &NodeKind) -> bool {
+    matches!(kind, NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. }
+        if style.decoration.is_none() && style.shadows().is_empty() && !style.paints_over())
+}
 /// Whether `item` is a box `render_kept` makes alone (`patch_box`): a
 /// flat colour, or a box without decoration, shadows or a pass over its
 /// content, drawn flat (no layer, filter, clip region or fade mask).
@@ -3424,6 +3474,14 @@ impl GpuRenderer {
         viewport: Rect,
     ) -> Result<GpuStats, GpuError> {
         let ids: Vec<NodeId> = items.iter().map(|item| item.id).collect();
+        let boxed: Vec<Option<KeptBox>> = items
+            .iter()
+            .map(|item| match item.kind {
+                // (Only boxes keep one: no other item is weighed.)
+                NodeKind::Quad(_) | NodeKind::Panel { .. } => KeptBox::of(item, plain_box(item)),
+                _ => None,
+            })
+            .collect();
         self.patch_clips.clear();
         let made =
             self.render_flat::<PATCH>(scene, items, &[viewport], Some(vec![viewport]), true)?;
@@ -3456,14 +3514,16 @@ impl GpuRenderer {
             .into_iter()
             .zip(inherited)
             .zip(&ranges)
+            .zip(boxed)
             .map(
-                |((id, inherited), &(start, len, room, first, end))| KeptItem {
+                |(((id, inherited), &(start, len, room, first, end)), boxed)| KeptItem {
                     id,
                     inherited,
                     start,
                     len,
                     room,
                     draws: first..end,
+                    boxed,
                 },
             )
             .collect();
@@ -3553,6 +3613,38 @@ impl GpuRenderer {
                 (self.box_quads, self.box_draws) = (box_quads, box_draws);
                 return Ok(self.recycle_kept(*kept));
             };
+            // A kept box layout alone moved or resized (`BOX_ONLY`): the same
+            // paint and compositing at its new box, without working its item
+            // out.
+            if flags & zgx::scene::repaint::BOX_ONLY != 0
+                && let Some(boxed) = kept.items[first as usize].boxed
+                && kept
+                    .items
+                    .get(first as usize + 1)
+                    .is_none_or(|next| next.id != id)
+            {
+                let (bounds, kind) = scene.box_in(id, &kept.items[first as usize].inherited);
+                if plain_quad(kind) {
+                    boxes += 1;
+                    let parts = PlainBox {
+                        kind,
+                        bounds,
+                        clip: boxed.clip,
+                        opacity: boxed.opacity,
+                        edge_fade: boxed.edge_fade,
+                    };
+                    boxes_fit = boxes_fit
+                        && self.patch_box(
+                            &mut kept,
+                            first as usize,
+                            parts,
+                            viewport,
+                            &mut box_quads,
+                            &mut box_draws,
+                        );
+                    continue;
+                }
+            }
             let over = matches!(scene.kind(id),
                 NodeKind::Quad(quad) | NodeKind::Panel { quad, .. } if quad.paints_over());
             let count = 1 + usize::from(over);
@@ -3571,13 +3663,15 @@ impl GpuRenderer {
                     (self.box_quads, self.box_draws) = (box_quads, box_draws);
                     return Ok(self.recycle_kept(*kept));
                 };
-                if plain_box(&item) {
+                let plain = plain_box(&item);
+                kept.items[place].boxed = KeptBox::of(&item, plain);
+                if plain {
                     boxes += 1;
                     boxes_fit = boxes_fit
                         && self.patch_box(
                             &mut kept,
                             place,
-                            &item,
+                            PlainBox::of(&item),
                             viewport,
                             &mut box_quads,
                             &mut box_draws,
@@ -3693,27 +3787,40 @@ impl GpuRenderer {
         &self,
         kept: &mut Kept,
         place: usize,
-        item: &zgx::scene::PaintItem<'_>,
+        boxed: PlainBox<'_>,
         viewport: Rect,
         quads: &mut Vec<Quad>,
         draws: &mut Vec<Draw>,
     ) -> bool {
         quads.clear();
         draws.clear();
-        let clip = item.clip.unwrap_or(viewport).intersection(viewport);
-        if let Some(clip) = clip.filter(|_| item.effects.opacity > 0.) {
-            let painted = match item.kind {
+        let PlainBox {
+            kind,
+            bounds,
+            clip,
+            opacity,
+            edge_fade,
+        } = boxed;
+        let clip = clip.unwrap_or(viewport).intersection(viewport);
+        if let Some(clip) = clip.filter(|_| opacity > 0.) {
+            let painted = match kind {
                 NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => {
-                    style.paint_bounds(item.bounds)
+                    style.paint_bounds(bounds)
                 }
-                _ => item.bounds,
+                _ => bounds,
             };
             if viewport.intersects(clip) && viewport.intersects(painted) {
-                let bounds = item.bounds;
                 let fade = [bounds.x, bounds.y, bounds.width, bounds.height];
-                let (opacity, edge_fade) = (item.effects.opacity, item.effects.edge_fade);
-                match item.kind {
-                    NodeKind::Rect(color) => quads.push(rect_quad(*color, fade, item.effects)),
+                match kind {
+                    NodeKind::Rect(color) => quads.push(rect_quad(
+                        *color,
+                        fade,
+                        zgx::scene::Effects {
+                            opacity,
+                            edge_fade,
+                            ..Default::default()
+                        },
+                    )),
                     NodeKind::Quad(style) | NodeKind::Panel { quad: style, .. } => push_panel(
                         quads,
                         plain_panel_quad(style, fade, opacity, edge_fade, false),
