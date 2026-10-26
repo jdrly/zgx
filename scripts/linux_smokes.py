@@ -69,6 +69,8 @@ SMOKES = [
     ("user-time", "python3 scripts/user_time_smoke.py {bin}/window_probe --output {out}", False),
     ("window-icon", "python3 scripts/window_icon_smoke.py {bin}/window_probe --output {out}", False),
     ("xdnd-source", "python3 scripts/xdnd_source_smoke.py {bin} --output {out}", False),
+    ("xdnd-text-drop", "python3 scripts/xdnd_text_drop_smoke.py {bin} --output {out}", False),
+    ("wayland-text-drop", "python3 scripts/wayland_text_drop_smoke.py {bin} --output {out}", False),
     ("wayland-drag-out", "python3 scripts/wayland_drag_out_smoke.py {bin} --output {out}", False),
     ("zenity-dialog", "python3 scripts/zenity_dialog_smoke.py {bin}/platform_services --output {out}", False),
     ("portal-dialog", "python3 scripts/portal_dialog_smoke.py {bin}/platform_services --output {out}", False),

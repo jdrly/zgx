@@ -856,6 +856,9 @@ struct EditorDrag {
     /// The selection while a drag of text shows where it would drop (the
     /// caret there): back as it leaves, or before the drop.
     drop_restore: Cell<Option<crate::text_edit::Selection>>,
+    /// A drop focuses the editor: the text it dropped stays selected, a
+    /// field that selects all as it is focused or not.
+    dropped: Cell<bool>,
 }
 impl EditorDrag {
     fn cancel(&self) {
@@ -4373,7 +4376,8 @@ impl Ui {
                         state.set(HOVERED);
                     }
                     // Focus coming to it, not its window coming back.
-                    if hint.select_on_focus.get() && !window_blurred.replace(false) {
+                    let dropped = gesture.dropped.replace(false);
+                    if hint.select_on_focus.get() && !window_blurred.replace(false) && !dropped {
                         let mut edit = editor.borrow_mut();
                         edit.select_all();
                         position.set(TextPosition {
@@ -4709,6 +4713,12 @@ impl Ui {
                                     affinity: TextAffinity::After,
                                 });
                                 changed = true;
+                                // Focused, its dropped text selected, as
+                                // AppKit's text views and a browser's fields.
+                                if !*focused.borrow() {
+                                    gesture.dropped.set(true);
+                                    cx.focus();
+                                }
                             }
                             cx.prevent_default();
                             cx.stop_propagation();

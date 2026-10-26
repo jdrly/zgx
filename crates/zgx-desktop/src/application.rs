@@ -2701,6 +2701,13 @@ impl Host {
         }
         #[cfg(target_os = "macos")]
         crate::services::add(window.id(), &self.context.ui);
+        #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+        {
+            let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+            crate::text_drop::add(&window, &self.context.ui, move || {
+                let _ = proxy.send_event(Event::Wake(token));
+            });
+        }
         self.window = Some(window);
         #[cfg(target_os = "macos")]
         {
@@ -4871,6 +4878,8 @@ impl WindowManager {
             self.native.remove(&window.id());
             #[cfg(target_os = "macos")]
             crate::services::remove(window.id());
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            crate::text_drop::remove(window.id());
             // Its drag, if X11's, goes with it.
             #[cfg(target_os = "linux")]
             if crate::native_drag::active(window.id()) {
@@ -5046,6 +5055,28 @@ impl WindowManager {
                             host.dispatch(InputEvent::FileHover { x, y, path })
                         }
                         FileEvent::Leave => host.dispatch(InputEvent::FileHoverCancelled),
+                        FileEvent::TextOver { x, y } => {
+                            crate::wayland_data::answer_text(crate::text_drop::over(
+                                &host.context.ui,
+                                x,
+                                y,
+                            ));
+                            Ok(())
+                        }
+                        FileEvent::TextOut => {
+                            crate::text_drop::out(&host.context.ui);
+                            Ok(())
+                        }
+                        FileEvent::TextDrop {
+                            x,
+                            y,
+                            text,
+                            accepted,
+                        } => {
+                            let taken = crate::text_drop::dropped(&host.context.ui, x, y, &text);
+                            let _ = accepted.send(taken);
+                            Ok(())
+                        }
                         FileEvent::Rejected { x, y, reason } => {
                             host.dispatch(InputEvent::FilesDropRejected { x, y, reason })
                         }

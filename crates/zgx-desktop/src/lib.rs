@@ -51,6 +51,8 @@ mod portal_parent;
 mod scrollers;
 #[cfg(target_os = "macos")]
 mod services;
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+mod text_drop;
 mod thumbnail;
 mod url;
 #[cfg(target_os = "linux")]

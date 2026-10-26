@@ -661,7 +661,10 @@ python scripts/windows_caret_blink_probe.py target/release/examples/text_selecti
   `DoDragDrop`'s loop; dragged out and back, let go in its own window,
   Windows dropping nothing; Escape over the target cancelling, and the
   preview sliding back to the chip in its own window; a tab dropped onto the
-  probe's other window, and torn off past both. It never lets go over any
+  probe's other window, and torn off past both; text another app drags in
+  (`drop_target_probe --source`, `CF_UNICODETEXT`) let go over the Words
+  field's end landing there, copied, and refused over the chip. It never
+  lets go over any
   window but its own and the target's: it checks the way is clear before each
   drag, and cancels with Escape if another window covers the target.
 
