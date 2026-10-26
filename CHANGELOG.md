@@ -10,6 +10,7 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
   - *Opt out:* `Ui::set_find_in_page(false)` (Rust; a Luau setting follows).
 - **Zoom**, as a browser's page zoom: Command (Control elsewhere) with plus or equals zooms a window in, minus out, 0 back to 100%, through Chrome's levels (25% to 500%). The window's content draws at the display's scale times the zoom, so layout reflows in a smaller or larger viewport and text and paths stay crisp; scroll views keep what was at their top. `Ui::zoom`, `set_zoom`, `zoom_in`, `zoom_out`, `reset_zoom`; `zgx inspect zoom` (MCP `zgx_zoom`); on macOS an app's View menu gains Zoom In, Zoom Out and Actual Size. An app whose keymap or menu binds the keys keeps them. At 100% nothing changes: the content scale is the display's, exactly.
   - *Opt out:* `Ui::set_zoomable(false)`.
+  - *For now:* a window showing native views (web views, terminals) stays at its zoom, the keys going on to the app (a debug build says why), until those views follow it.
 
 ### Added
 

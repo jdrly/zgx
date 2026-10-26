@@ -2721,6 +2721,10 @@ impl Host {
             self.context.ui.on_zoom(move || {
                 let _ = proxy.send_event(Event::Zoom(token));
             });
+            // Not while it shows native views: they are placed in points of
+            // the display's scale, not the zoom's, as yet.
+            let natives = self.context.natives.clone();
+            self.context.ui.zoom_blocked_by(move || !natives.is_empty());
         }
         self.window = Some(window);
         #[cfg(target_os = "macos")]
