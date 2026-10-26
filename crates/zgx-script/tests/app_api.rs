@@ -775,6 +775,36 @@ fn an_image_with_dither_is_drawn_in_dots_of_that_size() {
 }
 
 #[test]
+fn an_images_dither_follows_its_state_and_keeps_to_a_fallbacks_picture() {
+    let mut h = Harness::inline(
+        r##"local dots = ui.bitmap(4, 4, function() return 1 end)
+        local dot = ui.state("dot", 2)
+        return ui.column {
+            ui.button { id = "finer", on_click = function() dot:set(1) end, "finer" },
+            ui.image { id = "pic", src = dots, w = 40, h = 40, fallback = ui.text { "…" },
+                dither = function() return dot:get() end },
+        }"##,
+    );
+    h.settle();
+    let dither = |h: &mut Harness| {
+        let node = h.find("pic").unwrap();
+        let scene = h.ui.scene.borrow();
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            if let zgx::scene::NodeKind::Image(image) = scene.kind(n) {
+                return image.dither();
+            }
+            stack.extend(scene.children(n).iter().copied());
+        }
+        panic!("no image")
+    };
+    assert_eq!(dither(&mut h), 2.);
+    h.click("finer");
+    h.settle();
+    assert_eq!(dither(&mut h), 1.);
+}
+
+#[test]
 fn an_images_shader_params_reach_its_node_and_animate_its_reveal() {
     let mut h = Harness::inline(
         r##"local dots = ui.bitmap(4, 4, function() return 1 end)

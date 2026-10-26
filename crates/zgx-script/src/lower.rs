@@ -1092,25 +1092,7 @@ fn kind_view(
             crate::markdown::view::view(move || render_text(&text, &vm), options.clone())
         }
         Kind::Rich(spans) => lower_rich(spans, vm, low),
-        Kind::Image { .. } => {
-            let view = lower_image(&node.kind, vm, low);
-            let size =
-                |prop: Prop| {
-                    node.props.iter().find(|(p, _)| *p == prop).and_then(
-                        |(_, source)| match resolve(&resolve_owned(source), Ty::Num, None, vm) {
-                            Some(Lit::Num(size)) if size > 0. => Some(size),
-                            _ => None,
-                        },
-                    )
-                };
-            // Dithered in dots, or characters in font pixels, this many
-            // points square (`ImageData::dithered`, `ImageData::characters`).
-            match (size(Prop::Dither), size(Prop::Characters)) {
-                (_, Some(pixel)) => view.characters(pixel),
-                (Some(dot), None) => view.dither(dot),
-                (None, None) => view,
-            }
-        }
+        Kind::Image { .. } => lower_image(node, vm, low),
         Kind::Svg { label, src } => {
             let (src, vm2, low2) = (resolve_owned(src), vm.clone(), low.clone());
             let theme = cx.as_deref().map(Context::theme);
@@ -3742,26 +3724,51 @@ fn picture_of(src: &Owned, vm: &Vm) -> Option<Picture> {
 
 /// A `ui.image` (out of `build`, as `lower_list` is).
 #[inline(never)]
-fn lower_image(kind: &Kind, vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
+fn lower_image(node: &Node, vm: &Rc<Vm>, low: &Rc<Lowering>) -> View {
     let Kind::Image {
         label,
         src,
         fallback,
-    } = kind
+    } = &node.kind
     else {
         unreachable!("lower_image takes images")
     };
+    // Dithered in dots, or characters in font pixels, this many points
+    // square (`ImageData::dithered`, `ImageData::characters`): state or
+    // computed, the picture follows them as it does its `src`.
+    let prop = |prop: Prop| {
+        node.props
+            .iter()
+            .find(|(p, _)| *p == prop)
+            .map(|(_, source)| resolve_owned(source))
+    };
+    let (dither, characters) = (prop(Prop::Dither), prop(Prop::Characters));
     // The picture, as a view (made again each time it shows).
     let picture = {
         let (src, vm2, low2, label) = (resolve_owned(src), vm.clone(), low.clone(), label.clone());
         move || {
             let (src, vm2, low2) = (src.clone(), vm2.clone(), low2.clone());
-            image_signal(label.clone(), move || match picture_of(&src, &vm2) {
-                Some(Picture::Image(image)) => image,
-                Some(Picture::Path(path)) => {
-                    load_image(&vm2, &low2, &path).unwrap_or_else(placeholder)
+            let (dither, characters) = (dither.clone(), characters.clone());
+            image_signal(label.clone(), move || {
+                let image = match picture_of(&src, &vm2) {
+                    Some(Picture::Image(image)) => image,
+                    Some(Picture::Path(path)) => {
+                        load_image(&vm2, &low2, &path).unwrap_or_else(placeholder)
+                    }
+                    None => placeholder(),
+                };
+                let size = |source: &Option<Owned>| match source
+                    .as_ref()
+                    .and_then(|source| resolve(source, Ty::Num, None, &vm2))
+                {
+                    Some(Lit::Num(size)) if size > 0. => Some(size),
+                    _ => None,
+                };
+                match (size(&dither), size(&characters)) {
+                    (_, Some(pixel)) => Arc::new(image.characters(pixel)),
+                    (Some(dot), None) => Arc::new(image.dithered(dot)),
+                    (None, None) => image,
                 }
-                None => placeholder(),
             })
         }
     };
