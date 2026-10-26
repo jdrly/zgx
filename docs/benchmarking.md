@@ -319,11 +319,10 @@ Measured again in October 2026 (dist builds, instructions retired, the lab windo
   - the first frame: about 145 M.
 - **Inside the GPU steps:**
   - `BufferWrites::new` (vendor/wgpu-hal), about 12 M, is the process's first shader compile.
-  - `MetalFrame::new` in the first frame is about 15 M. naga translating `draw.wgsl` and `copy_offset.wgsl` to MSL is about 10.5 M of it, and Metal's `newLibraryWithSource` 0.4 M in-process; Metal compiles out of process and caches binaries itself.
+  - `MetalFrame::new` in the first frame was about 15 M, about 10.5 M of it naga translating `draw.wgsl` and `copy_offset.wgsl` to MSL. Their MSL is now translated ahead (`src/draw.metal`, `src/copy_offset.metal`, kept current by a test), which cut the first frame by about 10 M. Metal's `newLibraryWithSource` is 0.4 M in-process; Metal compiles out of process and caches binaries itself.
 - **What doesn't account for the gap:**
   - Linking WebKit, AVFoundation and CoreMedia: about 2 M at launch.
   - The accessibility adapter: 2–5 M.
-  - A disk cache of naga's MSL would save about 10 M a launch.
 - **What does:** the gap with GPUI's direct Metal is mostly wgpu's adapter and device setup.
 
 ## On Windows
