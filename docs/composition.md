@@ -926,6 +926,12 @@ means, as ARIA's attributes do in HTML; a view that sets none pays nothing:
   arrows along the axis, Home and End move among them. A field inside keeps its
   arrows. `ListBox` is vertical and `Toolbar` and `TabList` horizontal without
   asking, and a virtual list with `keyboard_navigation(true)` is one stop too.
+  A `RadioGroup` (`radio_group`, Luau `role = "radiogroup"`) takes every arrow,
+  and they choose the radio they move to, wrapping at the ends, as a browser's
+  and AppKit's radio buttons do; Tab lands on the checked one.
+- `radio(label, selected, value)`: a radio button choosing `value` for the
+  `selected` state, checked while it holds it, its circle drawn as the
+  platform's. Space or a click chooses it.
 - When what has focus leaves (a message archived with its toolbar), focus
   moves to its nearest focusable ancestor that stays, else to the next Tab
   stop (a focus group's own), else the one before: never to the window,

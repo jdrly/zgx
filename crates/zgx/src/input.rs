@@ -521,6 +521,9 @@ struct Group {
     /// None: one Tab stop whose arrows its owner handles (a virtual list).
     axis: Option<FocusGroup>,
     current: Option<NodeId>,
+    /// Its arrows choose what they move to, wrapping at the ends: a radio
+    /// group's (`set_group_chooses`).
+    chooses: bool,
 }
 struct FocusScope {
     root: NodeId,
@@ -1687,12 +1690,16 @@ impl InputDispatcher {
         let mut s = self.state.borrow_mut();
         match axis {
             Some(axis) => {
-                let current = s.groups.get(&root).and_then(|g| g.current);
+                let (current, chooses) = s
+                    .groups
+                    .get(&root)
+                    .map_or((None, false), |g| (g.current, g.chooses));
                 s.groups.insert(
                     root,
                     Group {
                         axis: Some(axis),
                         current,
+                        chooses,
                     },
                 );
             }
@@ -1712,8 +1719,17 @@ impl InputDispatcher {
             Group {
                 axis: None,
                 current,
+                chooses: false,
             },
         );
+    }
+    /// Make focus group `root`'s arrows choose what they move to (activate
+    /// it), wrapping from one end to the other, as a radio group's do in a
+    /// browser and in AppKit.
+    pub(crate) fn set_group_chooses(&self, root: NodeId, chooses: bool) {
+        if let Some(group) = self.state.borrow_mut().groups.get_mut(&root) {
+            group.chooses = chooses;
+        }
     }
     /// Make `member` the one its focus group's Tab stop lands on: the
     /// selected option, the active tab.
@@ -1754,7 +1770,11 @@ impl InputDispatcher {
     fn group_step(&self, scene: &Scene, key: &Key) -> Option<NodeId> {
         let focused = self.focused()?;
         let group = self.group_of(scene, focused)?;
-        let axis = self.state.borrow().groups.get(&group)?.axis?;
+        let (axis, wraps) = {
+            let s = self.state.borrow();
+            let g = s.groups.get(&group)?;
+            (g.axis?, g.chooses)
+        };
         enum Step {
             Back,
             On,
@@ -1788,6 +1808,8 @@ impl InputDispatcher {
             .collect();
         let at = members.iter().position(|id| *id == focused)?;
         match step {
+            Step::Back if wraps && at == 0 => members.last().copied(),
+            Step::On if wraps && at + 1 == members.len() => members.first().copied(),
             Step::Back => at.checked_sub(1).map(|i| members[i]),
             Step::On => members.get(at + 1).copied(),
             Step::First => members.first().copied(),
@@ -2314,6 +2336,15 @@ impl InputDispatcher {
                     if next.is_some() {
                         self.focus(scene, next);
                         prevented = true;
+                        // A radio group's arrows choose too.
+                        let chooses = next.and_then(|id| {
+                            let group = self.group_of(&scene.borrow(), id)?;
+                            let chooses = self.state.borrow().groups.get(&group)?.chooses;
+                            chooses.then_some(id)
+                        });
+                        if let Some(id) = chooses.filter(|id| self.focused() == Some(*id)) {
+                            self.dispatch_to(scene, id, InputEvent::Activate);
+                        }
                     }
                 }
                 InputEvent::PointerUp {

@@ -1636,6 +1636,77 @@ pub fn menu_item(label: impl Into<String>) -> View {
 pub fn button() -> View {
     View::new(Kind::Button)
 }
+/// A radio button: chooses `value` for `selected` when clicked or pressed
+/// (Space), and is checked while `selected` holds it. Its circle is drawn as
+/// the platform draws one, beside `label` (also its accessible name). In a
+/// [`radio_group`] its group is one Tab stop, landing on the checked radio,
+/// and the arrows move and choose, wrapping at the ends, as a browser's and
+/// AppKit's radio buttons do.
+pub fn radio<T: PartialEq + Clone + 'static>(
+    label: impl Into<String>,
+    selected: Signal<T>,
+    value: T,
+) -> View {
+    use crate::theme::tok;
+    let label = label.into();
+    let on = {
+        let (selected, value) = (selected.clone(), value.clone());
+        move || selected.with(|s| *s == value)
+    };
+    let (ring, dot, checked) = (on.clone(), on.clone(), on);
+    let circle = div()
+        .w(crate::compose_checkbox::SIZE)
+        .h(crate::compose_checkbox::SIZE)
+        .shrink_0()
+        .rounded(crate::compose_checkbox::SIZE / 2.)
+        .items_center()
+        .justify_center()
+        .reactive_style(move || {
+            if ring() {
+                Styles::new()
+                    .bg(tok::ACCENT)
+                    .border(1.)
+                    .border_color(tok::ACCENT)
+            } else {
+                Styles::new()
+                    .bg(tok::INPUT_BG)
+                    .border(1.)
+                    .border_color(tok::BORDER_STRONG)
+            }
+        })
+        .child(div().w(6.).h(6.).rounded(3.).reactive_style(move || {
+            if dot() {
+                Styles::new().bg(tok::ACCENT_TEXT)
+            } else {
+                Styles::new().bg(crate::scene::Color(0, 0, 0, 0))
+            }
+        }));
+    button()
+        .role(Role::RadioButton)
+        .accessible_label(label.clone())
+        .checked_when(checked)
+        .gap(6.)
+        .items_center()
+        .px(4.)
+        .py(4.)
+        .bg(crate::scene::Color(0, 0, 0, 0))
+        .border(0.)
+        .on_click(move || {
+            if !selected.with_untracked(|s| *s == value) {
+                selected.set(value.clone());
+            }
+        })
+        .child(circle)
+        .child(text(label))
+}
+/// Radio buttons ([`radio`]) of one choice, `label` its accessible name:
+/// one Tab stop, the arrows moving and choosing (`Role::RadioGroup`).
+pub fn radio_group(label: impl Into<String>) -> View {
+    column()
+        .role(Role::RadioGroup)
+        .accessible_label(label)
+        .gap(2.)
+}
 /// A checkbox bound bidirectionally to `value`.
 /// `label` supplies both its visible text and accessible name. The control owns
 /// its indicator and label; additional `.child`/`.children` are rejected at mount.
@@ -5287,10 +5358,15 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility, 
     let focus_group = focus_group.or(match role {
         Some(Role::ListBox) => Some(crate::input::FocusGroup::Vertical),
         Some(Role::TabList | Role::Toolbar) => Some(crate::input::FocusGroup::Horizontal),
+        // Every arrow, as a browser's radio buttons take them.
+        Some(Role::RadioGroup) => Some(crate::input::FocusGroup::Both),
         _ => None,
     });
     if let Some(axis) = focus_group {
         ui.input.set_focus_group(root, Some(axis));
+        // A radio group's arrows choose the radio they move to.
+        ui.input
+            .set_group_chooses(root, role == Some(Role::RadioGroup));
         // Its children mounted first: one already selected is its stop.
         let selected = {
             let scene = ui.scene.borrow();
@@ -5842,9 +5918,9 @@ pub mod prelude {
     pub use super::{
         Context, Slot, VariableHeights, View, button, checkbox, column, component, div, image,
         image_signal, keyed, measured_rows, measured_virtual_list, menu, menu_item, modal, overlay,
-        popover, progress, provide, provide_with, row, scroll, scroll_x, scrollbar, slider,
-        submenu, switch, text, text_area, text_area_value, text_input, text_input_value,
-        text_signal, variable_virtual_list, virtual_list,
+        popover, progress, provide, provide_with, radio, radio_group, row, scroll, scroll_x,
+        scrollbar, slider, submenu, switch, text, text_area, text_area_value, text_input,
+        text_input_value, text_signal, variable_virtual_list, virtual_list,
     };
     pub use super::{RichTextView, TextSpan, rich_text, rich_text_signal, text_span};
     pub use super::{SplitOptions, split};
