@@ -52,7 +52,8 @@ def main():
                                  for f in fields),
         'scrolled to it': any(f['query'] == 'line 7777)' and abs(float(f['offset']) - 7776 * 22) < 300
                               for f in fields),
-        'closed': bool(fields) and fields[-1]['open'] == 'false',
+        'the current match marked': any(f.get('current_marked') == '1' for f in fields),
+        'closed, its marks gone': bool(fields) and fields[-1]['open'] == 'false' and fields[-1]['marked'] == '0',
         'done': 'FIND_PROBE_DONE' in out,
     }
     print('\n'.join(lines))

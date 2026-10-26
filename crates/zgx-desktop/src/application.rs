@@ -4805,6 +4805,26 @@ impl WindowManager {
         }
     }
     fn menu_action(&mut self, token: u64, action: crate::MenuAction) {
+        // Find in page's items, which zgx puts in the Edit menu.
+        if let Some(find) = crate::app_menu::find_action(&action) {
+            if let Some(host) = self.hosts.get_mut(&token)
+                && !host.context.window.is_closed()
+            {
+                use crate::app_menu::FindAction;
+                let ui = &mut host.context.ui;
+                match find {
+                    FindAction::Open => {
+                        ui.open_find();
+                    }
+                    FindAction::Next => ui.find_next(),
+                    FindAction::Previous => ui.find_previous(),
+                    FindAction::UseSelection => {
+                        ui.find_selection();
+                    }
+                }
+            }
+            return;
+        }
         if !crate::app_menu::enabled_action(&self.factory.menus.borrow(), &action) {
             return;
         }

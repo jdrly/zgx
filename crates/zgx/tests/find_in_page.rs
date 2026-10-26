@@ -259,3 +259,63 @@ fn an_app_binding_command_f_keeps_it_and_find_can_be_turned_off() {
     assert!(!key(&mut ui, Key::Character("f".into()), command()));
     assert!(!ui.find_status().open);
 }
+
+#[test]
+fn a_fields_match_leaves_its_selection_until_find_closes_on_it() {
+    let mut ui = Ui::new(400., 300.);
+    let notes = ui.signal(format!(
+        "{}a needle at the end",
+        "filler line\n".repeat(200)
+    ));
+    let view = ui.mount(column().child(text_area("Notes", notes).id("notes").size(300., 80.)));
+    ui.prepare_frame();
+    let editor = ui.editor(view.find("notes").unwrap()).unwrap();
+    editor.set_selection(0, 0);
+    ui.prepare_frame();
+    ui.find_text("needle");
+    ui.prepare_frame();
+    assert_eq!(ui.find_status().count, 1);
+    assert_eq!(editor.selection(), (0, 0), "found, not selected yet");
+    ui.close_find();
+    let at = 200 * "filler line\n".len() + 2;
+    assert_eq!(editor.selection(), (at, at + 6), "closed on it: selected");
+    assert_eq!(ui.input.focused(), view.find("notes"));
+}
+
+#[test]
+fn use_selection_for_find_looks_for_what_is_selected() {
+    let mut ui = Ui::new(400., 300.);
+    ui.mount(
+        column()
+            .selectable(true)
+            .child(text("an apple here"))
+            .child(text("another apple there")),
+    );
+    ui.prepare_frame();
+    assert!(!ui.find_selection(), "nothing selected");
+    let first = {
+        let scene = ui.scene.borrow();
+        let mut stack = vec![scene.root()];
+        let mut found = None;
+        while let Some(id) = stack.pop() {
+            if matches!(scene.kind(id), NodeKind::Text { text, .. } if &**text == "an apple here") {
+                found = Some(id);
+            }
+            stack.extend(scene.children(id).iter().copied());
+        }
+        found.unwrap()
+    };
+    let point = |offset| zgx::selection::TextPoint {
+        node: first,
+        offset,
+    };
+    assert!(ui.select_text(point(3), point(8)));
+    if cfg!(target_os = "macos") {
+        // Command-E, as AppKit's.
+        key(&mut ui, Key::Character("e".into()), command());
+    } else {
+        assert!(ui.find_selection());
+    }
+    assert_eq!(ui.find_status().query, "apple");
+    assert_eq!(ui.find_status().count, 2);
+}

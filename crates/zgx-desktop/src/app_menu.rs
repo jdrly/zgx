@@ -467,6 +467,74 @@ pub(crate) fn update_entry(
     false
 }
 
+/// What find in page's menu items do (`find_action`), by their actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FindAction {
+    Open,
+    Next,
+    Previous,
+    UseSelection,
+}
+/// Find in page's items in an Edit menu: action, title, shortcut.
+const FIND_ITEMS: [(&str, &str, &str, FindAction); 4] = [
+    ("zgx:find", "Find…", "Super+F", FindAction::Open),
+    ("zgx:find-next", "Find Next", "Super+G", FindAction::Next),
+    (
+        "zgx:find-previous",
+        "Find Previous",
+        "Super+Shift+G",
+        FindAction::Previous,
+    ),
+    (
+        "zgx:find-selection",
+        "Use Selection for Find",
+        "Super+E",
+        FindAction::UseSelection,
+    ),
+];
+/// The find in page item `action` is, if it is one.
+pub(crate) fn find_action(action: &MenuAction) -> Option<FindAction> {
+    FIND_ITEMS
+        .iter()
+        .find(|(id, ..)| *id == action.0)
+        .map(|(.., what)| *what)
+}
+/// Whether the app's menus bind ⌘F, ⌘G or ⌘E themselves (its own find):
+/// zgx's find items stay out of them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn binds_find_keys(menus: &[AppMenu]) -> bool {
+    fn binds(entries: &[AppMenuEntry]) -> bool {
+        entries.iter().any(|entry| match entry {
+            AppMenuEntry::Item {
+                accelerator: Some(MenuAccelerator(stroke)),
+                ..
+            } => {
+                stroke.modifiers.primary_shortcut()
+                    && matches!(&stroke.key, zgx::input::Key::Character(k) if ["f", "g", "e"].contains(&k.to_ascii_lowercase().as_str()))
+            }
+            AppMenuEntry::Submenu(child) => binds(&child.entries),
+            _ => false,
+        })
+    }
+    menus.iter().any(|menu| binds(&menu.entries))
+}
+/// Find in page's submenu, as AppKit apps' Edit menus have it.
+#[cfg(target_os = "macos")]
+fn find_submenu() -> Result<muda::Submenu, AppMenuError> {
+    let menu = muda::Submenu::new("Find", true);
+    for (id, label, shortcut, _) in FIND_ITEMS {
+        let accelerator = shortcut
+            .parse::<muda::accelerator::KeyAccelerator>()
+            .map_err(|e| AppMenuError(e.to_string()))?;
+        let item = muda::MenuItem::with_id(id, label, true, None);
+        item.set_key_accelerator(Some(accelerator))
+            .map_err(|e| AppMenuError(e.to_string()))?;
+        menu.append(&item)
+            .map_err(|e| AppMenuError(e.to_string()))?;
+    }
+    Ok(menu)
+}
+
 /// A menu model as an AppKit submenu: items, check items, shortcuts, the
 /// standard edit items and nested submenus.
 #[cfg(target_os = "macos")]
@@ -588,8 +656,15 @@ impl NativeMenu {
         menu.append(&application)
             .map_err(|e| AppMenuError(e.to_string()))?;
         let mut window = None;
+        let find = !binds_find_keys(menus);
         for model in menus {
             let submenu = native_submenu(model)?;
+            // Find in page in the Edit menu, as AppKit apps have it.
+            if model.label == "Edit" && find {
+                submenu
+                    .append_items(&[&muda::PredefinedMenuItem::separator(), &find_submenu()?])
+                    .map_err(|e| AppMenuError(e.to_string()))?;
+            }
             menu.append(&submenu)
                 .map_err(|e| AppMenuError(e.to_string()))?;
             if model.label == "Window" {
@@ -1118,6 +1193,28 @@ mod dynamic_tests {
                     && node.toggled() == Some(accesskit::Toggled::True))
         );
         view.unmount();
+    }
+    #[test]
+    fn find_items_join_an_edit_menu_unless_the_app_binds_their_keys() {
+        let edit = |entries: Vec<AppMenuEntry>| vec![AppMenu::new("Edit", entries)];
+        assert!(!binds_find_keys(&edit(vec![AppMenuEntry::Standard(
+            StandardItem::Copy
+        )])));
+        for key in ["f", "G", "e"] {
+            assert!(binds_find_keys(&edit(vec![
+                AppMenuEntry::item("Mine", "mine")
+                    .accelerator(MenuAccelerator::primary(Key::Character(key.into())))
+            ])));
+        }
+        assert_eq!(
+            find_action(&MenuAction("zgx:find-next".into())),
+            Some(FindAction::Next)
+        );
+        assert_eq!(
+            find_action(&MenuAction("find".into())),
+            None,
+            "the app's own"
+        );
     }
     #[test]
     fn an_apps_find_shortcut_keeps_it_from_find_in_page() {

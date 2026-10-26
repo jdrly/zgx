@@ -167,6 +167,9 @@ struct EditorHint {
     /// A selection set by the program shows the next time it is drawn,
     /// focused or not (a search's match, chosen from its field).
     reveal: Cell<bool>,
+    /// A place to scroll into view the next time it is drawn, its caret and
+    /// selection left as they are (find in page's match in a field).
+    reveal_at: Cell<Option<usize>>,
     /// What a code editor adds (`CodeHint`), made when first used: an
     /// editor without it carries a pointer's room.
     code: std::cell::OnceCell<Box<CodeHint>>,
@@ -209,6 +212,7 @@ impl EditorHint {
             clause: Cell::default(),
             composition_layer: Cell::default(),
             reveal: Cell::default(),
+            reveal_at: Cell::default(),
             code: std::cell::OnceCell::default(),
         }
     }
@@ -289,6 +293,12 @@ impl EditorHandle {
     pub fn selection(&self) -> (usize, usize) {
         let selection = self.editor.borrow().selection();
         (selection.anchor, selection.focus)
+    }
+    /// Scroll byte `at` into view the next time it is drawn, its caret and
+    /// selection left as they are.
+    pub(crate) fn reveal_offset(&self, at: usize) {
+        self.hint.reveal_at.set(Some(at));
+        self.refresh();
     }
     /// Select from `anchor` to `focus` (UTF-8 byte offsets, clamped to the
     /// text and moved back to a grapheme boundary), as a drag would.
@@ -3511,19 +3521,29 @@ impl Ui {
             let line_height = caret_rect.height;
             let mut scroll = scroll_for_draw.borrow_mut();
             let reveal = draw_reveal_caret.replace(true) && draw_gesture.mode.get().is_none();
-            let asked = draw_hint.reveal.take();
+            // A place asked for (find's match), else the caret.
+            let (rx, ry, rh, asked) = match draw_hint.reveal_at.take() {
+                Some(at) => {
+                    let r = layout.caret_position(TextPosition {
+                        byte_offset: at,
+                        affinity: TextAffinity::After,
+                    });
+                    (r.x, r.y, r.height, true)
+                }
+                _ => (cx, cy, line_height, draw_hint.reveal.take()),
+            };
             if (*focus.borrow() || asked) && reveal {
-                if cx - scroll.0 > (inner_width - 8.).max(0.) {
-                    scroll.0 = cx - ((inner_width - 8.).max(0.));
+                if rx - scroll.0 > (inner_width - 8.).max(0.) {
+                    scroll.0 = rx - ((inner_width - 8.).max(0.));
                 }
-                if cx < scroll.0 {
-                    scroll.0 = cx;
+                if rx < scroll.0 {
+                    scroll.0 = rx;
                 }
-                if cy - scroll.1 > (inner_height - line_height).max(0.) {
-                    scroll.1 = cy - ((inner_height - line_height).max(0.));
+                if ry - scroll.1 > (inner_height - rh).max(0.) {
+                    scroll.1 = ry - ((inner_height - rh).max(0.));
                 }
-                if cy < scroll.1 {
-                    scroll.1 = cy;
+                if ry < scroll.1 {
+                    scroll.1 = ry;
                 }
             }
             let (tw, th) = layout.size();

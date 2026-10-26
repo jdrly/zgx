@@ -6,7 +6,7 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 
 ### Added
 
-- **Find in page**: Command-F (Control-F elsewhere) opens a find bar at the window's top right, as a browser's: matches across all the window's text, fields and virtual lists' rows (those not mounted too), case and accents ignored, marked behind the text (theme tokens `find.match`, `find.current`), Enter and Command-G (Control-G, F3) stepping, Escape closing with the match selected. `zgx inspect search` (MCP `zgx_search`) answers it for agents. An app whose keymap or menu binds Command-F keeps its own.
+- **Find in page**: Command-F (Control-F elsewhere) opens a find bar at the window's top right, as a browser's: matches across all the window's text, fields and virtual lists' rows (those not mounted too), case and accents ignored, marked behind the text (theme tokens `find.match`, `find.current`), Enter and Command-G (Control-G, F3) stepping, Escape closing with the match selected. On macOS, Command-E finds the selection, and an app's Edit menu gains AppKit's Find submenu. `zgx inspect search` (MCP `zgx_search`) answers it for agents. An app whose keymap or menu binds Command-F keeps its own.
   - *Opt out:* `Ui::set_find_in_page(false)` (Rust; a Luau setting follows).
 
 - `radio(label, selected, value)` and `radio_group(label)`: radio buttons as a browser's and AppKit's, one Tab stop per group landing on the checked one, the arrows (all four) moving and choosing, wrapping at the ends. Any `Role::RadioGroup` (Luau `role = "radiogroup"`, `segmented`) is such a group now; its arrows stopped at the ends and chose nothing.

@@ -176,8 +176,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     loop {
                         let Some(ui) = ui.upgrade() else { return };
                         let s = ui.find_status();
+                        // Text showing find's current mark, and any mark.
+                        let current = ui.theme_scope().color_untracked(tok::FIND_CURRENT);
+                        let (current_marks, marks) = {
+                            let scene = ui.scene.borrow();
+                            let marked: Vec<_> = scene.marked_text().collect();
+                            let current = marked
+                                .iter()
+                                .filter(|id| scene.text_marks(**id).iter().any(|m| m.color == current))
+                                .count();
+                            (current, marked.len())
+                        };
                         let line = format!(
-                            "FIND open={} query={:?} count={} done={} current={:?} offset={:.0} selected={:?}",
+                            "FIND open={} query={:?} count={} done={} current={:?} offset={:.0} marked={marks} current_marked={current_marks} selected={:?}",
                             s.open,
                             s.query,
                             s.count,

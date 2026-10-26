@@ -173,7 +173,11 @@ without mounting it), case and accents ignored as Chrome's and Safari's do
 straight ones). Each match is marked behind its text (`find.match`), the
 current one apart (`find.current`) and scrolled into view; Enter and
 Command-G (Control-G, F3) go to the next, with Shift the one before,
-wrapping; Escape closes it, the match selected where the text is selectable.
+wrapping; Escape closes it, the match selected where the text is selectable
+(a field's match is scrolled to but its selection left until then). On
+macOS Command-E finds what is selected (Use Selection for Find), and an app
+menu with an Edit menu gains AppKit's Find submenu (Find…, Find Next, Find
+Previous, Use Selection for Find) unless its own items take those keys.
 A long list's rows are counted a slice a frame (the bar says `+` until
 done), and nothing runs once they are, or while no find is open. A keymap or
 menu item binding the key keeps it (the code editor example's own find);

@@ -99,7 +99,10 @@ def main():
             run("import", "-window", window, shot)
             image = Image.open(shot).convert("RGB")
             orange = sum(1 for p in image.getdata() if abs(p[0] - ORANGE[0]) < 24 and abs(p[1] - ORANGE[1]) < 30 and p[2] < 110)
-            checks["current mark shows"] = orange > 40
+            marked = until("the current match marked", lambda: status() if status().get("current_marked") == "1" else None)
+            checks["current mark shows"] = marked["current_marked"] == "1"
+            # What the screenshot shows of it (the theme's background decides
+            # the blend): for the record.
             checks["orange pixels"] = orange
             # Escape closes, its marks gone.
             keys("Escape")
@@ -108,7 +111,8 @@ def main():
             run("import", "-window", window, args.output / "closed.png")
             image = Image.open(args.output / "closed.png").convert("RGB")
             left = sum(1 for p in image.getdata() if abs(p[0] - ORANGE[0]) < 24 and abs(p[1] - ORANGE[1]) < 30 and p[2] < 110)
-            checks["marks gone"] = left < 5
+            checks["marks gone"] = status().get("marked") == "0"
+            checks["orange pixels after"] = left
 
             # Every transcript line: counted in slices, then done.
             keys("ctrl+f")

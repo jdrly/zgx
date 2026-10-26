@@ -4,7 +4,9 @@
 //! text, fields' values, and virtual lists' rows, mounted or not), each
 //! match marked behind its text and the current one scrolled into view.
 //! Enter and Command-G go to the next, with Shift the one before, wrapping;
-//! Escape closes it, the current match selected where it can be.
+//! Escape closes it, the current match selected where it can be. On macOS
+//! Command-E finds the selection, and the app's Edit menu has a Find
+//! submenu (`zgx-desktop`), unless the app binds those keys itself.
 //!
 //! Matching ignores case and accents (`find_text`). A virtual list's rows it
 //! has not mounted are read by its row text (`View::row_text`, else what its
@@ -268,6 +270,27 @@ impl Ui {
             self.after_find_change();
         }
     }
+    /// Find what is selected (selected text, else a field's selection), as
+    /// AppKit's Use Selection for Find (⌘E): false with nothing selected.
+    pub fn find_selection(&mut self) -> bool {
+        let field = self
+            .storage
+            .find
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.bar.as_ref()?.find(FIELD));
+        let selected = match self.focused_editor().filter(|e| Some(e.node) != field) {
+            Some(editor) => editor.copy(),
+            None if self.has_text_selection() => self.selected_text(),
+            None => String::new(),
+        };
+        let selected = selected.lines().next().unwrap_or_default().to_owned();
+        if selected.is_empty() {
+            return false;
+        }
+        self.find_text(&selected);
+        true
+    }
     /// The next match current, wrapping, and in view.
     pub fn find_next(&mut self) {
         self.step(1);
@@ -513,8 +536,10 @@ impl Ui {
                 }
             }
             FoundAt::Editor(node) => {
+                // Scrolled to, its caret and selection left as they are, as
+                // a browser's find leaves a field's until it closes.
                 if let Some(editor) = self.editor(node) {
-                    editor.set_selection(found.range.start, found.range.end);
+                    editor.reveal_offset(found.range.start);
                 }
                 let rect = self.scene.borrow().visible_bounds(node);
                 if let Some(rect) = rect {
@@ -916,6 +941,10 @@ pub(crate) fn after_dispatch(ui: &Ui, event: &InputEvent, prevented: bool) -> bo
     let mut ui = ui.shared();
     if shortcut && !modifiers.shift && letter("f") {
         return ui.open_find();
+    }
+    // Use Selection for Find, as AppKit's.
+    if cfg!(target_os = "macos") && shortcut && !modifiers.shift && letter("e") {
+        return ui.find_selection();
     }
     if ui.storage.find.borrow().is_none() {
         return false;
