@@ -4757,17 +4757,18 @@ impl Scene {
                 Some(parent) => self.context(parent),
                 None => (Transform::default(), Some(self.viewport), None),
             };
-            self.damage_subtree_placed(id, transform, clip, placement, 0);
+            self.damage_subtree_placed::<false>(id, transform, clip, placement, 0);
             return;
         }
         let parent = self.node(id).parent;
         let context = *context.get_or_insert_with(|| self.damage_context(parent));
         if let Some((transform, clip)) = context {
-            self.damage_subtree_in(id, transform, clip, 0);
+            self.damage_subtree_in::<false>(id, transform, clip, 0);
         }
     }
     /// `level`: how deep in the walk (`deep`).
-    fn damage_subtree_in(
+    #[inline(never)]
+    fn damage_subtree_in<const CHECK: bool>(
         &mut self,
         id: NodeId,
         parent: Transform,
@@ -4778,9 +4779,11 @@ impl Scene {
         // Not laid out since it was appended, so never painted: nothing to
         // repaint yet (a mounting row styles each node before its first
         // layout, which damages where it lands). Nor are its descendants.
-        let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
-        if !own_visible(&node.style) || unplaced || self.damage_is_full() {
-            return;
+        if CHECK {
+            let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
+            if !own_visible(&node.style) || unplaced || self.damage_is_full() {
+                return;
+            }
         }
         let transform = Transform {
             x: parent.x + node.transform.x,
@@ -4800,12 +4803,13 @@ impl Scene {
         for index in 0..self.node(id).children.len() {
             let child = self.node(id).children[index];
             crate::deep(level + 1, || {
-                self.damage_subtree_in(child, transform, clip, level + 1)
+                self.damage_subtree_in::<true>(child, transform, clip, level + 1)
             });
         }
     }
     /// `damage_subtree_in` where local transforms exist (see `descend`).
-    fn damage_subtree_placed(
+    #[inline(never)]
+    fn damage_subtree_placed<const CHECK: bool>(
         &mut self,
         id: NodeId,
         parent: Transform,
@@ -4814,9 +4818,11 @@ impl Scene {
         level: u32,
     ) {
         let node = self.node(id);
-        let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
-        if !own_visible(&node.style) || unplaced || self.damage_is_full() {
-            return;
+        if CHECK {
+            let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
+            if !own_visible(&node.style) || unplaced || self.damage_is_full() {
+                return;
+            }
         }
         let (transform, bounds, clip, placement) =
             self.descend(node, parent, parent_clip, placement);
@@ -4830,7 +4836,7 @@ impl Scene {
         for index in 0..self.node(id).children.len() {
             let child = self.node(id).children[index];
             crate::deep(level + 1, || {
-                self.damage_subtree_placed(child, transform, clip, placement, level + 1)
+                self.damage_subtree_placed::<true>(child, transform, clip, placement, level + 1)
             });
         }
     }
