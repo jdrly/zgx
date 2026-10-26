@@ -129,6 +129,7 @@ def load(directory):
         'trials': audit['trials'], 'pacing_trials': audit['pacing_trials'], 'protocol': protocol,
         'environment': audit['environment'], 'binaries': audit['binaries'],
         'toolchains': audit.get('toolchains', {}), 'preflight': audit.get('preflight'),
+        'abnormal_exits': audit.get('abnormal_exits'), 'launches': audit.get('launches', {}),
     }
 
 
@@ -328,6 +329,23 @@ def page(by, verdict, cards, micro=None):
     runs = ''.join(f'<li><a href="{REPO}/tree/main/{by[n]["run"]}"><code>{by[n]["run"]}</code></a> '
                    f'({by[n]["trials"]} trials, {by[n]["pacing_trials"]} pacing captures)</li>' for n in ORDER)
     luau = 'zgx-luau' in by['vlist']['frameworks']
+    # Apps that exited abnormally (each launched once more), against their
+    # launches: recorded since the run that started counting them.
+    crash_note = ''
+    if all(by[n].get('abnormal_exits') is not None for n in ORDER):
+        exits, launches = {}, {}
+        for n in ORDER:
+            for x in by[n]['abnormal_exits']:
+                exits[x['framework']] = exits.get(x['framework'], 0) + 1
+            for fw, kinds in by[n]['launches'].items():
+                launches[fw] = launches.get(fw, 0) + sum(kinds.values())
+        if exits:
+            listed = ', '.join(f"{NAMES.get(fw, fw)} {count} of {launches.get(fw, 0)} launches" for fw, count in sorted(exits.items()))
+            crash_note = (f'<li>Apps that exited abnormally during the run, each then launched once more: {e(listed)}. '
+                          'GPUI Fast aborts now and then inside AppKit while the window is being captured for frame timing '
+                          '(<code>-[NSWindow _updateButtonsForWindowSharingSession]</code>).</li>')
+        else:
+            crash_note = '<li>No app exited abnormally during the run.</li>'
     # Where GPU power does not clearly favour zgx: a rival lower, or the
     # trials' ranges overlapping.
     close = [f'{SCENES[n][0].lower()} ({MODES[m].lower()}) against {NAMES[r]}'
@@ -404,6 +422,7 @@ def page(by, verdict, cards, micro=None):
 {f'<li>WindowServer spends more CPU on zgx&#8217;s window than on the cheapest rival&#8217;s in {server_more} of {len(active)} tests, by at most {fmt(server_gap, 1)} points of a core (its chart follows CPU in each scene).</li>' if server_more else ''}
 {power_note}
 <li>Until 2026-10-25 these pages' GPU figure was app GPU time; it is now GPU power, which measures what the GPU spends rather than how long it was held (see How this was measured). In the animation, zgx uses {animate_time} on app GPU time and {animate_power} on power.</li>
+{crash_note}
 <li>Binary size is not compared.</li>
 <li>One machine, one session; a personal Mac in use, other applications kept running (the run waited until the machine was quiet). Windows and Linux are not compared here.</li>
 </ul>

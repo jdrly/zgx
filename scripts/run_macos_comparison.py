@@ -283,7 +283,44 @@ def power_of(process):
     return {'package_mw': mean('combined_power'), 'cpu_mw': mean('cpu_power'), 'gpu_mw': mean('gpu_power')}
 
 
+# Apps that exited abnormally (a signal, or no report and not ended by the
+# runner): each launch's framework, scene, mode, what it was for and its exit
+# code. GPUI Fast aborts now and then in AppKit while ScreenCaptureKit captures
+# its window (-[NSWindow _updateButtonsForWindowSharingSession], 2026-10-25):
+# such a launch is tried once more, and counted here, against the launches of
+# each kind (`LAUNCHES`).
+CRASHES = []
+LAUNCHES = {}
+
+
+def abnormal(exit_code, terminated):
+    return exit_code != 0 and not terminated
+
+
+def counted(framework, kind):
+    LAUNCHES.setdefault(framework, {}).setdefault(kind, 0)
+    LAUNCHES[framework][kind] += 1
+
+
+def crash(scene, framework, mode, kind, exit_code):
+    CRASHES.append({'framework': framework, 'scene': scene, 'mode': mode, 'kind': kind, 'exit_code': exit_code})
+    print(f"{framework} {mode}: exited abnormally ({exit_code}) in a {kind} launch; once more", flush=True)
+
+
 def trial(scene, framework, mode, repeat, out, power, paced=None):
+    """`one_trial`, once more if the app exits abnormally."""
+    row = one_trial(scene, framework, mode, repeat, out, power, paced)
+    if framework != 'desktop':
+        counted(framework, 'trial')
+        if abnormal(row['exit_code'], row['terminated_after_report']):
+            crash(scene, framework, mode, 'trial', row['exit_code'])
+            time.sleep(2)
+            counted(framework, 'trial')
+            row = one_trial(scene, framework, mode, repeat, out, power, paced)
+    return row
+
+
+def one_trial(scene, framework, mode, repeat, out, power, paced=None):
     """One timed trial; with `paced` (a list), its frames' pacing too, appended there."""
     log = out / f'{framework}.{mode}.{repeat}.log'
     idle = mode == 'idle'
@@ -360,17 +397,27 @@ def pacing(scene, framework, mode, repeat, out):
     seconds = WARMUP + PACING_SECONDS + 1
     # Screen capture occasionally fails to find a window that just opened:
     # one more try before giving up on the trial.
+    # An app that exits abnormally while captured gets one more launch too.
     for attempt in range(2):
+        counted(framework, 'pacing')
         process = launch(SCENES[scene]['binaries'][framework], mode, seconds, out / f'{framework}.{mode}.{repeat}.pacing.log')
         try:
             result = json.loads(run([str(PACER), str(process.pid), str(WARMUP - 0.5), str(PACING_SECONDS)]))
-            break
         except subprocess.CalledProcessError:
-            finish(process, seconds)
+            exit_code, terminated = finish(process, seconds)
+            if abnormal(exit_code, terminated):
+                crash(scene, framework, mode, 'pacing', exit_code)
             if attempt:
                 raise
             time.sleep(2)
-    finish(process, seconds)
+            continue
+        exit_code, terminated = finish(process, seconds)
+        if not abnormal(exit_code, terminated):
+            break
+        crash(scene, framework, mode, 'pacing', exit_code)
+        if attempt:
+            raise SystemExit(f'{framework} {mode}: exited abnormally in two pacing launches')
+        time.sleep(2)
     row = {'framework': framework, 'mode': mode, 'repeat': repeat, **result}
     (out / f'{framework}.{mode}.{repeat}.pacing.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
@@ -380,12 +427,19 @@ def blank(scene, framework, mode, repeat, out):
     """How often the window shows unfilled rows (vlist), from captures of it
     (scripts/blankprobe.swift), in a launch of its own."""
     seconds = WARMUP + BLANK_SECONDS + 1
-    process = launch(SCENES[scene]['binaries'][framework], mode, seconds, out / f'{framework}.{mode}.{repeat}.blank.log')
-    try:
-        result = json.loads(run([str(BLANK), str(process.pid), str(WARMUP - 0.5), str(BLANK_SECONDS), str(BLANK_RATE)]))
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
-        result = {'error': str(error)[-300:]}
-    finish(process, seconds)
+    for attempt in range(2):
+        counted(framework, 'blank')
+        process = launch(SCENES[scene]['binaries'][framework], mode, seconds, out / f'{framework}.{mode}.{repeat}.blank.log')
+        try:
+            result = json.loads(run([str(BLANK), str(process.pid), str(WARMUP - 0.5), str(BLANK_SECONDS), str(BLANK_RATE)]))
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
+            result = {'error': str(error)[-300:]}
+        exit_code, terminated = finish(process, seconds)
+        if not abnormal(exit_code, terminated):
+            break
+        crash(scene, framework, mode, 'blank', exit_code)
+        result = {'error': f'exited abnormally ({exit_code})'}
+        time.sleep(2)
     row = {'framework': framework, 'mode': mode, 'repeat': repeat, **result}
     (out / f'{framework}.{mode}.{repeat}.blank.json').write_text(json.dumps(row, indent=1) + '\n')
     return row
@@ -656,6 +710,7 @@ def measure(args, frameworks, modes, repeats, commit, found):
              'started_utc': started.isoformat(), 'finished_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
              'environment': environment(), 'preflight': found, 'binaries': binaries,
              'toolchains': toolchains(frameworks), 'invalid_trials': invalid,
+             'abnormal_exits': CRASHES, 'launches': LAUNCHES,
              'protocol': {'requested_seconds': REQUESTED, 'warmup_seconds': WARMUP, 'sampled_seconds': SAMPLED,
                           'interval_seconds': INTERVAL, 'repeats': repeats, 'idle_repeats': idle_repeats,
                           'idle_window_seconds': [IDLE_SETTLE, IDLE_SETTLE + SAMPLED],

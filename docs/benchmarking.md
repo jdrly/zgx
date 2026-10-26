@@ -79,6 +79,15 @@ Its protocol (`run_macos_comparison.py --suite`) is shorter than the full one:
 | frame pacing | 3 captures of 8 s per cell (of two, one bad capture moved a median: lab scroll on 2026-10-25 read 30.0 and 17.8 ms, and ten more captures of the same build 18.0) | 8 |
 | blank rows | vlist, scroll and jump: one 8 s capture of the window at 10 Hz per cell | none |
 
+An app that exits abnormally (a signal, or no report before the runner ends
+it) is launched once more, in a timed trial, a pacing capture or a blank-row
+capture alike, and the run records each such exit beside the launches of its
+framework (`abnormal_exits`, `launches` in audit.json), which the site states.
+GPUI Fast aborts now and then inside AppKit while ScreenCaptureKit captures its
+window (`-[NSWindow _updateButtonsForWindowSharingSession]`, about 1 launch in
+12 on 2026-10-25); its crash dialog still stops the next preflight until it is
+dismissed by hand.
+
 Every trial is checked: it must run as long as asked (its exit within 3 s of
 `ZGX_SECONDS`) with the ticks that length makes (58–61 a second while active,
 none while idle; animate's frames matching the rate it reports), or the run is
