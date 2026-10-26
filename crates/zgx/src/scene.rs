@@ -4657,14 +4657,22 @@ impl Scene {
             grid.mark(rect);
             return;
         }
-        let mut index = 0;
-        while index < self.damage.len() {
-            if self.damage[index].intersects(rect) {
-                rect = self.damage.swap_remove(index).union(rect);
-                index = 0;
-            } else {
-                index += 1;
-            }
+        // Each rectangle it meets joins it, from the first again after each
+        // (it grew): one tight scan a join, no index kept across the removal.
+        while !self.damage.is_empty() {
+            // `rect.intersects(other)`, its own edges worked out once a scan.
+            let (x, y) = (rect.x, rect.y);
+            let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
+            let meets = move |other: &Rect| {
+                x < other.x + other.width
+                    && other.x < right
+                    && y < other.y + other.height
+                    && other.y < bottom
+            };
+            let Some(index) = self.damage.iter().position(meets) else {
+                break;
+            };
+            rect = self.damage.swap_remove(index).union(rect);
         }
         self.damage.push(rect);
         if self.damage.len() > DAMAGE_RECTS {
