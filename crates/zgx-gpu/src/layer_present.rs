@@ -716,6 +716,14 @@ impl Layer {
     /// Shows `buffer`'s tile on the plain layer, made (its contents set) the
     /// first time the surface shows; in the caller's transaction.
     fn show_tile(&mut self, buffer: &Buffer) {
+        // The plain layer exactly the host's box too: autoresizing rounds it
+        // as it does a tile (a host that starts empty and grows to 1168.5 by
+        // 400.25 points leaves it 1169 by 401), and every tile would show
+        // its surface stretched to that.
+        let host = self.host.bounds();
+        if self.plain.frame() != host {
+            self.plain.setFrame(host);
+        }
         let id = buffer.surface.id();
         let tile = match self.tiles.iter().position(|(tile, _)| *tile == id) {
             Some(at) => &self.tiles[at].1,
@@ -737,10 +745,12 @@ impl Layer {
         // Autoresizing rounds to whole points: a tile made while the host
         // was empty and grown to 1168.5 points wide ends up 1169, its
         // surface stretched a pixel wider than the others' as they take
-        // turns showing.
+        // turns showing. Every tile, so one hidden now shows exact too.
         let bounds = self.plain.bounds();
-        if tile.frame() != bounds {
-            tile.setFrame(bounds);
+        for (_, each) in &self.tiles {
+            if each.frame() != bounds {
+                each.setFrame(bounds);
+            }
         }
         hide_tiles(&self.plain, Some(tile));
     }

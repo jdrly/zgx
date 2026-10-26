@@ -183,6 +183,64 @@ fn plain_frames_flip_tiles_whose_contents_are_set_once() {
     assert!(!tiles[0].1, "at rest the kept tile shows");
 }
 
+/// The host's bounds, the plain layer's, and each tile's frame.
+#[cfg(target_os = "macos")]
+fn geometry(
+    host: &objc2_quartz_core::CALayer,
+) -> (
+    objc2_core_foundation::CGRect,
+    objc2_core_foundation::CGRect,
+    Vec<objc2_core_foundation::CGRect>,
+) {
+    // SAFETY: the layers' live sublayer arrays, read on the main thread.
+    let plain = unsafe { host.sublayers() }
+        .and_then(|subs| subs.iter().find(|sub| unsafe { sub.sublayers() }.is_some()))
+        .expect("a plain layer holding tiles");
+    let tiles = unsafe { plain.sublayers() }
+        .expect("tiles")
+        .iter()
+        .map(|tile| tile.frame())
+        .collect();
+    (host.bounds(), plain.bounds(), tiles)
+}
+
+/// Every tile is exactly the plain layer's box, and the plain layer the
+/// host's, after every show: a host that starts empty (an overlay plane's)
+/// and grows to a fractional width (1168.5 points at scale 2) once left the
+/// first tile at the whole points autoresizing gave it, its surface stretched
+/// a pixel wider than the other's as they took turns (the layout shifted a
+/// pixel while a caret blinked).
+#[cfg(target_os = "macos")]
+fn tiles_fill_the_plain_layer_exactly_after_the_host_grows() {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_quartz_core::CATransaction;
+    let mut window = Window::new(1);
+    // The first tile, made while the host is empty.
+    window.show();
+    CATransaction::begin();
+    CATransaction::setDisableActions(true);
+    window.host.setFrame(CGRect::new(
+        CGPoint::new(0., 0.),
+        CGSize::new(1168.5, 400.25),
+    ));
+    CATransaction::commit();
+    for live in 2..10 {
+        window.live.set(live);
+        window.show();
+        let (host, plain, tiles) = geometry(&window.host);
+        assert_eq!(
+            plain, host,
+            "frame {live}: the plain layer is not the host's box"
+        );
+        for tile in &tiles {
+            assert_eq!(
+                *tile, plain,
+                "frame {live}: a tile is not the plain layer's box ({tiles:?})"
+            );
+        }
+    }
+}
+
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -190,5 +248,7 @@ fn main() {
         println!("layer_frames: scattered damage through surfaces matches drawing whole");
         plain_frames_flip_tiles_whose_contents_are_set_once();
         println!("layer_frames: plain frames flip tiles whose contents are set once");
+        tiles_fill_the_plain_layer_exactly_after_the_host_grows();
+        println!("layer_frames: tiles fill the plain layer exactly after the host grows");
     }
 }
