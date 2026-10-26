@@ -3098,6 +3098,7 @@ fn a_buttons_variant_styles_what_its_props_leave_unset() {
     let error = host.reload().unwrap_err();
     assert!(error.contains("`variant` is"), "{error}");
 }
+
 #[test]
 fn a_subtree_provides_values_its_components_and_rows_read() {
     let mut h = Harness::inline(
@@ -3133,3 +3134,28 @@ fn a_subtree_provides_values_its_components_and_rows_read() {
     assert_eq!(h.error(), None);
 }
 
+#[test]
+fn a_text_given_a_state_follows_it_without_the_script() {
+    let mut h = Harness::inline(
+        r##"local Counter = ui.component(function()
+            local count = ui.use_state(2)
+            return ui.column {
+                ui.text { id = "count", count },
+                ui.button { id = "add", w = 40, h = 20, on_click = ui.add(count, 1), "+" },
+            }
+        end)
+        return Counter {}"##,
+    );
+    h.frames(1);
+    assert_eq!(h.text("count"), "2");
+    let calls = h.calls();
+    h.click("add");
+    h.frames(1);
+    assert_eq!(h.text("count"), "3");
+    assert_eq!(
+        h.calls(),
+        calls,
+        "no script ran: the add and the text are Rust's"
+    );
+    assert_eq!(h.error(), None);
+}

@@ -1354,6 +1354,10 @@ export type NodeProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Reactive<ThemeSpec>?,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: { [string]: any }?,
 	-- Identity, for selectors, refs and animations.
 	id: string?,
 	-- Space-separated class names.
@@ -1646,6 +1650,10 @@ export type Props = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -1917,6 +1925,7 @@ export type Props_skew_x = Reactive<number>?
 export type Props_skew_y = Reactive<number>?
 export type Props_origin = Reactive<Pair>?
 export type Props_theme = Reactive<ThemeSpec>?
+export type Props_provide = { [string]: any }?
 export type Props_id = string?
 export type Props_class = string?
 export type Props_variants = (Variants | ((choice: any) -> Variants))?
@@ -2121,6 +2130,10 @@ export type ContainerProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -2413,6 +2426,10 @@ export type ScrollProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -2712,6 +2729,10 @@ export type TextProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -2855,7 +2876,9 @@ export type TextProps = {
 	-- Open the context menu under the node, from its left edge (a tab's),
 	-- rather than at the pointer.
 	context_menu_below: Props_context_menu_below,
-	[number]: Text,
+	-- The text: a string or template, a number, a function, or a state
+	-- (its value, followed as a template's is).
+	[number]: Text | Readable<any>,
 	-- Show a string as it is, braces and all, not as a template: for data
 	-- (code, titles, messages) that might hold `{name}`.
 	literal: boolean?,
@@ -3001,6 +3024,10 @@ export type MarkdownViewProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -3340,6 +3367,10 @@ export type RichProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -3625,6 +3656,10 @@ export type ImageProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -3920,6 +3955,10 @@ export type SvgProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -4207,6 +4246,10 @@ export type CanvasProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -4524,6 +4567,10 @@ export type CheckboxProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -4817,6 +4864,10 @@ export type InputProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -5166,6 +5217,10 @@ export type ProgressProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -5452,6 +5507,10 @@ export type SliderProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -5751,6 +5810,10 @@ export type SegmentedProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -6046,6 +6109,10 @@ export type StepperProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -6342,6 +6409,10 @@ export type DisclosureProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -6637,6 +6708,10 @@ export type AccordionProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -6922,6 +6997,10 @@ export type SectionProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Space-separated class names.
 	class: Props_class,
 	-- Styles chosen from a `ui.variants` definition: `button { tone =
@@ -7214,6 +7293,10 @@ export type SeparatorProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -7505,6 +7588,10 @@ export type TabsProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -7804,6 +7891,10 @@ export type TreeProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -8113,6 +8204,10 @@ export type DataGridProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -8418,6 +8513,10 @@ export type CalendarProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -8715,6 +8814,10 @@ export type DatePickerProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -9010,6 +9113,10 @@ export type TimeFieldProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -9304,6 +9411,10 @@ export type ComboboxProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -9607,6 +9718,10 @@ export type CommandPaletteProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -9898,6 +10013,10 @@ export type SelectProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -10192,6 +10311,10 @@ export type SplitProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -10498,6 +10621,10 @@ export type ListProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -10843,6 +10970,10 @@ export type LayerProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -11134,6 +11265,10 @@ export type ModalProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -11440,6 +11575,10 @@ export type PopoverProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -11751,6 +11890,10 @@ export type MenuItemProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -12041,6 +12184,10 @@ export type SubmenuProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -12335,6 +12482,10 @@ export type WebViewProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -12643,6 +12794,10 @@ export type TerminalProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -12929,6 +13084,10 @@ export type SlotProps = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -13220,6 +13379,10 @@ export type EachOptions = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -13514,6 +13677,10 @@ export type PresenceOptions = {
 	-- The subtree's theme: a theme's name (`"zgx-light"`), or tokens to
 	-- override (`{ accent = "#e5484d" }`, with `theme = name` to start from).
 	theme: Props_theme,
+	-- Values the components and rows built in this subtree read with
+	-- `ui.use_context(name)`, as React's context gives them: a state, a
+	-- table, a function. Nearer ones win.
+	provide: Props_provide,
 	-- Identity, for selectors, refs and animations.
 	id: Props_id,
 	-- Space-separated class names.
@@ -13882,6 +14049,9 @@ declare ui: {
 	-- Runs `f` when what is being built goes away: a component unmounting,
 	-- an effect running again, the script reloading.
 	on_cleanup: (f: () -> ()) -> (),
+	-- In a component's, row's or presence's build: what the nearest
+	-- `provide = { [name] = … }` above it gave, else `default`.
+	use_context: (name: string, default: any?) -> any,
 	-- Milliseconds since the epoch, to the microsecond (`os.time` counts
 	-- whole seconds). Not tracked.
 	now: () -> number,

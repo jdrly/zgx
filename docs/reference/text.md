@@ -1,6 +1,6 @@
 # Text: text, rich, span, markdown
 
-`ui.text` shows one string in one style; `ui.rich` shows runs of differently styled text (`ui.span`s) as one paragraph. Both follow state without calling the script when their text is a template, and call it again only for a function.
+`ui.text` shows one string in one style; `ui.rich` shows runs of differently styled text (`ui.span`s) as one paragraph. Both follow state without calling the script when their text is a template or a state given as it is (`ui.text { count }`: a component's `ui.use_state`, which no template can name, as its value), and call it again only for a function.
 
 ```luau
 ui.text(content: Text | TextProps) -> Node

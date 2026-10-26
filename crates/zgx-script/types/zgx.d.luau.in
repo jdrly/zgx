@@ -1502,7 +1502,9 @@ export type ScrollProps = Merge<ContainerProps, {
 }>
 -- `ui.text { "Count: {count}", text_size = 18 }`: the text first.
 export type TextProps = Merge<Props, {
-	[number]: Text,
+	-- The text: a string or template, a number, a function, or a state
+	-- (its value, followed as a template's is).
+	[number]: Text | Readable<any>,
 	-- Show a string as it is, braces and all, not as a template: for data
 	-- (code, titles, messages) that might hold `{name}`.
 	literal: boolean?,
