@@ -296,7 +296,43 @@ def micro_section(frames, e):
         '</ul></section>')
 
 
-def page(by, verdict, cards, micro=None):
+STARTUP_METRICS = [('content_ms', 'Launch to first content', 'ms', 0), ('cpu_ms', 'CPU to first content', 'ms of CPU', 0),
+                   ('instructions', 'Instructions to first content', 'million instructions', 0)]
+
+
+def startup_section(startup, e):
+    """Launch to first content, one chart per metric: medians over the
+    launches, their range beside them."""
+    names = {'zgx': 'zgx', 'gpui-fast': 'GPUI Fast', 'mygo': 'MyGo', 'rune': 'Rune'}
+    charts = []
+    for key, title, unit, digits in STARTUP_METRICS:
+        rows = [(fw, startup['medians'][fw][key]) for fw in names if fw in startup['medians']]
+        scale = 1e6 if key == 'instructions' else 1
+        top = max(row['median'] for _, row in rows) or 1
+        out = [f'<figure class="chart"><table><caption><span class="title">{e(title)}</span> '
+               f'<span class="unit">{e(unit)}</span> <span class="better">lower is better</span></caption>',
+               '<colgroup><col class="c-fw"><col></colgroup>'
+               '<thead><tr><th scope="col">Framework</th><th scope="col">Median <span class="range-head">(range)</span></th></tr></thead><tbody>']
+        for fw, row in rows:
+            value = lambda v: fmt(v / scale, digits)
+            out.append(f'<tr class="fw-{fw}"><th scope="row">{e(names[fw])}</th>'
+                       f'<td><span class="track" aria-hidden="true"><span class="bar" style="width:{100 * row["median"] / top:.1f}%"></span></span>'
+                       f'<span class="value">{value(row["median"])}</span> <span class="range">({value(row["min"])}–{value(row["max"])})</span></td></tr>')
+        out.append('</tbody></table></figure>')
+        charts.append('\n'.join(out))
+    launches = len(next(iter(startup['launches'].values())))
+    return (
+        '<section id="startup" aria-labelledby="startup-h"><h2 id="startup-h">Startup</h2>'
+        f'<p class="scene-note">From launch to the window&#8217;s first content, {launches} launches of each in alternating order: '
+        'the probe starts the app, waits for its window, then captures the top of its content until the first text has drawn, '
+        'and reads the process&#8217;s CPU time and instructions retired at that moment. '
+        'Both apps build the same menu bar at launch (Services, Hide, Quit, and the Window menu), so they start the same work. '
+        f'Measured separately from the suite, on the same Mac, at <code>{e(startup["commit"][:7])}</code>.</p>'
+        f'<div class="charts">{"".join(charts)}</div></section>'
+    )
+
+
+def page(by, verdict, cards, micro=None, startup=None):
     heavy = by['heavy']
     env, protocol, commit = heavy['environment'], heavy['protocol'], heavy['commit']
     # Since 2026-10-26 (#637), samples start from the window's readiness,
@@ -405,6 +441,7 @@ def page(by, verdict, cards, micro=None):
 </header>
 <main>
 {''.join(sections)}
+{startup_section(startup, e) if startup else ''}
 {micro_section(micro, e) if micro else ''}
 <section id="method" aria-labelledby="method-h">
 <h2 id="method-h">How this was measured</h2>
@@ -456,6 +493,7 @@ def main():
     parser.add_argument('suite', type=Path, help='docs/results/suite-macos-<date>-<commit>')
     parser.add_argument('--output', type=Path, default=ROOT / 'site')
     parser.add_argument('--micro', type=Path, help='the microbenchmarks\' run (micro.jsonl), shown in its own section')
+    parser.add_argument('--startup', type=Path, help='a startup run (docs/results/startup-macos-*/startup.json), shown in its own section')
     args = parser.parse_args()
     suite = args.suite.resolve()
     by = {name: load(suite / name) for name in ORDER}
@@ -473,6 +511,10 @@ def main():
                                           'pacing_trials', 'protocol', 'environment', 'toolchains', 'cells')}
                    for n in ORDER],
     }
+    startup = json.loads(args.startup.read_text()) if args.startup else None
+    if startup:
+        # Medians and ranges only; every launch stays in the run's file.
+        data['startup'] = {k: startup[k] for k in ('commit', 'machine', 'probe', 'apps', 'protocol', 'medians')}
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'data.json').write_text(json.dumps(data, indent=1) + '\n')
     with (args.output / 'data.csv').open('w', newline='') as out:
@@ -487,7 +529,7 @@ def main():
     micro = load_micro(args.micro) if args.micro else None
     if micro:
         shutil.copy(args.micro, args.output / 'micro.jsonl')
-    (args.output / 'index.html').write_text(page(by, verdict, cards, micro))
+    (args.output / 'index.html').write_text(page(by, verdict, cards, micro, startup))
     counts = ', '.join(f"{n} ({by[n]['trials']} trials)" for n in ORDER)
     print(f"Published {counts} at {by['heavy']['commit'][:7]} to {args.output}")
 

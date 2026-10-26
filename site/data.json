@@ -3033,5 +3033,61 @@
     }
    ]
   }
- ]
+ ],
+ "startup": {
+  "commit": "03a9d895093bc3c5bf1bf57ab5307b9cecda88b3",
+  "machine": "home-laptop (M5, 120 Hz)",
+  "probe": "scripts/startup_probe.swift: spawn, window, first non-flat strip of its content; instructions and CPU of the process at content",
+  "apps": {
+   "zgx": "component_workload (lab), ZGX_MODE=idle",
+   "gpui-fast": "comparisons/gpui-fast (lab), with #692: the same menu bar zgx builds"
+  },
+  "protocol": "10 rounds, the two alternating; staged /tmp copies, clean environment",
+  "medians": {
+   "zgx": {
+    "window_ms": {
+     "median": 126.65,
+     "min": 103.6,
+     "max": 401.1
+    },
+    "content_ms": {
+     "median": 162.95,
+     "min": 144.4,
+     "max": 437.4
+    },
+    "instructions": {
+     "median": 849665912.5,
+     "min": 760723904,
+     "max": 880072592
+    },
+    "cpu_ms": {
+     "median": 93.45,
+     "min": 85.1,
+     "max": 103.8
+    }
+   },
+   "gpui-fast": {
+    "window_ms": {
+     "median": 144.75,
+     "min": 137.5,
+     "max": 397.7
+    },
+    "content_ms": {
+     "median": 181.05,
+     "min": 170.4,
+     "max": 435.4
+    },
+    "instructions": {
+     "median": 945284937.5,
+     "min": 933589511,
+     "max": 957600210
+    },
+    "cpu_ms": {
+     "median": 99.1,
+     "min": 94.2,
+     "max": 113.4
+    }
+   }
+  }
+ }
 }
