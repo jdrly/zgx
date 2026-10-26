@@ -9993,6 +9993,9 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
         let mut owner = vec![usize::MAX; columns * rows];
         let mut parent: Vec<usize> = (0..damage.len()).collect();
         for (i, r) in damage.iter().enumerate() {
+            // The root of `i`'s group: `i` until a cell joins it to another,
+            // then that one's root (each join keeps it a root).
+            let mut group = i;
             let first =
                 |value: f32, count: usize| ((value / cell).floor().max(0.) as usize).min(count);
             let end =
@@ -10003,8 +10006,9 @@ fn cluster_damage(damage: &[Rect], viewport: Rect) -> Vec<Rect> {
                     if *slot == usize::MAX {
                         *slot = i;
                     } else {
-                        let (a, b) = (root(&mut parent, i), root(&mut parent, *slot));
-                        parent[a] = b;
+                        let other = root(&mut parent, *slot);
+                        parent[group] = other;
+                        group = other;
                     }
                 }
             }
