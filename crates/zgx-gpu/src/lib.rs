@@ -3503,7 +3503,7 @@ impl GpuRenderer {
             || scene.has_overflow_fades()
             || self.atlas_filling()
         {
-            return Ok(None);
+            return Ok(self.recycle_kept(*kept));
         }
         // The repainted items, worked out alone from what they inherited,
         // with their places: only leaves, painting as many items as before
@@ -3517,10 +3517,10 @@ impl GpuRenderer {
                 || !scene.contains(id)
                 || !scene.children(id).is_empty()
             {
-                return Ok(None);
+                return Ok(self.recycle_kept(*kept));
             }
             let Some(&first) = kept.by_node.get(&id) else {
-                return Ok(None);
+                return Ok(self.recycle_kept(*kept));
             };
             let over = matches!(scene.kind(id),
                 NodeKind::Quad(quad) | NodeKind::Panel { quad, .. } if quad.paints_over());
@@ -3532,11 +3532,11 @@ impl GpuRenderer {
                 .count()
                 != count
             {
-                return Ok(None);
+                return Ok(self.recycle_kept(*kept));
             }
             for place in first..first + count {
                 let Some(item) = scene.item_in(id, &kept.items[place].inherited) else {
-                    return Ok(None);
+                    return Ok(self.recycle_kept(*kept));
                 };
                 if plain_box(&item) {
                     boxes.push((item, place));
@@ -3614,7 +3614,7 @@ impl GpuRenderer {
             // Drawn as usual, reporting what was made.
             stats.patched_items = 0;
             self.patch_stats = stats;
-            return Ok(None);
+            return Ok(self.recycle_kept(*kept));
         }
         kept.flushes = *covered.end();
         // Drawn from it when the damage covers enough of the window that
@@ -3642,6 +3642,17 @@ impl GpuRenderer {
         drawn.add_made(&stats);
         self.kept = Some(kept);
         Ok(Some(drawn))
+    }
+    /// A kept frame given up: its quads' room goes back to the frame's,
+    /// which keeping had taken (the next frame would grow it again from
+    /// nothing). `None`, for `render_kept` to return.
+    fn recycle_kept(&mut self, kept: Kept) -> Option<GpuStats> {
+        let mut quads = kept.quads;
+        if quads.capacity() > self.frame_quads.capacity() {
+            quads.clear();
+            self.frame_quads = quads;
+        }
+        None
     }
     /// Make plain box `item`'s quads and draws (`plain_box`), as
     /// `render_flat::<PATCH>` makes them, into its place in `kept`: false
