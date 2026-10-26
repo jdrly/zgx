@@ -11,6 +11,8 @@ use zgx::scene::{Color, NodeId, NodeKind, Rect, Scene};
 mod composition;
 #[cfg(windows)]
 mod dxgi;
+#[cfg(windows)]
+mod dxgi_present;
 mod effects;
 mod font_cache;
 #[cfg(target_os = "macos")]
@@ -1527,13 +1529,24 @@ struct SinglePass {
     /// Into the drawable alone (`Deferred::direct`).
     direct: PickedPipelines,
 }
-/// Presentation through surfaces of the renderer's own (`layer_present`).
+/// A surface of the renderer's own a window presents through.
 #[cfg(target_os = "macos")]
+type OwnSurface = layer_present::Buffer;
+#[cfg(windows)]
+type OwnSurface = dxgi_present::Buffer;
+/// Presentation through surfaces of the renderer's own, which keep what they
+/// held: macOS's (`layer_present`) and Windows' swap chain
+/// (`dxgi_present`).
+#[cfg(own_surfaces)]
 #[derive(Default)]
 struct LayerPresent {
+    #[cfg(target_os = "macos")]
     layer: Option<layer_present::Layer>,
+    /// Windows: the swap chain whose buffers are the surfaces.
+    #[cfg(windows)]
+    chain: Option<dxgi_present::Chain>,
     /// Surfaces, each with the frame it holds (None: none yet).
-    buffers: Vec<(layer_present::Buffer, Option<u64>)>,
+    buffers: Vec<(OwnSurface, Option<u64>)>,
     /// The surface the layer shows: the last presented frame.
     shown: Option<usize>,
     /// The surface the next frame draws into (the retained target).
@@ -1549,22 +1562,119 @@ struct LayerPresent {
     catch_up: Vec<Scissor>,
     /// Frames come at the display's full rate (`GpuRenderer::set_full_rate`):
     /// a third surface is kept for them, and the layer queues them.
+    #[cfg(target_os = "macos")]
     full_rate: bool,
     /// Since full-rate frames stopped, until when the video layer stays
     /// (`VIDEO_LINGER`); `None` while they come, or once it went.
+    #[cfg(target_os = "macos")]
     video_until: Option<std::time::Instant>,
     /// When the window last changed size. Frames show on the plain layer
     /// until `RESIZE_SETTLE` after it (`Layer::show_plain`).
+    #[cfg(target_os = "macos")]
     resized_at: Option<std::time::Instant>,
     /// The layer to present into instead of the window's (an overlay plane).
+    #[cfg(target_os = "macos")]
     host: Option<objc2::rc::Retained<objc2_quartz_core::CALayer>>,
     /// Frames show on the plain layer until then (`present_plain_for`), or
     /// always (`plain_only`): they change in the caller's transaction.
+    #[cfg(target_os = "macos")]
     plain_until: Option<std::time::Instant>,
+    #[cfg(target_os = "macos")]
     plain_only: bool,
     /// Native views share the window (`present_with_native_views`): frames
     /// show on the plain layer, in the transaction that moves them.
+    #[cfg(target_os = "macos")]
     with_natives: bool,
+}
+#[cfg(own_surfaces)]
+impl LayerPresent {
+    /// What surface `index` lacks of the latest frame before a frame draws
+    /// into it: the changes of every frame since the one it holds (all of it
+    /// once those are no longer kept); none when the frame repaints
+    /// everything (`whole`) or it holds the latest.
+    fn catch_up_for(&self, index: usize, whole: bool, width: u32, height: u32) -> Vec<Scissor> {
+        let held = self.buffers[index].1;
+        let latest = self.shown.and_then(|shown| self.buffers[shown].1);
+        catch_up(&self.history, held, latest, whole, (width, height))
+    }
+    /// Surface `index` was shown: it holds the newest frame, whose changes
+    /// join the history.
+    fn presented(&mut self, index: usize) {
+        self.frame += 1;
+        let frame = self.frame;
+        self.buffers[index].1 = Some(frame);
+        self.shown = Some(index);
+        let changed = std::mem::take(&mut self.changed);
+        self.history.push_back((frame, changed));
+        if self.history.len() > LAYER_HISTORY {
+            self.history.pop_front();
+        }
+    }
+}
+/// What a surface holding frame `held` lacks of frame `latest` (the one
+/// shown), from `history`, the changes of recent frames: see
+/// `LayerPresent::catch_up_for`. All of a `size` surface once the frames
+/// after `held` are no longer kept.
+#[cfg(own_surfaces)]
+fn catch_up(
+    history: &std::collections::VecDeque<(u64, Vec<Scissor>)>,
+    held: Option<u64>,
+    latest: Option<u64>,
+    whole: bool,
+    (width, height): (u32, u32),
+) -> Vec<Scissor> {
+    match (whole, latest) {
+        (true, _) | (false, None) => Vec::new(),
+        (false, Some(latest)) if held == Some(latest) => Vec::new(),
+        (false, Some(_)) => match held {
+            // The changes of every frame since the one it holds.
+            Some(held) if history.front().is_some_and(|(f, _)| *f <= held + 1) => history
+                .iter()
+                .filter(|(frame, _)| *frame > held)
+                .flat_map(|(_, changed)| changed.iter().copied())
+                .collect(),
+            _ => vec![(0, 0, width, height)],
+        },
+    }
+}
+#[cfg(all(test, own_surfaces))]
+mod catch_up_tests {
+    use super::catch_up;
+    #[test]
+    fn a_surface_takes_the_changes_since_the_frame_it_holds() {
+        let history: std::collections::VecDeque<_> = [
+            (3, vec![(0, 0, 4, 4)]),
+            (4, vec![(10, 0, 4, 4)]),
+            (5, vec![(20, 0, 4, 4), (30, 0, 2, 2)]),
+        ]
+        .into();
+        let size = (100, 50);
+        // Two frames behind: the changes of 4 and 5.
+        assert_eq!(
+            catch_up(&history, Some(3), Some(5), false, size),
+            [(10, 0, 4, 4), (20, 0, 4, 4), (30, 0, 2, 2)]
+        );
+        // Holding the shown frame, or drawn whole: nothing to take.
+        assert!(catch_up(&history, Some(5), Some(5), false, size).is_empty());
+        assert!(catch_up(&history, Some(3), Some(5), true, size).is_empty());
+        // None shown yet: the frame draws whole.
+        assert!(catch_up(&history, None, None, false, size).is_empty());
+        // Never drawn, or behind what the history keeps: all of it.
+        assert_eq!(
+            catch_up(&history, None, Some(5), false, size),
+            [(0, 0, 100, 50)]
+        );
+        assert_eq!(
+            catch_up(&history, Some(1), Some(5), false, size),
+            [(0, 0, 100, 50)]
+        );
+        // Just inside it: the frame after the one held is the oldest kept.
+        assert_eq!(
+            catch_up(&history, Some(2), Some(5), false, size).len(),
+            4,
+            "frames 3, 4 and 5"
+        );
+    }
 }
 #[cfg(target_os = "macos")]
 impl LayerPresent {
@@ -1598,7 +1708,7 @@ impl LayerPresent {
 #[cfg(target_os = "macos")]
 const LAYER_BUFFERS: usize = 3;
 /// Frames of changes kept to bring a surface up to date (older ones copy all).
-#[cfg(target_os = "macos")]
+#[cfg(own_surfaces)]
 const LAYER_HISTORY: usize = 8;
 /// How long after a size change frames keep to the plain layer, so a live
 /// resize's frames land with its window sizes before queueing resumes.
@@ -1622,6 +1732,16 @@ static VIDEO_AT_FULL_RATE: std::sync::LazyLock<bool> =
 #[cfg(target_os = "macos")]
 static WARM_AFTER_IDLE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_GPU_WARM").is_none_or(|v| v != "0"));
+/// `ZGX_DXGI_PRESENT=0`: a Windows window presents through wgpu's swap
+/// chain, copying the retained frame into it each frame, as it did until
+/// its own was measured better (2026-10-26, RTX 4090, against wgpu's:
+/// app GPU 33 to 45% less in animate, vlist, lab, 12% in heavy; the
+/// compositor's GPU 16% less in animate and its CPU 7 to 25% less; cycles
+/// a frame 2 to 5% fewer; startup to the first text 346 → 280 ms). Kept
+/// for a release, to compare with.
+#[cfg(windows)]
+static DXGI_PRESENT: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_DXGI_PRESENT").is_none_or(|v| v != "0"));
 /// How long the video layer outlasts full-rate frames (`LayerPresent::video_until`).
 #[cfg(target_os = "macos")]
 const VIDEO_LINGER: std::time::Duration = std::time::Duration::from_secs(1);
@@ -2337,8 +2457,9 @@ pub struct GpuRenderer {
     /// `widen_drawables`).
     #[cfg(target_os = "macos")]
     wide_until: Option<std::time::Instant>,
-    /// Presentation through surfaces of the renderer's own (layer_present.rs).
-    #[cfg(target_os = "macos")]
+    /// Presentation through surfaces of the renderer's own (layer_present.rs,
+    /// dxgi_present.rs).
+    #[cfg(own_surfaces)]
     layer_present: Option<LayerPresent>,
     /// Pipelines for frames encoded with Metal directly (`render_direct`);
     /// `None` inside if they could not be built.
@@ -2358,7 +2479,7 @@ pub struct GpuRenderer {
     #[cfg(target_os = "macos")]
     viewport_values: [f32; 4],
     /// Shifted texel copies drawn in a render pass (copy_offset.wgsl).
-    #[cfg(target_os = "macos")]
+    #[cfg(own_surfaces)]
     copy_offset: Option<wgpu::RenderPipeline>,
     canvases: canvas::CanvasCache,
     svgs: svg::SvgCache,
@@ -2460,6 +2581,7 @@ impl GpuRenderer {
             size.height,
             context,
             transparent,
+            true,
         )?;
         renderer.set_scale_factor(scale);
         Ok(renderer)
@@ -2496,7 +2618,8 @@ impl GpuRenderer {
                 })
         }
         .map_err(|e| GpuError(e.to_string()))?;
-        let mut renderer = Self::create_on(None, Some(surface), width, height, context, true)?;
+        let mut renderer =
+            Self::create_on(None, Some(surface), width, height, context, true, false)?;
         renderer.raw = Some((display, window));
         renderer.set_scale_factor(scale);
         Ok(renderer)
@@ -2512,10 +2635,12 @@ impl GpuRenderer {
             .map(|window| context.inner.instance.create_surface(window))
             .transpose()
             .map_err(|e| GpuError(e.to_string()))?;
-        Self::create_on(window, surface, width, height, context, true)
+        Self::create_on(window, surface, width, height, context, true, true)
     }
     /// `create` presenting to `surface` (none: offscreen), with alpha where
-    /// the window may be `transparent` (else opaque, on Windows).
+    /// the window may be `transparent` (else opaque, on Windows). `own`:
+    /// `surface` is `window`'s alone, so on Windows it may present through a
+    /// swap chain of its own instead (not into a caller's visual).
     fn create_on(
         window: Option<Arc<winit::window::Window>>,
         surface: Option<wgpu::Surface<'static>>,
@@ -2523,6 +2648,7 @@ impl GpuRenderer {
         height: u32,
         context: &GpuContext,
         transparent: bool,
+        #[cfg_attr(not(windows), allow(unused))] own: bool,
     ) -> Result<Self, GpuError> {
         let instance = context.inner.instance.clone();
         let device = context.inner.device.clone();
@@ -2539,6 +2665,31 @@ impl GpuRenderer {
         }
         let width = width.max(1);
         let height = height.max(1);
+        // Windows: a swap chain of the renderer's own, whose buffers are the
+        // retained frame (dxgi_present.rs); wgpu's surface then stays
+        // unconfigured. Without one, wgpu's.
+        #[cfg(windows)]
+        let own_chain = window
+            .as_ref()
+            .filter(|_| own && *DXGI_PRESENT && info.backend == wgpu::Backend::Dx12)
+            .and_then(|window| {
+                use wgpu::rwh::HasWindowHandle;
+                let wgpu::rwh::RawWindowHandle::Win32(handle) =
+                    window.window_handle().ok()?.as_raw()
+                else {
+                    return None;
+                };
+                let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut _);
+                dxgi_present::Chain::new(&device, hwnd, width, height, transparent)
+                    .inspect_err(|e| {
+                        eprintln!("zgx: no swap chain of its own ({e}): presenting through wgpu's")
+                    })
+                    .ok()
+            });
+        #[cfg(windows)]
+        let own_surfaces = own_chain.is_some();
+        #[cfg(not(windows))]
+        let own_surfaces = false;
         let mut translucent_alpha = wgpu::CompositeAlphaMode::Auto;
         let config = surface.as_ref().map(|s| {
             let mut c = s
@@ -2600,17 +2751,23 @@ impl GpuRenderer {
             {
                 c.usage |= wgpu::TextureUsages::COPY_DST;
             }
-            s.configure(&device, &c);
+            if !own_surfaces {
+                s.configure(&device, &c);
+            }
             c
         });
         #[cfg(not(windows))]
         let _ = translucent_alpha;
-        let copy_present = config
-            .as_ref()
-            .is_some_and(|c| c.usage.contains(wgpu::TextureUsages::COPY_DST));
-        // A window on macOS presents surfaces of its own (see `LayerPresent`).
-        let layer_presenting =
-            cfg!(target_os = "macos") && config.is_some() && info.backend == wgpu::Backend::Metal;
+        let copy_present = !own_surfaces
+            && config
+                .as_ref()
+                .is_some_and(|c| c.usage.contains(wgpu::TextureUsages::COPY_DST));
+        // A window on macOS presents surfaces of its own (see `LayerPresent`),
+        // and on Windows with its own swap chain.
+        let layer_presenting = own_surfaces
+            || (cfg!(target_os = "macos")
+                && config.is_some()
+                && info.backend == wgpu::Backend::Metal);
         // Single-pass presentation writes the drawable in a non-sRGB format,
         // storing the retained target's bytes unchanged, exactly what the
         // present blit produces for opaque pixels.
@@ -2730,6 +2887,11 @@ impl GpuRenderer {
             single_pass_format,
             #[cfg(target_os = "macos")]
             layer_present: layer_presenting.then(LayerPresent::default),
+            #[cfg(windows)]
+            layer_present: own_chain.map(|chain| LayerPresent {
+                chain: Some(chain),
+                ..Default::default()
+            }),
             #[cfg(target_os = "macos")]
             metal_frame: Default::default(),
             #[cfg(target_os = "macos")]
@@ -2740,7 +2902,7 @@ impl GpuRenderer {
             gpu_time: std::cell::Cell::new(None),
             #[cfg(target_os = "macos")]
             viewport_values: [0.; 4],
-            #[cfg(target_os = "macos")]
+            #[cfg(own_surfaces)]
             copy_offset: None,
             in_layer: false,
             present_unpremultiplies,
@@ -2864,6 +3026,18 @@ impl GpuRenderer {
         if let Some(config) = &mut self.config {
             config.alpha_mode = self.translucent_alpha;
         }
+        // Its own swap chain is made again with alpha, before a buffer of it
+        // becomes the target (`begin_layer_frame`).
+        if let Some(present) = &mut self.layer_present
+            && let Some(chain) = present.chain.take()
+        {
+            present.buffers.clear();
+            present.shown = None;
+            present.history.clear();
+            // Only before the first frame, which draws it whole.
+            present.chain = Some(chain.remade(&self.device, true)?);
+            return Ok(());
+        }
         // The old swap chain, and the window's composition target with it,
         // go before the new one is made.
         self.surface = None;
@@ -2927,12 +3101,15 @@ impl GpuRenderer {
         if (width, height) == (self.width, self.height) {
             return false;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         if let Some(present) = &mut self.layer_present {
             present.current = None;
             present.changed.clear();
             present.catch_up.clear();
-            present.resized_at = Some(std::time::Instant::now());
+            #[cfg(target_os = "macos")]
+            {
+                present.resized_at = Some(std::time::Instant::now());
+            }
         }
         self.flush_pending();
         // Layers stay: what they hold changes with layout (their revision),
@@ -2951,10 +3128,11 @@ impl GpuRenderer {
         self.height = height;
         self.spare = None;
         self.target_copy_bind = None;
-        // A surface of the layer's becomes the target (`begin_layer_frame`).
-        #[cfg(target_os = "macos")]
+        // A surface of the renderer's own becomes the target
+        // (`begin_layer_frame`), resized there on Windows.
+        #[cfg(own_surfaces)]
         let layered = self.layer_present.is_some();
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(own_surfaces))]
         let layered = false;
         let (target_width, target_height) = if layered { (1, 1) } else { (width, height) };
         self.target = texture(&self.device, target_width, target_height, "retained output");
@@ -2963,7 +3141,28 @@ impl GpuRenderer {
         if self.layer_present.is_none() {
             written(&self.device, &self.queue, &self.view);
         }
-        if let (Some(s), Some(c)) = (&self.surface, &mut self.config) {
+        // Windows presenting through its own swap chain resizes it now, as
+        // the window changes size (a swap chain left at the old size shows
+        // black beyond it until the next frame), and leaves wgpu's surface
+        // unconfigured. The target no longer holds an old buffer (above).
+        #[cfg(windows)]
+        if let Some(present) = &mut self.layer_present
+            && let Some(chain) = &mut present.chain
+        {
+            present.buffers.clear();
+            present.shown = None;
+            present.history.clear();
+            let resized = chain
+                .resize(&self.device, width, height)
+                .and_then(|()| chain.buffers(&self.device, width, height));
+            match resized {
+                Ok(buffers) => present.buffers = buffers.into_iter().map(|b| (b, None)).collect(),
+                // The next frame tries again (`begin_layer_frame`).
+                Err(error) => eprintln!("zgx: {error}"),
+            }
+        }
+        let own_chain = cfg!(windows) && layered;
+        if !own_chain && let (Some(s), Some(c)) = (&self.surface, &mut self.config) {
             c.width = width;
             c.height = height;
             s.configure(&self.device, c);
@@ -2991,13 +3190,13 @@ impl GpuRenderer {
         scene: &Scene,
         damage: &[Rect],
     ) -> Result<GpuStats, GpuError> {
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         let changed = self
             .layer_present
             .as_ref()
             .map(|present| present.changed.clone());
         let stats = self.render(scene, damage);
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         if let (Some(present), Some(changed)) = (self.layer_present.as_mut(), changed) {
             present.changed = changed;
         }
@@ -3038,10 +3237,10 @@ impl GpuRenderer {
         }
         Ok(stats)
     }
-    /// Whether frames are shown (a window's surface, or macOS's own), so
-    /// `present_with_notify` ends them.
+    /// Whether frames are shown (a window's surface, or surfaces of its
+    /// own), so `present_with_notify` ends them.
     fn presents(&self) -> bool {
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         if self.layer_present.is_some() {
             return true;
         }
@@ -5761,7 +5960,7 @@ impl GpuRenderer {
         quads.extend(Self::effect_quads(&effect_jobs));
         // The surface this frame draws into, when presenting through the
         // layer: shown surfaces stay as they are.
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         let shown = if self.in_layer {
             None
         } else {
@@ -5770,7 +5969,7 @@ impl GpuRenderer {
                 .as_ref()
                 .and_then(|present| present.shown)
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(own_surfaces))]
         let shown: Option<usize> = None;
         let regions: Vec<(Rect, (u32, u32, u32, u32))> = damage
             .iter()
@@ -5783,7 +5982,7 @@ impl GpuRenderer {
         }
         // What this frame changes in the retained target, for surfaces that
         // must catch up later (`begin_layer_frame`).
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         if !self.in_layer
             && let Some(present) = &mut self.layer_present
         {
@@ -5794,7 +5993,7 @@ impl GpuRenderer {
         // frame doesn't repaint, and scrolled content; both drawn from the
         // shown surface at the start of the frame's first pass, as instances
         // after the frame's quads.
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         let mut catch_up = shown.and_then(|shown| {
             let (bind, draws) = self.catch_up_draws(shown, &copies, &regions)?;
             stats.scroll_copies += copies.len();
@@ -6163,7 +6362,7 @@ impl GpuRenderer {
                     })],
                     ..Default::default()
                 });
-                #[cfg(target_os = "macos")]
+                #[cfg(own_surfaces)]
                 if let Some((bind, instances)) = catch_up.take() {
                     pass.set_pipeline(self.copy_offset.as_ref().expect("made with the draws"));
                     pass.set_bind_group(0, &bind, &[]);
@@ -6482,12 +6681,12 @@ impl GpuRenderer {
         // repaint there, unless presenting surfaces of its own, which copy
         // by drawing from the shown surface. That holds the previous flush
         // only once it was presented.
-        #[cfg(target_os = "macos")]
-        let copyable = self
-            .layer_present
-            .as_ref()
-            .is_some_and(|present| present.current.is_none());
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(own_surfaces)]
+        let copyable = match self.layer_present.as_ref() {
+            Some(present) => present.current.is_none(),
+            None => !cfg!(target_os = "macos"),
+        };
+        #[cfg(not(own_surfaces))]
         let copyable = true;
         for scroll in scene.scroll_moves() {
             if scroll.serial != serial {
@@ -7711,7 +7910,7 @@ impl GpuRenderer {
     /// The copies bringing the current surface up to date from the one shown
     /// (`buffers[shown]`): the changes since it was last shown, less what `regions`
     /// repaint and `copies` cover this frame, then the scroll `copies`.
-    #[cfg(target_os = "macos")]
+    #[cfg(own_surfaces)]
     fn catch_up_draws(
         &mut self,
         shown: usize,
@@ -7906,22 +8105,7 @@ impl GpuRenderer {
         }
         let held = present.buffers[index].1;
         let latest = present.shown.and_then(|shown| present.buffers[shown].1);
-        present.catch_up = match (whole, latest) {
-            (true, _) | (false, None) => Vec::new(),
-            (false, Some(latest)) if held == Some(latest) => Vec::new(),
-            (false, Some(_)) => match held {
-                // The changes of every frame since the one it holds.
-                Some(held) if present.history.front().is_some_and(|(f, _)| *f <= held + 1) => {
-                    present
-                        .history
-                        .iter()
-                        .filter(|(frame, _)| *frame > held)
-                        .flat_map(|(_, changed)| changed.iter().copied())
-                        .collect()
-                }
-                _ => vec![(0, 0, width, height)],
-            },
-        };
+        present.catch_up = present.catch_up_for(index, whole, width, height);
         // How many areas the surface copies from the one shown before the
         // frame draws (`catch_up_draws` takes them as it renders).
         present_log::log(|| {
@@ -8032,17 +8216,145 @@ impl GpuRenderer {
                 .iter()
                 .map(|(buffer, _)| buffer.surface.id()),
         );
-        present.frame += 1;
-        let frame = present.frame;
-        present.buffers[index].1 = Some(frame);
-        present.shown = Some(index);
-        let changed = std::mem::take(&mut present.changed);
-        present.history.push_back((frame, changed));
-        if present.history.len() > LAYER_HISTORY {
-            present.history.pop_front();
-        }
+        present.presented(index);
         self.layer_present = Some(present);
         Ok(PresentationStatus::Presented)
+    }
+    /// Make the swap chain's current buffer the retained target for the
+    /// frame about to draw, unless one is: once the compositor lets a frame
+    /// start (the swap chain's waitable), with the regions it lacks of the
+    /// last frame queued to copy from the shown buffer (none when `whole`).
+    #[cfg(windows)]
+    fn begin_layer_frame(&mut self, whole: bool) -> Result<(), GpuError> {
+        let (width, height) = (self.width, self.height);
+        let Some(present) = self.layer_present.as_ref() else {
+            return Ok(());
+        };
+        if present.current.is_some() {
+            return Ok(());
+        }
+        if !self.background_matched {
+            // The first frame, drawn whole: an opaque window whose background
+            // lets what is behind show presents with alpha from it. Its
+            // buffers may be the target: let go of them first.
+            self.target = texture(&self.device, 1, 1, "retained output placeholder");
+            self.view = self.target.create_view(&Default::default());
+            self.target_copy_bind = None;
+            self.match_background()?;
+        }
+        let Some(present) = self.layer_present.as_ref() else {
+            return Ok(());
+        };
+        if present
+            .buffers
+            .first()
+            .is_none_or(|(b, _)| (b.texture.width(), b.texture.height()) != (width, height))
+        {
+            // Made or resized: buffers of the window's size. The target may
+            // be one of the old ones; it lets go first.
+            self.target = texture(&self.device, 1, 1, "retained output placeholder");
+            self.view = self.target.create_view(&Default::default());
+            self.target_copy_bind = None;
+            let present = self.layer_present.as_mut().expect("presenting");
+            present.buffers.clear();
+            present.shown = None;
+            present.history.clear();
+            let chain = present.chain.as_mut().expect("a swap chain");
+            if chain.buffers_made() {
+                chain.resize(&self.device, width, height)?;
+            }
+            present.buffers = chain
+                .buffers(&self.device, width, height)?
+                .into_iter()
+                .map(|buffer| (buffer, None))
+                .collect();
+        }
+        let present = self.layer_present.as_mut().expect("presenting");
+        let chain = present.chain.as_ref().expect("a swap chain");
+        let started = std::time::Instant::now();
+        let ready = chain.wait(1000);
+        let index = chain.current();
+        if !ready || started.elapsed().as_micros() > 500 {
+            present_log::log(|| {
+                format!(
+                    "dxgi acquire index={index} waited_us={} ready={ready}",
+                    started.elapsed().as_micros()
+                )
+            });
+        }
+        present.catch_up = present.catch_up_for(index, whole, width, height);
+        present_log::log(|| {
+            format!(
+                "dxgi draw whole={whole} held={:?} catch_up={}",
+                present.buffers[index].1,
+                present.catch_up.len()
+            )
+        });
+        let buffer = &present.buffers[index].0;
+        self.target = buffer.texture.clone();
+        self.view = buffer.view.clone();
+        present.current = Some(index);
+        Ok(())
+    }
+    /// Show the retained frame (the swap chain's current buffer), the
+    /// regions it changed as the present's dirty rectangles.
+    #[cfg(windows)]
+    fn present_layer(
+        &mut self,
+        before_present: impl FnOnce(),
+    ) -> Result<PresentationStatus, GpuError> {
+        let Some(index) = self
+            .layer_present
+            .as_mut()
+            .and_then(|present| present.current.take())
+        else {
+            // Nothing drawn since: the shown frame stands.
+            return Ok(PresentationStatus::Presented);
+        };
+        let mut encoder = self
+            .pending
+            .get_mut()
+            .take()
+            .unwrap_or_else(|| self.device.create_command_encoder(&Default::default()));
+        {
+            let present = self.layer_present.as_ref().expect("presenting");
+            // Presented, a buffer is in the common state the compositor reads.
+            encoder.transition_resources(
+                std::iter::empty(),
+                std::iter::once(wgpu::TextureTransition {
+                    texture: &present.buffers[index].0.texture,
+                    selector: None,
+                    state: wgpu::TextureUses::PRESENT,
+                }),
+            );
+        }
+        self.queue.submit([encoder.finish()]);
+        self.belt.get_mut().recall();
+        self.submitted();
+        if let Some(mapped) = self.mapped.as_mut() {
+            mapped.get_mut().submitted();
+        }
+        before_present();
+        let present = self.layer_present.as_mut().expect("presenting");
+        present_log::log(|| {
+            format!(
+                "dxgi present frame={} index={index} held={:?} dirty={}",
+                present.frame + 1,
+                present.buffers[index].1,
+                present.changed.len()
+            )
+        });
+        let chain = present.chain.as_mut().expect("a swap chain");
+        let seen = chain.present(&present.changed)?;
+        self.dxgi_stats.presented_chain(chain.swap_chain());
+        // The buffer holds the frame either way: the swap chain's index says
+        // which the next draws into.
+        present.presented(index);
+        Ok(if seen {
+            PresentationStatus::Presented
+        } else {
+            PresentationStatus::Occluded
+        })
     }
     /// Whether a frame drawn into the renderer's own surfaces waits to be
     /// presented (`present` then shows it; without one it does nothing).
@@ -8136,7 +8448,7 @@ impl GpuRenderer {
         if let Some(reason) = self.context.lost() {
             return Err(GpuError::device_lost(&reason));
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(own_surfaces)]
         if self.layer_present.is_some() {
             return self.present_layer(before_present);
         }
@@ -8662,8 +8974,8 @@ fn band(area: [f32; 4], edges: [f32; 4], near: f32, far: f32) -> Option<[f32; 4]
         ]
     })
 }
-// Used by macOS's plane split only.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// Used by surfaces of the renderer's own only.
+#[cfg_attr(not(own_surfaces), allow(dead_code))]
 fn scissor_minus(rect: Scissor, cut: Scissor, out: &mut Vec<Scissor>) {
     let (x, y, right, bottom) = (rect.0, rect.1, rect.0 + rect.2, rect.1 + rect.3);
     let (cx, cy, cr, cb) = (cut.0, cut.1, cut.0 + cut.2, cut.1 + cut.3);
@@ -8687,7 +8999,7 @@ fn scissor_minus(rect: Scissor, cut: Scissor, out: &mut Vec<Scissor>) {
     }
 }
 /// Whether `outer` contains `inner`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(own_surfaces), allow(dead_code))]
 fn scissor_holds(outer: Scissor, inner: Scissor) -> bool {
     outer.0 <= inner.0
         && outer.1 <= inner.1
