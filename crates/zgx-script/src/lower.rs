@@ -1927,12 +1927,12 @@ fn styled(
             node.shader_params
                 .map(|params| zgx::decoration::ShaderUniforms { time: 0., params }),
         );
-        element.set_base_layer(node.layer_params.as_deref().map(|params| {
-            zgx::decoration::ShaderUniforms {
-                time: 0.,
-                params: *params,
-            }
-        }));
+        element.set_base_layer(
+            node.layer
+                .as_deref()
+                .and_then(|layer| layer.params)
+                .map(|params| zgx::decoration::ShaderUniforms { time: 0., params }),
+        );
         element.set_base_clip(statics.iter().find_map(|(p, l)| match (p, l) {
             (Prop::ClipInset, Lit::Corners(c)) => {
                 Some([c.top_left, c.top_right, c.bottom_right, c.bottom_left])
@@ -1975,12 +1975,13 @@ fn styled(
     // Parameters with no fill of their own: an image's (its `characters`
     // reveal), set on its node all the same.
     let params_only = node.shader_params.filter(|_| node.shader.is_none());
-    // A layer shader, with its literal parameters unless animated.
-    let layer = node.layer_shader.clone().map(|shader| {
-        (
-            shader,
-            node.layer_params.as_deref().copied().unwrap_or_default(),
-        )
+    // A layer shader, with its literal parameters unless animated (boxed:
+    // the style closure below holds it, and few nodes have one).
+    let layer = node.layer.as_deref().and_then(|layer| {
+        Some(Box::new((
+            layer.shader.clone()?,
+            layer.params.unwrap_or_default(),
+        )))
     });
     if !dynamic.is_empty()
         || element.is_some()
@@ -2013,7 +2014,7 @@ fn styled(
                 Some((image, fit)) => styles.bg_image(image, fit),
                 None => styles,
             };
-            let styles = match &layer {
+            let styles = match layer.as_deref() {
                 Some((shader, params)) => {
                     let animated = element
                         .as_ref()
