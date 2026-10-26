@@ -7,6 +7,7 @@ zgx 0.1.2 is on crates.io (2026-10-26, tag `v0.1.2`; 0.1.0, the first, on 2026-1
 - Every published crate shares one version, the workspace's (`[workspace.package] version` in `Cargo.toml`). Path dependencies between them name it (`version = "0.1.2"`), as crates.io needs.
 - It follows [semver](https://semver.org) as Cargo reads it before 1.0: `0.MINOR.PATCH`, where a new minor may break apps (each break listed in `CHANGELOG.md` with what to check and how to migrate) and a patch does not.
 - A release is a tag `v<version>` on `main` (`v0.2.0`), made once its changelog section is written: `CHANGELOG.md`'s "Unreleased" becomes `## 0.2.0 (date)`.
+- A fix to a release already out (a patch with nothing else in it) branches from that release's tag, not from `main`, whose later changes would each need their semver check and dry run: `release-0.1.2` is `v0.1.1` and the fix, tagged `v0.1.2` on that branch and published from it, the fix then brought to `main` by its own pull request (as 0.1.2 was).
 - The oldest Rust the workspace builds with is `rust-version` (1.95: `AtomicU64::try_update`). CI's Linux job checks it: its no-default-features check runs on that toolchain.
 
 ## What is published
@@ -57,8 +58,10 @@ Not automated, on purpose: publishing needs a crates.io token, and is done by ha
 1. The forks that changed since they were last published, their versions bumped, `zgx-harfrust` before `zgx-cosmic-text` (which depends on it): `cargo publish --manifest-path vendor/harfrust/Cargo.toml`, `vendor/cosmic-text`, `vendor/taffy`, `vendor/mlua --features luau`.
 2. The workspace: `cargo publish --workspace --locked` (it orders the crates itself).
 
-`cargo publish --workspace` can stop part way with cargo's own error "no packages ready to publish but … remain in plan … awaiting confirmation" (cargo 1.96, at 0.1.0, after `zgx-gpu`): what it uploaded is published (check crates.io), and the rest publish one at a time in dependency order, each waiting for the index: `cargo publish -p zgx-script --locked`, then `zgx-desktop`, then `zgx-run`.
+`cargo publish --workspace` can stop part way with cargo's own error "no packages ready to publish but … remain in plan … awaiting confirmation" (cargo 1.96, at 0.1.0 and again at 0.1.2, each time after `zgx-gpu`; 0.1.1 went through): what it uploaded is published (check crates.io), and the rest publish one at a time in dependency order, each once the one before is in the index (`curl https://index.crates.io/zg/x-/zgx-gpu`): `cargo publish -p zgx-script --locked`, then `zgx-desktop`, then `zgx-run`.
 
-Then tag the commit (`v<version>`), make a GitHub release from its changelog section, and check a new project builds from crates.io alone (`cargo add zgx zgx-desktop`).
+crates.io's index can stop taking new versions for everyone while uploads still succeed (2026-10-26, about four hours from 04:46 UTC; its status page said operational): the API lists the version, the index (`https://index.crates.io/zg/x-/<crate>?cb=<anything>`, past its cache) answers 404, and nothing depending on it publishes. Check that other crates' newest versions are missing too before blaming ours; a version bump doesn't help (zgx-harfrust 0.5.2 and 0.5.3 both waited). Wait, and go on once it answers.
+
+Then tag the commit (`v<version>`), make a GitHub release from its changelog section (its links absolute, `https://github.com/zeronsh/zgx/blob/v<version>/…`: a release resolves no relative ones), and check a new project, with no lockfile, builds from crates.io alone and runs: `cargo add zgx zgx-desktop zgx-script zgx-run`, a `main` calling `zgx_run::run` on an `app.luau`, launched to its window. Building is not enough: 0.1.0 and 0.1.1 built in a new project and panicked as their first script loaded (luau0-src 0.22.1, resolved afresh; the release check's third step now runs one).
 
 A crate on crates.io can't be deleted, only yanked: a version published is published for good.
