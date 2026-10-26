@@ -935,8 +935,45 @@ fn align_wait(
     left: std::time::Duration,
     period: std::time::Duration,
 ) -> Option<std::time::Duration> {
+    // DIAGNOSTIC (pace-diag, not for main): `ZGX_ALIGN=off` or
+    // `ZGX_ALIGN=early,latest,at` in microseconds.
+    #[cfg(target_os = "macos")]
+    if let Some(diag) = *ALIGN_DIAG {
+        return diag.and_then(|(early, latest, at)| {
+            (period < ALIGN_PERIOD && left > early && left < latest)
+                .then(|| left.saturating_sub(at))
+        });
+    }
     (period < ALIGN_PERIOD && left > ALIGN_EARLY && left < ALIGN_LATEST).then(|| left - ALIGN_AT)
 }
+#[cfg(target_os = "macos")]
+type AlignDiag = Option<(
+    std::time::Duration,
+    std::time::Duration,
+    std::time::Duration,
+)>;
+#[cfg(target_os = "macos")]
+static ALIGN_DIAG: std::sync::LazyLock<Option<AlignDiag>> = std::sync::LazyLock::new(|| {
+    let value = std::env::var("ZGX_ALIGN").ok()?;
+    if value == "off" {
+        return Some(None);
+    }
+    let us: Vec<u64> = value
+        .split(',')
+        .filter_map(|v| v.trim().parse().ok())
+        .collect();
+    let [early, latest, at] = us[..] else {
+        return None;
+    };
+    let d = std::time::Duration::from_micros;
+    eprintln!("ZGX_ALIGN early={early}us latest={latest}us at={at}us");
+    Some(Some((d(early), d(latest), d(at))))
+});
+/// DIAGNOSTIC (pace-diag): `ZGX_HANDOVER_LOG=1` prints, for each frame handed
+/// over, where it was in the link's output grid before and after any wait.
+#[cfg(target_os = "macos")]
+static HANDOVER_LOG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("ZGX_HANDOVER_LOG").is_some());
 /// How long after a resize frames skip the refresh-point wait (the renderer
 /// presents on the plain layer for as long: `zgx_gpu`'s `RESIZE_SETTLE`).
 #[cfg(target_os = "macos")]
@@ -1937,6 +1974,11 @@ impl Host {
                         self.resized_at
                             .is_none_or(|at| at.elapsed() >= RESIZE_SETTLE)
                     });
+                #[cfg(target_os = "macos")]
+                let log_link = self.display_link.as_ref().filter(|_| *HANDOVER_LOG);
+                #[cfg(target_os = "macos")]
+                let (log_paced, log_refresh, log_grid) =
+                    (self.link_paced, self.refresh_frame, grid.is_some());
                 // With native views, both planes and the views' geometry
                 // change in one transaction (committed when it drops).
                 let transaction = self.native.begin();
@@ -1953,6 +1995,10 @@ impl Host {
                         sleep_until(at);
                     }
                     #[cfg(target_os = "macos")]
+                    let before = log_link.and_then(|l| l.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3));
+                    #[cfg(target_os = "macos")]
+                    let mut waited = std::time::Duration::ZERO;
+                    #[cfg(target_os = "macos")]
                     if let Some(link) = link
                         && let Some((phase, period)) =
                             link.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3)
@@ -1961,6 +2007,24 @@ impl Host {
                         // One wakeup, not `sleep_until`'s two: running late
                         // only moves it nearer the point, still before it.
                         std::thread::sleep(wait);
+                        waited = wait;
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Some(l) = log_link
+                        && let (Some((p0, period)), Some((p1, _))) =
+                            (before, l.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3))
+                    {
+                        eprintln!(
+                            "HANDOVER {} before_us={} after_us={} waited_us={} period_us={} paced={} refresh={} grid={}",
+                            zgx_gpu::present_log::now_ns(),
+                            period.saturating_sub(p0).as_micros(),
+                            period.saturating_sub(p1).as_micros(),
+                            waited.as_micros(),
+                            period.as_micros(),
+                            log_paced,
+                            log_refresh,
+                            log_grid
+                        );
                     }
                 })?;
                 self.native.apply();
