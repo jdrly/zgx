@@ -76,6 +76,8 @@ SCENES = [
     # same paths at a sixth of the work (`suite.py` runs `apps_bench` full
     # size).
     ('app-mail', 'zgx-script', 'list_state_bench', {'APP': 'mail', 'REPS': '2'}),
+    # A reply's token streamed in, a composer keystroke, a switch.
+    ('app-chat', 'zgx-script', 'list_state_bench', {'APP': 'chat', 'REPS': '4'}),
     # A sort with no order kept (the honest whole sort) on its own, as the
     # code editor's new-letter search is.
     ('app-dashboard', 'zgx-script', 'list_state_bench', {'APP': 'dashboard', 'ROWS': '2000', 'REPS': '2',
@@ -124,9 +126,10 @@ def runs_scene(checkout, env):
         return True
     if not apps.exists():
         return False
-    # A scene of one interaction (`ONLY`) is new to a base that lacks it:
-    # its binary would count the app's setup alone.
-    return 'ONLY' not in env or env['ONLY'] in apps.read_text()
+    # An app, or a scene of one interaction (`ONLY`), new to a base that
+    # lacks it: its binary would count nothing, or the app's setup alone.
+    text = apps.read_text()
+    return f'("{env["APP"]}",' in text and ('ONLY' not in env or env['ONLY'] in text)
 
 
 def stamp(checkout):

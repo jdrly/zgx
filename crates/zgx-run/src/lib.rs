@@ -257,7 +257,19 @@ fn file_path(url: &str) -> Option<PathBuf> {
 /// those that name files opened with it (its `ui.on_open`), as a file
 /// opened with an app is.
 pub fn run_with(path: &Path, args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    run_hosting(path, args, |_| {})
+}
+
+/// As [`run_with`], `host` given the script's host before it loads: an app
+/// that serves its script (a fetcher, actions, shared state) keeps
+/// everything `run` gives it, the menu bar of its commands included.
+pub fn run_hosting(
+    path: &Path,
+    args: Vec<String>,
+    host: impl Fn(&ScriptHost) + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::{cell::RefCell, rc::Rc};
+    let configure = host;
     let script = script_path(path);
     if !script.is_file() {
         return Err(format!("{}: no such script", script.display()).into());
@@ -321,6 +333,7 @@ pub fn run_with(path: &Path, args: Vec<String>) -> Result<(), Box<dyn std::error
             cx.window_info.titlebar_area.clone(),
             cx.window_info.controls.clone(),
         );
+        configure(&host);
         let _ = host.reload();
         cx.tasks.spawn(host.watch(Duration::from_millis(250)));
         // The script's commands are the menu bar; their keys work wherever
