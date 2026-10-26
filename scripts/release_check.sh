@@ -7,8 +7,8 @@
 # 1. The forks zgx publishes as its own crates (vendor/harfrust,
 #    cosmic-text, taffy, mlua as zgx-harfrust, zgx-cosmic-text, zgx-taffy,
 #    zgx-mlua) are each packaged and built from their package, against
-#    crates.io and the forks before them (zgx-cosmic-text shapes with
-#    zgx-harfrust), given from vendor/ as below.
+#    crates.io and the forks they depend on (zgx-cosmic-text shapes with
+#    zgx-harfrust), given from vendor/.
 # 2. Every published workspace crate is packaged and built from its package
 #    (`cargo publish --workspace --dry-run`), in dependency order. That
 #    build leaves out the workspace's `[patch.crates-io]`: winit, wgpu-hal
@@ -33,7 +33,15 @@ for fork in $forks; do
     # mlua builds for one Lua, chosen by a feature: zgx's, Luau.
     features=""
     if [ "$fork" = mlua ]; then features="--features luau"; fi
-    cargo package --manifest-path "vendor/$fork/Cargo.toml" $features $dirty "$@"
+    # A fork is given only the forks it depends on: a patch it never uses
+    # is written into its own lockfile (`[[patch.unused]]`, harfrust's and
+    # taffy's are committed), which leaves the checkout dirty.
+    deps=""
+    if [ "$fork" = cosmic-text ]; then
+        deps='patch.crates-io.zgx-harfrust.path="vendor/harfrust"'
+    fi
+    cargo package --manifest-path "vendor/$fork/Cargo.toml" $features $dirty \
+        ${deps:+--config "$deps"}
 done
 echo "== the workspace's published crates"
 cargo publish --workspace --dry-run --locked $dirty "$@"
