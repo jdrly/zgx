@@ -4523,6 +4523,12 @@ impl Scene {
             parent = ancestor.parent;
         }
         let bounds = node.bounds.translated(transform);
+        (bounds, effects, self.world_clip(id))
+    }
+    /// `world`'s clip alone (`.2`): what `id` paints within, from its own
+    /// and its ancestors' clips, each at its box translated by its own and
+    /// its ancestors' translations, summed from it upwards.
+    fn world_clip(&self, id: NodeId) -> Option<Rect> {
         let mut clip = Some(self.viewport);
         let mut current = Some(id);
         while let Some(id) = current {
@@ -4540,7 +4546,7 @@ impl Scene {
             }
             current = ancestor.parent;
         }
-        (bounds, effects, clip)
+        clip
     }
     fn damage_subtree(&mut self, id: NodeId) {
         self.damage_subtree_with(id, &mut None);
@@ -4741,7 +4747,7 @@ impl Scene {
             current = node.parent;
         }
         let clip = match clips {
-            true => self.world(id).2,
+            true => self.world_clip(id),
             false => Some(self.viewport),
         };
         Some((transform, clip))
@@ -4962,7 +4968,7 @@ impl Scene {
         let (bounds, effects, clip) = self.world(id);
         let clip = match (past_clip, self.node(id).parent) {
             (false, _) => clip,
-            (true, Some(parent)) => self.world(parent).2,
+            (true, Some(parent)) => self.world_clip(parent),
             (true, None) => Some(self.viewport),
         };
         self.damage_painted(id, bounds, effects.blur_radius, clip);
@@ -6719,7 +6725,7 @@ impl Scene {
                 // list re-anchoring between layout passes, possibly back to
                 // where it started) were damaged neither where they were
                 // painted nor where they end: repaint everything it shows.
-                match self.world(id).2 {
+                match self.world_clip(id) {
                     Some(clip) => self.add_damage(clip),
                     None => self.add_damage(self.viewport),
                 }
@@ -6728,7 +6734,7 @@ impl Scene {
             if dx == 0. && dy == 0. {
                 continue;
             }
-            let (_, _, clip) = self.world(id);
+            let clip = self.world_clip(id);
             let isolated = layered;
             let filtered = |scene: &Self, clip: Rect| {
                 scene.blur_nodes.iter().any(|blur| {
