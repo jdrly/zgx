@@ -15,7 +15,7 @@ zgx is a retained-mode GUI framework in Rust for macOS, Windows and Linux. Compo
 
 ## Quick start
 
-In Rust, with the dependencies [getting started](docs/getting-started.md#in-rust) lists (`zgx = "0.1"` and `zgx-desktop = "0.1"` from crates.io):
+In Rust, with the dependencies [getting started](docs/getting-started.md#in-rust) lists (`zgx = "0.1.1"` and `zgx-desktop = "0.1.1"` from crates.io):
 
 ```rust,no_run
 use zgx::compose::prelude::*;
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-In Luau: put this in `hello/app.luau` and run `zgx-run hello/` (`LUAU_CXXFLAGS=-DNDEBUG cargo install --git https://github.com/zeronsh/zgx zgx-run`). Saving the file updates the window and keeps the count.
+In Luau: put this in `hello/app.luau` and run `zgx-run hello/` (`LUAU_CXXFLAGS=-DNDEBUG cargo install zgx-run`). Saving the file updates the window and keeps the count.
 
 ```lua
 local count = ui.state("count", 0)
