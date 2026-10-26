@@ -1242,6 +1242,10 @@ struct Node {
     text_size: std::cell::Cell<TextSizes>,
     advanced_layout: Option<Box<advanced_layout::AdvancedLayoutCache>>,
     arrange_dirty: bool,
+    /// Queued to be placed again by its parent (`Scene::place_later`).
+    place_pending: bool,
+    /// A layout root whose only change is boxes queued in it.
+    placing: bool,
     /// Whether its size can depend on the available width and height it is
     /// measured under (`Scene::reads_available`): `READS_KNOWN` once worked
     /// out, cleared with its layout.
@@ -1982,6 +1986,8 @@ pub struct Scene {
     walk_hints: std::cell::Cell<(usize, usize)>,
     /// Dirty fixed-size containers whose ancestors stayed clean.
     layout_roots: Vec<NodeId>,
+    /// Boxes queued to be placed again by their parents (`place_later`).
+    placing: Vec<NodeId>,
     /// Nodes holding more than `MEASUREMENT_ALTERNATES` results of this pass,
     /// trimmed when it ends.
     overfull: Vec<NodeId>,
@@ -1998,6 +2004,12 @@ pub struct Scene {
     /// `measure` calls, for tests of how much work layout does.
     #[cfg(test)]
     measure_calls: u64,
+    /// Tests lay boxes out without `place_later`, to compare.
+    #[cfg(test)]
+    no_placing: bool,
+    /// Parents `place_children` laid out, counted for tests.
+    #[cfg(test)]
+    placed_parents: u64,
     geometry_revision: u64,
     cursor_styles: usize,
     /// Scroll content translated since the last flush: its transform before
@@ -2091,6 +2103,8 @@ impl Scene {
                     text_size: Default::default(),
                     advanced_layout: None,
                     arrange_dirty: true,
+                    place_pending: false,
+                    placing: false,
                     reads: std::cell::Cell::new(0),
                     isolated: false,
                     local: None,
@@ -2151,12 +2165,17 @@ impl Scene {
             content_revision: 0,
             walk_hints: Default::default(),
             layout_roots: Vec::new(),
+            placing: Vec::new(),
             overfull: Vec::new(),
             relative_count: 0,
             contents_count: 0,
             escaped: Vec::new(),
             #[cfg(test)]
             measure_calls: 0,
+            #[cfg(test)]
+            no_placing: false,
+            #[cfg(test)]
+            placed_parents: 0,
             geometry_revision: 0,
             cursor_styles: 0,
             contents_styles: Default::default(),
@@ -3549,6 +3568,10 @@ impl Scene {
         #[cfg(target_os = "macos")]
         let layout_unchanged = layout_unchanged
             || matches!((&self.node(id).kind,&kind),(NodeKind::NativeSurface(old),NodeKind::NativeSurface(new)) if (old.width(),old.height())==(new.width(),new.height()) || (self.node(id).style.width.is_some() && self.node(id).style.height.is_some()));
+        // A text whose string or size changed is placed apart where it
+        // can be (`place_later`): what it and its ancestors read stays.
+        let was_text =
+            self.node(id).style.absolute && matches!(self.node(id).kind, NodeKind::Text { .. });
         self.damage_subtree(id);
         if matches!((&self.node(id).kind, &kind), (NodeKind::Image(old), NodeKind::Image(new))
             if old.transform() != new.transform())
@@ -3562,7 +3585,7 @@ impl Scene {
         let colour = paints_only(&self.node(id).kind, &kind);
         self.node_mut(id).kind = kind;
         self.invalidate(id, if colour { PAINT | PAINT_ONLY } else { PAINT });
-        if !layout_unchanged {
+        if !layout_unchanged && !(was_text && self.place_text_later(id)) {
             self.invalidate_layout(id);
         }
     }
@@ -3609,6 +3632,8 @@ impl Scene {
             text_size: Default::default(),
             advanced_layout: None,
             arrange_dirty: true,
+            place_pending: false,
+            placing: false,
             reads: std::cell::Cell::new(0),
             isolated: false,
             local: None,
@@ -3859,6 +3884,8 @@ impl Scene {
         old.margin = style.margin;
         // Only its box changed: laid out again, it is `repaint::BOX_ONLY`.
         match reads {
+            // Placed again by its parent alone where that is exact.
+            true if self.place_later(id, false) => {}
             true => self.invalidate_layout_with(id, true, false),
             false => self.invalidate_layout_with(id, false, false),
         }
@@ -6237,6 +6264,7 @@ impl Scene {
         }
         let _span = crate::profile::span(crate::profile::Phase::Layout);
         self.layout_pass = self.layout_pass.wrapping_add(1);
+        self.settle_placements();
         let mut report = FrameReport::default();
         if self.node(self.root).dirty & LAYOUT != 0 {
             self.measure_full(self.root, Constraints::default());
@@ -6251,6 +6279,9 @@ impl Scene {
         roots.dedup();
         let mut relayout_all = false;
         for id in roots {
+            if self.contains(id) && self.place_children(id, &mut report) {
+                continue;
+            }
             if !self.contains(id) || self.node(id).dirty & LAYOUT == 0 {
                 continue;
             }
@@ -8020,6 +8051,65 @@ mod measure_work_tests {
         (scene.measure_calls - before) / frames as u64
     }
     #[test]
+    fn a_text_that_changes_lays_out_as_a_fresh_one_around_it() {
+        // Wrapping text in a column of a fixed width, inside a row, its
+        // string and size changed again and again: every box as a scene
+        // built with that text lays it out.
+        let text_kind = |text: &str, font_size: f32| NodeKind::Text {
+            text: text.into(),
+            color: Color(0, 0, 0, 255),
+            font_size,
+        };
+        let build = |kind: NodeKind| {
+            let mut scene = Scene::new(400., 300.);
+            let row = scene.append(
+                scene.root(),
+                NodeKind::Container(Layout::Row),
+                Style::default(),
+            );
+            let column = scene.append(
+                row,
+                NodeKind::Container(Layout::Column),
+                Style {
+                    width: Some(120.),
+                    ..Default::default()
+                },
+            );
+            let label = scene.append(
+                column,
+                kind,
+                Style {
+                    text_wrap: true,
+                    ..Default::default()
+                },
+            );
+            let after = scene.append(
+                row,
+                NodeKind::Rect(Color(1, 2, 3, 255)),
+                Style {
+                    width: Some(10.),
+                    height: Some(10.),
+                    ..Default::default()
+                },
+            );
+            scene.flush();
+            (scene, [row, column, label, after])
+        };
+        let (mut scene, ids) = build(text_kind("short", 14.));
+        for (text, size) in [
+            ("a much longer label that wraps", 14.),
+            ("x", 20.),
+            ("two words", 9.),
+        ] {
+            scene.set_kind(ids[2], text_kind(text, size));
+            scene.flush();
+            let (fresh, fresh_ids) = build(text_kind(text, size));
+            for (id, fresh_id) in ids.iter().zip(&fresh_ids) {
+                assert_eq!(scene.bounds(*id), fresh.bounds(*fresh_id), "{text}");
+            }
+        }
+    }
+    #[test]
     fn arranging_children_asks_again_only_for_those_it_did_not_just_measure() {
         let mut scene = Scene::new(400., 300.);
         let card = scene.append(
@@ -9289,6 +9379,8 @@ mod nonfinite_transform_tests {
 
 #[path = "scene_layout.rs"]
 mod advanced_layout;
+#[path = "scene_place.rs"]
+mod place;
 #[path = "scene_select.rs"]
 mod select;
 pub use select::{TextHighlight, TextLeaf};
