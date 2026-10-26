@@ -3978,7 +3978,13 @@ impl GpuRenderer {
         }
         let len = kept.quads.len();
         std::mem::swap(&mut self.frame_quads, &mut kept.quads);
-        self.frame_draws.clone_from(&kept.draws);
+        // Its draws lent too, unless a frame may be deferred to its present
+        // (`Deferred`), which takes them.
+        let (lent, draws) = (self.single_pass_format.is_none(), kept.draws.len());
+        match lent {
+            true => std::mem::swap(&mut self.frame_draws, &mut kept.draws),
+            false => self.frame_draws.clone_from(&kept.draws),
+        }
         self.patch_clips.clone_from(&kept.clips);
         self.frame_points.clear();
         self.draw_made = true;
@@ -3991,6 +3997,10 @@ impl GpuRenderer {
         kept.upload = self.kept_upload.take().map(|(upload, _)| upload).unwrap_or_default();
         std::mem::swap(&mut self.frame_quads, &mut kept.quads);
         kept.quads.truncate(len);
+        if lent {
+            std::mem::swap(&mut self.frame_draws, &mut kept.draws);
+            kept.draws.truncate(draws);
+        }
         let mut drawn = drawn?;
         drawn.patched_items = stats.patched_items;
         drawn.add_made(&stats);
@@ -6081,7 +6091,10 @@ impl GpuRenderer {
         keep_room(&mut draws, &mut self.frame_peaks.1);
         self.frame_quads = quads;
         self.frame_points = points;
-        draws.clear();
+        // (A kept frame's, lent: given back as they are.)
+        if self.kept_upload.is_none() {
+            draws.clear();
+        }
         self.frame_draws = draws;
         Ok(stats)
     }
@@ -6277,7 +6290,10 @@ impl GpuRenderer {
         keep_room(&mut quads, &mut self.frame_peaks.0);
         keep_room(&mut draws, &mut self.frame_peaks.1);
         self.frame_quads = quads;
-        draws.clear();
+        // (A kept frame's, lent: given back as they are.)
+        if self.kept_upload.is_none() {
+            draws.clear();
+        }
         self.frame_draws = draws;
         stats
     }
@@ -6770,7 +6786,7 @@ impl GpuRenderer {
                 // `region`, a kept text's spare room) are set up by the GPU
                 // to be scissored away: past `SKIPPED_SPLIT`, a draw call
                 // costs less.
-                && start - open.end < SKIPPED_SPLIT
+                && (self.kept_upload.is_none() || start - open.end < SKIPPED_SPLIT)
             {
                 // Another shading joins when what it promotes (quads drawn
                 // with a costlier shader than theirs) stays small.
@@ -9783,9 +9799,10 @@ fn panel_whole(quad: &Quad, split: bool) -> bool {
 const SHAPED_LIKE: usize = 4096;
 
 /// Instances between draws for a region (of draws outside it, or empty
-/// spare room) past which a batch ends rather than spanning them
-/// (`batches`): from a kept frame, the window's every draw, a batch would
-/// otherwise take blocks of rows the damage misses.
+/// spare room) past which a batch from the kept frame ends rather than
+/// spanning them (`batches`): holding the window's every draw, a batch
+/// would otherwise take blocks of rows the damage misses. (A frame drawn
+/// as usual holds what its damage reaches alone.)
 const SKIPPED_SPLIT: u32 = 32;
 /// Panels split only with an interior of at least this many logical pixels:
 /// below, five quads cost more than shading one.

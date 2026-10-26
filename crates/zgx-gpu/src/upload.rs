@@ -121,8 +121,12 @@ impl KeptQuads {
             self.tracking = true;
         }
     }
-    /// A patch begins: what it writes counts as one version.
+    /// A patch begins: what it writes counts as one version (nothing to
+    /// count while writes go unremembered).
     pub(crate) fn patch(&mut self) {
+        if !self.tracking {
+            return;
+        }
         let mut spare = match self.changes.len() == CHANGES {
             true => self.changes.pop_front().map(|(_, wrote)| wrote).unwrap_or_default(),
             false => Vec::new(),
@@ -136,7 +140,7 @@ impl KeptQuads {
     }
     /// This patch wrote quads `start..end` (one run with the last, when
     /// they meet: neighbouring items' writes copy at once).
-    #[inline]
+    #[inline(always)]
     pub(crate) fn wrote(&mut self, start: u32, end: u32) {
         if !self.tracking {
             return;
