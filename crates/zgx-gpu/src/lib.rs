@@ -745,9 +745,6 @@ struct Shaped {
     last_used: u64,
     /// The prepared text these glyphs were laid out from, kept while drawn.
     prepared: Option<u64>,
-    /// Times its node's text was shaped again since it was first: a kept
-    /// frame gives spare room to texts that change (`close_range`).
-    changes: u32,
 }
 impl Shaped {
     fn bytes(&self) -> usize {
@@ -1131,10 +1128,10 @@ impl<T> Drop for LeftItems<'_, T> {
         self.0.by_ref().for_each(drop);
     }
 }
-/// Spare quads a text that changes keeps for its value to grow into, past
-/// its own: few, as a batch drawing the kept frame spans them (empty, they
-/// still cost the GPU), and a text outgrowing them moves to the kept
-/// frame's end (`render_kept`).
+/// Spare quads a text that changes (one a kept frame patched) keeps for
+/// its value to grow into, past its own: few, as a batch drawing the kept
+/// frame spans them (empty, they still cost the GPU), and a text
+/// outgrowing them moves to the kept frame's end (`render_kept`).
 fn text_room(glyphs: u32) -> u32 {
     (glyphs / 4).max(2)
 }
@@ -2271,6 +2268,9 @@ pub struct GpuRenderer {
     kept_upload: Option<(upload::KeptQuads, usize)>,
     /// And how many of its quads lie in paint order (`Kept::ordered`).
     kept_ordered: u32,
+    /// Texts a kept frame patched (at most `SHAPED_LIKE`): the ones a kept
+    /// frame gives spare room to grow into (`text_room`).
+    changed_texts: rustc_hash::FxHashSet<NodeId>,
     /// Whether the frame's quads, draws, polyline points and clips
     /// (`patch_clips`) are made already, for the next frame to draw as
     /// they are.
@@ -2741,6 +2741,7 @@ impl GpuRenderer {
             box_quads: Vec::new(),
             kept_upload: None,
             kept_ordered: 0,
+            changed_texts: Default::default(),
             box_draws: Vec::new(),
             draw_made: false,
             frame_draws: Vec::new(),
@@ -3939,6 +3940,12 @@ impl GpuRenderer {
         if fits {
             for (&(start, len, _, first, end), &place) in ranges.iter().zip(&places) {
                 let item = &mut kept.items[place];
+                if matches!(scene.kind(item.id), NodeKind::Text { .. }) {
+                    if self.changed_texts.len() >= SHAPED_LIKE {
+                        self.changed_texts.clear();
+                    }
+                    self.changed_texts.insert(item.id);
+                }
                 if len > item.room {
                     // Emptied where it was; at the end, with room again.
                     let old = item.start as usize..(item.start + item.len) as usize;
@@ -4056,10 +4063,9 @@ impl GpuRenderer {
     /// A kept frame given up: its quads' room goes back to the frame's,
     /// which keeping had taken (the next frame would grow it again from
     /// nothing). `None`, for `render_kept` to return.
-    /// Whether `text`'s node has changed what it shows since first shaped.
+    /// Whether `text`'s node is one a kept frame patched (`changed_texts`).
     fn changes(&self, text: Option<NodeId>) -> bool {
-        text.and_then(|id| self.shapes.get(&id))
-            .is_some_and(|shaped| shaped.changes > 0)
+        text.is_some_and(|id| self.changed_texts.contains(&id))
     }
     fn recycle_kept(&mut self, kept: Kept) -> Option<GpuStats> {
         let mut quads = kept.quads;
@@ -5243,10 +5249,8 @@ impl GpuRenderer {
                         // The old shape's glyphs and quads hold the new one's:
                         // a changed value is as many allocations fewer.
                         let (mut spare_glyphs, mut spare_quads) = (Vec::new(), Vec::new());
-                        let mut changes = 0;
                         if let Some(old) = self.shapes.remove(&item.id) {
                             self.shaped_bytes -= old.bytes();
-                            changes = old.changes.saturating_add(1);
                             (spare_glyphs, spare_quads) = (old.glyphs, old.quads);
                             spare_glyphs.clear();
                             spare_quads.clear();
@@ -5407,7 +5411,6 @@ impl GpuRenderer {
                             atlas_epoch: epoch.unwrap_or(0),
                             last_used: self.frame,
                             prepared,
-                            changes,
                         };
                         fresh = Some(shaped);
                         stats.shaped_nodes += 1;
