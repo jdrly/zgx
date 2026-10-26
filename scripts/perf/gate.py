@@ -101,8 +101,11 @@ SCENES = [
 
 # What a scene still moves by with no code changed (`same_run.c` fixes the
 # rest): app-chat's test waits for its fake server's timer thread, a
-# handoff between threads that real time decides.
-SPREAD = {'app-chat': 0.2}
+# handoff between threads that real time decides; app-code waits for its
+# file thread the same way, and its count follows the build's layout too
+# (Luau's and mlua's hashing by address, as `RECOUNT` says), 0.05% between
+# two builds of one commit.
+SPREAD = {'app-chat': 0.2, 'app-code': 0.05, 'app-code-search': 0.05}
 
 # A Luau scene's count follows where the heap places things (the value
 # cache and Luau's tables hash by address, its collector marks in their
