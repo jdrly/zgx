@@ -619,6 +619,9 @@ struct State {
     file_hovered: Option<NodeId>,
     pressed: Option<NodeId>,
     key_pressed: Option<(NodeId, Key)>,
+    /// The window's semantics: a control's role says which keys activate it
+    /// (`activates`).
+    semantics: Weak<RefCell<crate::semantics::Semantics>>,
     scopes: Vec<FocusScope>,
     /// Focus groups (`set_focus_group`): one Tab stop each.
     groups: crate::scene::NodeMap<Group>,
@@ -783,6 +786,27 @@ impl InputDispatcher {
     /// A dispatcher with no listeners and nothing focused.
     pub fn new() -> Self {
         Self::default()
+    }
+    /// The semantics whose roles say which keys activate a control.
+    pub(crate) fn set_semantics(&self, semantics: &Rc<RefCell<crate::semantics::Semantics>>) {
+        self.state.borrow_mut().semantics = Rc::downgrade(semantics);
+    }
+    /// Whether `key` activates `node`, as Chrome's and AppKit's controls
+    /// take it: Enter as it goes down, Space as it comes up, except that a
+    /// link takes Enter alone and a checkbox, radio button or switch Space
+    /// alone (Enter goes on to the form's default action).
+    pub(crate) fn activates(&self, node: NodeId, key: &Key) -> bool {
+        use crate::semantics::Role;
+        let semantics = self.state.borrow().semantics.upgrade();
+        let role = semantics.and_then(|s| s.borrow().get(node).map(|node| node.role));
+        match key {
+            Key::Enter => !matches!(
+                role,
+                Some(Role::CheckBox | Role::RadioButton | Role::Switch)
+            ),
+            Key::Space => role != Some(Role::Link),
+            _ => false,
+        }
     }
     /// Register a scoped keymap. Keep its guard alive for the component lifetime.
     pub fn bind_keys(
@@ -2358,12 +2382,28 @@ impl InputDispatcher {
                         self.dispatch_to(scene, id, InputEvent::Activate);
                     }
                 }
+                // Enter activates as it goes down, as a browser's button and
+                // AppKit's default button take it.
                 InputEvent::KeyDown {
-                    key: key @ (Key::Enter | Key::Space),
+                    key: Key::Enter,
                     repeat: false,
                     ..
                 } => {
-                    let pressed = self.focused().map(|id| (id, key.clone()));
+                    self.state.borrow_mut().key_pressed = None;
+                    if let Some(id) = self.focused().filter(|id| self.activates(*id, &Key::Enter)) {
+                        self.dispatch_to(scene, id, InputEvent::Activate);
+                    }
+                }
+                // Space as it comes up: pressed, it shows pressed until then.
+                InputEvent::KeyDown {
+                    key: Key::Space,
+                    repeat: false,
+                    ..
+                } => {
+                    let pressed = self
+                        .focused()
+                        .filter(|id| self.activates(*id, &Key::Space))
+                        .map(|id| (id, Key::Space));
                     self.state.borrow_mut().key_pressed = pressed;
                 }
                 InputEvent::KeyUp { key, .. } => {
@@ -3003,12 +3043,13 @@ mod tests {
         input.dispatch(&scene, up(Key::Space));
         input.dispatch(&scene, up(Key::Space));
         assert_eq!(clicks.get(), 1);
-        // The latest non-repeat activation key owns the one pending activation.
+        // Enter activates as it goes down, once, and drops a pending Space.
         input.dispatch(&scene, down(Key::Space, false));
         input.dispatch(&scene, down(Key::Enter, false));
+        assert_eq!(clicks.get(), 2);
+        input.dispatch(&scene, down(Key::Enter, true));
         input.dispatch(&scene, down(Key::Space, true));
         input.dispatch(&scene, up(Key::Space));
-        assert_eq!(clicks.get(), 1);
         input.dispatch(&scene, up(Key::Enter));
         assert_eq!(clicks.get(), 2);
     }

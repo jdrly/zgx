@@ -10,6 +10,9 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 
 ### Changed
 
+**Enter activates a focused control as it goes down, and toggles no checkbox; Space follows no link.** As a browser's controls and AppKit's take the keys: a button (and anything with `on_click`) runs on Enter's press, not its release, and on Space's release as before; a link takes Enter alone (Space scrolls); a checkbox, radio button or switch takes Space alone, so Enter goes on to the form's default action.
+- *Migrate:* a checkbox meant to toggle on Enter handles the key itself (Rust `.on_event` on `KeyDown` of `Key::Enter`, Luau `on_key`), setting its state; a test pressing Enter and expecting the action on its release expects it on the press.
+
 **Buttons, checkboxes, menu items and sliders keep the arrow cursor**, as Chrome's controls and AppKit's do; only links show the pointing hand, and text fields the I-beam. They showed the hand (sliders a resize arrow) when they stated no cursor.
 - *Migrate:* a control meant to show the hand states it: `.cursor(Cursor::Pointer)` (Luau `cursor = "pointer"`).
 

@@ -1175,6 +1175,7 @@ impl Ui {
             dispatching: Cell::new(false),
             document_listeners: RefCell::new(Vec::new()),
         });
+        storage.input.set_semantics(&storage.semantics);
         Self::from_storage(storage)
     }
     pub(crate) fn from_storage(storage: Rc<UiStorage>) -> Self {

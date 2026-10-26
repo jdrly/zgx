@@ -664,11 +664,12 @@ pub(crate) fn mount_style_with_intrinsic(
                     state.pointer_active = false;
                     state.key_active = None;
                 }
+                // Pressed while the key that activates it is down.
                 InputEvent::KeyDown {
                     key: Key::Space,
                     repeat: false,
                     ..
-                } if event.target == node => {
+                } if event.target == node && input.activates(node, &Key::Space) => {
                     state.key_active = Some(ActivationKey::Space);
                     state.focus_visible = true;
                 }
@@ -676,7 +677,7 @@ pub(crate) fn mount_style_with_intrinsic(
                     key: Key::Enter,
                     repeat: false,
                     ..
-                } if event.target == node => {
+                } if event.target == node && input.activates(node, &Key::Enter) => {
                     state.key_active = Some(ActivationKey::Enter);
                     state.focus_visible = true;
                 }

@@ -266,3 +266,41 @@ fn a_links_focus_ring_shows_from_the_keyboard_not_a_click() {
     assert_eq!(ui.input.focused(), Some(links[1]));
     assert_eq!(ring(&ui, links[1]), 1., "tabbed to: its ring");
 }
+
+#[test]
+fn a_link_follows_enter_as_it_goes_down_and_not_space() {
+    let clicks = Rc::new(RefCell::new(0));
+    let count = clicks.clone();
+    let mut ui = Ui::new(300., 100.);
+    ui.mount(
+        rich_text()
+            .text_size(16.)
+            .child(text_span("a link").on_click(move || *count.borrow_mut() += 1))
+            .into(),
+    );
+    ui.prepare_frame();
+    let link = links(&ui)[0];
+    ui.input.focus(&ui.scene, Some(link));
+    let key = |ui: &mut Ui, key: Key, down: bool| {
+        ui.dispatch(if down {
+            InputEvent::KeyDown {
+                key,
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }
+        } else {
+            InputEvent::KeyUp {
+                key,
+                modifiers: Modifiers::default(),
+            }
+        });
+    };
+    // Space scrolls the page in a browser; it follows no link.
+    key(&mut ui, Key::Space, true);
+    key(&mut ui, Key::Space, false);
+    assert_eq!(*clicks.borrow(), 0);
+    key(&mut ui, Key::Enter, true);
+    assert_eq!(*clicks.borrow(), 1, "Enter follows it as it goes down");
+    key(&mut ui, Key::Enter, false);
+    assert_eq!(*clicks.borrow(), 1);
+}
