@@ -7608,12 +7608,6 @@ impl GpuRenderer {
         }
         let held = present.buffers[index].1;
         let latest = present.shown.and_then(|shown| present.buffers[shown].1);
-        present_log::log(|| {
-            format!(
-                "{} draw whole={whole} held={held:?} latest={latest:?}",
-                present.plane()
-            )
-        });
         present.catch_up = match (whole, latest) {
             (true, _) | (false, None) => Vec::new(),
             (false, Some(latest)) if held == Some(latest) => Vec::new(),
@@ -7630,6 +7624,15 @@ impl GpuRenderer {
                 _ => vec![(0, 0, width, height)],
             },
         };
+        // How many areas the surface copies from the one shown before the
+        // frame draws (`catch_up_draws` takes them as it renders).
+        present_log::log(|| {
+            format!(
+                "{} draw whole={whole} held={held:?} latest={latest:?} catch_up={}",
+                present.plane(),
+                present.catch_up.len()
+            )
+        });
         let buffer = &present.buffers[index].0;
         self.target = buffer.texture.clone();
         self.view = buffer.view.clone();
@@ -7710,13 +7713,12 @@ impl GpuRenderer {
                 .is_some_and(|until| std::time::Instant::now() < until);
         present_log::log(|| {
             format!(
-                "{} present frame={} index={index} held={:?} path={} full_rate={} opaque={opaque} catch_up={}",
+                "{} present frame={} index={index} held={:?} path={} full_rate={} opaque={opaque}",
                 plane,
                 present.frame + 1,
                 present.buffers[index].1,
                 if plain { "plain" } else { "show" },
                 present.full_rate,
-                present.catch_up.len()
             )
         });
         let layer = present.layer.as_mut().expect("attached above");
