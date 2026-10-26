@@ -893,3 +893,15 @@ never mounted are in it (their text derived from how the rows are built).
 The app reads only what it wrote, so macOS prompts no one; it is launched
 as a direct child from a temporary directory and sends no input. Passed on
 macOS 26 (M5), 2026-10-25: 10,012 lines, 670 KB of HTML.
+
+## macOS full-rate animation (the display's refresh)
+
+`scripts/macos_full_rate_probe.py` runs the animation_workload example three
+times for four seconds and fails when a run animates under 90% of the
+display's maximum refresh (`NSScreen.maximumFramesPerSecond`). The host takes
+the display's period from the spacing of its display link's output times
+(`frame_source::refresh_period`), not from the mode the display reports: a
+120 Hz panel whose mode read 60 Hz at launch paced full-rate content at half
+rate, intermittently, as a window started. The app is launched as a direct
+child from a temporary directory and sends no input. Passed on macOS 26 (M5,
+120 Hz), 2026-10-25: 113.7, 117.2 and 116.7 fps.

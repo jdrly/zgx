@@ -15,6 +15,29 @@ pub(crate) const DEFAULT_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) const WATCHDOG: Duration = Duration::from_millis(250);
 
+/// Spacings between a display link's consecutive output times that
+/// `refresh_period` judges from.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const PERIOD_SAMPLES: usize = 8;
+/// The display's refresh period from what its link delivers: the shortest of
+/// the recent spacings between consecutive output times (`spacings`, in
+/// nanoseconds, 0 where none yet), which sit on the display's refresh grid. A
+/// missed or paused callback only lengthens a spacing, never shortens one.
+/// The link's nominal period stands until three spacings are known, or when
+/// none is a plausible refresh (2 to 100 ms). The mode the display reports
+/// can be another (a 60 Hz mode read on a panel refreshing at 120 Hz), which
+/// would pace full-rate content at half rate.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn refresh_period(nominal: Duration, spacings: &[u64; PERIOD_SAMPLES]) -> Duration {
+    let plausible = spacings
+        .iter()
+        .copied()
+        .filter(|ns| (2_000_000..=100_000_000).contains(ns));
+    match plausible.clone().count() >= 3 {
+        true => plausible.min().map_or(nominal, Duration::from_nanos),
+        false => nominal,
+    }
+}
 pub(crate) fn interval_for(refresh_hz: Option<f64>) -> Duration {
     refresh_hz
         .filter(|hz| hz.is_finite() && *hz >= 1.)
@@ -219,6 +242,10 @@ mod display_link {
         /// display's refresh period (ns): its refresh grid.
         refreshed: AtomicU64,
         period: AtomicU64,
+        /// The latest spacings between consecutive output times (ns), a ring
+        /// `refresh_period` reads, and where the next goes.
+        spacings: [AtomicU64; super::PERIOD_SAMPLES],
+        spaced: AtomicU64,
     }
     #[derive(Default)]
     struct Registry {
@@ -245,24 +272,43 @@ mod display_link {
         let display = context as usize as u32;
         let period = output.video_refresh_period.max(1) as f64;
         let scale = output.video_time_scale.max(1) as f64;
-        let interval = Duration::from_secs_f64(period / scale);
+        let nominal = Duration::from_secs_f64(period / scale);
         let index = (output.video_time as f64 / period).round().max(0.) as u64;
         // SAFETY: reads the monotonic host clock.
         let host_now = unsafe { mach_absolute_time() };
         let ahead = nanos(output.host_time as i128 - host_now as i128).clamp(0, 1_000_000_000);
-        let frame = Frame {
-            index,
-            time: Instant::now() + Duration::from_nanos(ahead as u64),
-            interval,
-        };
-        let refresh = scale / period;
         let guard = registry();
         let Some(entry) = guard.as_ref().and_then(|r| r.displays.get(&display)) else {
             return 0;
         };
         // The output time: exactly on the display's refresh grid (the
-        // callback's `now`, when it runs, wanders by up to 2 ms).
-        entry.refreshed.store(output.host_time, Ordering::Release);
+        // callback's `now`, when it runs, wanders by up to 2 ms). Its spacing
+        // from the last is the display's period, whatever mode it reports.
+        let previous = entry.refreshed.swap(output.host_time, Ordering::AcqRel);
+        if previous != 0 && output.host_time > previous {
+            let at = entry.spaced.fetch_add(1, Ordering::Relaxed) as usize % super::PERIOD_SAMPLES;
+            let spacing =
+                nanos(output.host_time as i128 - previous as i128).clamp(0, u64::MAX as i128);
+            entry.spacings[at].store(spacing as u64, Ordering::Relaxed);
+        }
+        let spacings = std::array::from_fn(|at| entry.spacings[at].load(Ordering::Relaxed));
+        let interval = super::refresh_period(nominal, &spacings);
+        // Refreshes counted on the measured grid where the nominal period
+        // is another: video time in nominal periods would repeat an index
+        // (two refreshes to one), and the frame clock resolves each once.
+        let off = (interval.as_secs_f64() / nominal.as_secs_f64() - 1.).abs() > 0.01;
+        let index = match off {
+            true => {
+                (nanos(output.host_time as i128) as f64 / interval.as_nanos() as f64).round() as u64
+            }
+            false => index,
+        };
+        let frame = Frame {
+            index,
+            time: Instant::now() + Duration::from_nanos(ahead as u64),
+            interval,
+        };
+        let refresh = 1. / interval.as_secs_f64();
         entry
             .period
             .store(interval.as_nanos() as u64, Ordering::Release);
@@ -342,6 +388,8 @@ mod display_link {
             subscribers: Vec::new(),
             refreshed: AtomicU64::new(0),
             period: AtomicU64::new(0),
+            spacings: Default::default(),
+            spaced: AtomicU64::new(0),
         });
         true
     }
@@ -876,6 +924,41 @@ mod compositor_clock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_refresh_period_is_what_the_link_delivers_not_what_the_mode_says() {
+        let (fast, slow) = (8_333_333_u64, 16_666_667_u64);
+        let nominal = Duration::from_nanos(slow);
+        let mut spacings = [0; PERIOD_SAMPLES];
+        // Until three spacings are known, the link's nominal period.
+        for at in 0..2 {
+            spacings[at] = fast;
+            assert_eq!(refresh_period(nominal, &spacings), nominal);
+        }
+        // A 60 Hz mode read on a panel refreshing at 120 Hz: the panel's.
+        spacings[2] = fast;
+        assert_eq!(
+            refresh_period(nominal, &spacings),
+            Duration::from_nanos(fast)
+        );
+        // A missed callback (two refreshes apart) changes nothing.
+        spacings[3] = 2 * fast;
+        assert_eq!(
+            refresh_period(nominal, &spacings),
+            Duration::from_nanos(fast)
+        );
+        // Spacings no refresh has (a pause, a stalled callback) are ignored.
+        let paused = [0, 900_000_000, 1_000, 0, 0, 0, 0, 0];
+        assert_eq!(refresh_period(nominal, &paused), nominal);
+        // A display that switches to 60 Hz is followed once its ring turns over.
+        let mut switched = [fast; PERIOD_SAMPLES];
+        for at in 0..PERIOD_SAMPLES {
+            switched[at] = slow;
+            let period = refresh_period(Duration::from_nanos(slow), &switched);
+            let expect = if at + 1 == PERIOD_SAMPLES { slow } else { fast };
+            assert_eq!(period, Duration::from_nanos(expect), "{at}");
+        }
+    }
 
     #[test]
     fn timer_ticks_on_a_fixed_grid_after_late_wakeups() {
