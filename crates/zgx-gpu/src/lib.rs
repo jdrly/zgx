@@ -2911,13 +2911,10 @@ impl GpuRenderer {
         };
         if self.scale != scale {
             self.flush_pending();
-            self.release_atlas_cells();
+            self.recycle_atlas();
             self.scale = scale;
             self.layers.clear();
             self.shapes.clear();
-            self.entries.clear();
-            self.atlas_epoch = self.atlas_epoch.wrapping_add(1);
-            self.cursor = (0, 0, 0);
             self.fresh = true;
         }
     }
@@ -4578,11 +4575,7 @@ impl GpuRenderer {
             if thrashing && self.atlas_size < MAX_ATLAS && self.entries.len() < 8192 {
                 self.reset_atlas((self.atlas_size * 2).min(MAX_ATLAS));
             } else {
-                self.release_atlas_cells();
-                self.entries.clear();
-                self.image_cells.clear();
-                self.atlas_epoch = self.atlas_epoch.wrapping_add(1);
-                self.cursor = (0, 0, 0);
+                self.recycle_atlas();
             }
             self.atlas_recycled_at = self.frame;
         }
@@ -7490,6 +7483,18 @@ impl GpuRenderer {
         if cfg!(target_os = "macos") && self.mapped.is_some() {
             let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         }
+    }
+    /// Start the glyph atlas over in place: every glyph and icon cell
+    /// (`entries`, `image_cells`) given up together, so the next to take a
+    /// cell never draws over one still listed. (A scale change once kept
+    /// the icons' cells: back at a scale, an icon drew the glyphs written
+    /// over it meanwhile.)
+    fn recycle_atlas(&mut self) {
+        self.release_atlas_cells();
+        self.entries.clear();
+        self.image_cells.clear();
+        self.atlas_epoch = self.atlas_epoch.wrapping_add(1);
+        self.cursor = (0, 0, 0);
     }
     fn reset_atlas(&mut self, size: u32) {
         self.atlas = sampled_texture(&self.device, self.unified, size, size, "glyph atlas");
