@@ -1825,11 +1825,7 @@ impl GpuContext {
             // glass windows), where a window's own swap chain is opaque.
             descriptor.backend_options.dx12.presentation_system =
                 wgpu::Dx12SwapchainKind::DxgiFromVisual;
-            // zgx draws nothing indirect; the validation would compile a compute
-            // shader while creating the device, a few milliseconds of startup.
-            descriptor
-                .flags
-                .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+            descriptor.flags = instance_flags(descriptor.flags, !cfg!(debug_assertions));
             // EGL draws to the window's display, which it must be given.
             if backends == wgpu::Backends::GL
                 && let Some(window) = &window
@@ -10169,6 +10165,40 @@ mod texel_upload_tests {
         }
     }
 }
+/// wgpu's instance flags for the build, as zgx sets them: no indirect-call
+/// validation (zgx draws nothing indirect; it would compile a compute shader
+/// while creating the device, a few milliseconds of startup), and in release
+/// builds no names for the driver. wgpu names every command list and object
+/// it makes otherwise, several a frame (Direct3D 12's `SetName`: 16 K cycles
+/// a frame of `animation_workload` on Windows). `WGPU_DISCARD_HAL_LABELS=0`
+/// brings them back for a capture (`with_env`, applied after).
+fn instance_flags(build: wgpu::InstanceFlags, release: bool) -> wgpu::InstanceFlags {
+    let mut flags = build - wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL;
+    flags.set(wgpu::InstanceFlags::DISCARD_HAL_LABELS, release);
+    flags
+}
+
+#[cfg(test)]
+mod instance_flags_tests {
+    use super::instance_flags;
+    use wgpu::InstanceFlags as F;
+
+    #[test]
+    fn release_builds_give_the_driver_no_names() {
+        for build in [F::from_build_config(), F::debugging(), F::empty()] {
+            let release = instance_flags(build, true);
+            assert!(release.contains(F::DISCARD_HAL_LABELS));
+            assert!(!release.contains(F::VALIDATION_INDIRECT_CALL));
+            let debug = instance_flags(build, false);
+            assert!(!debug.contains(F::DISCARD_HAL_LABELS));
+            assert!(!debug.contains(F::VALIDATION_INDIRECT_CALL));
+            // Everything else is wgpu's for the build.
+            let rest = !(F::DISCARD_HAL_LABELS | F::VALIDATION_INDIRECT_CALL);
+            assert_eq!(release & rest, build & rest);
+        }
+    }
+}
+
 #[cfg(test)]
 mod keep_room_tests {
     use super::keep_room;

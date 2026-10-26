@@ -128,6 +128,12 @@ On this machine:
 - **At rest, Direct3D 12 keeps two of NVIDIA's driver threads busy** (about
   1.2 M cycles a second, `windows_idle_probe.py`); Direct3D 11 does not.
 
+Release builds give the driver no object names (wgpu's
+`DISCARD_HAL_LABELS`): wgpu would otherwise name every command list it
+opens, five a frame, at about 3 K cycles each. A capture in PIX or RenderDoc
+reads better with them: set `WGPU_DISCARD_HAL_LABELS=0` to keep them in a
+release build. Debug builds keep them.
+
 A direct Direct3D 11 renderer, with the driver's threading off, would save
 about 0.48 M cycles a frame, 44 MiB and the driver's threads at rest on this
 machine; a direct Direct3D 12 one, about 0.19 M cycles and no memory. (Measured
