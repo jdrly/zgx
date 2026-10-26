@@ -71,7 +71,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/perf'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 import preflight  # noqa: E402
-from staging import CWD, stage  # noqa: E402
+from staging import CWD, clean_env, stage  # noqa: E402
 REQUESTED, WARMUP, SAMPLED, INTERVAL = 20, 5, 15, 0.05
 # Idle is sampled 20-35 s after launch, five times: until the Metal driver
 # gives back the memory it holds for any process that used the GPU lately
@@ -242,11 +242,16 @@ def environment():
 
 
 def launch(binary, mode, seconds, log):
+    # A dialog that appeared since the preflight would sit over this window:
+    # stop rather than measure under it (never clicked).
+    found = preflight.dialogs()
+    if found:
+        raise SystemExit('a system dialog is on screen; stopping (not clicking it): ' + ' | '.join(found))
     # The variables under their names from before the rename too: a build
     # from before it reads only those, and would otherwise run its default
     # length against the sampler's window (each trial checks the length).
-    env = dict(os.environ, ZGX_MODE=mode, ZGX_SECONDS=str(seconds),
-               ZGUI_MODE=mode, ZGUI_SECONDS=str(seconds))  # rename-to-zgx: keep
+    env = clean_env(ZGX_MODE=mode, ZGX_SECONDS=str(seconds),
+                    ZGUI_MODE=mode, ZGUI_SECONDS=str(seconds))  # rename-to-zgx: keep
     if FONT.exists():
         # Staged beside the apps: nothing they read is under ~/Documents.
         env['ZGX_FONT_FILE'] = str(stage(FONT))

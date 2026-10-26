@@ -50,7 +50,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts')); sys.path.insert(0, str(ROOT / 'scripts/perf'))
-from staging import stage, CWD  # noqa: E402
+from staging import clean_env, stage, CWD  # noqa: E402
 
 DIR = Path(os.environ.get('ZGX_CELLS_DIR', '/tmp/zgx-cells'))
 SRC, BUILDS, OUT = DIR / 'src', DIR / 'builds', DIR / 'out'
@@ -127,8 +127,7 @@ def measure(spec):
     def binary(name, what):
         return str(stage(build_dir(spec, spec['cells'][name]) / what))
     def env_of(name, **extra):
-        return {'HOME': os.environ['HOME'], 'PATH': os.environ['PATH'], 'TMPDIR': os.environ.get('TMPDIR', '/tmp'),
-                **extra, **spec['cells'][name].get('env', {})}
+        return clean_env(**extra, **spec['cells'][name].get('env', {}))
     def front(pid):
         subprocess.run(['osascript', '-e', f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true'], capture_output=True)
     def sample(pid, delay, seconds):
