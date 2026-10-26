@@ -4028,6 +4028,7 @@ impl Host {
     /// the next refresh's report, and delivers nothing.
     #[cfg(target_os = "macos")]
     fn link_reported(&mut self) {
+        zgx_gpu::present_log::log(|| "link reported the grid (timer pacing)".to_string());
         if let Some(link) = &self.display_link {
             link.consumed();
         }
