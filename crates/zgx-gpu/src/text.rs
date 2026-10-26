@@ -2117,7 +2117,16 @@ pub fn rich_decorations_in<'a>(
             let mut spans: Vec<_> = line
                 .glyphs
                 .iter()
-                .filter(|g| g.metadata != usize::MAX && run_at(rich, start + g.start) == index)
+                .filter(|g| {
+                    g.metadata != usize::MAX && {
+                        let byte = start + g.start;
+                        // Runs cover the text in order (`RichText::new`): as
+                        // `run_at` has it, the last run also takes any
+                        // position past the end.
+                        byte >= run.range.start
+                            && (byte < run.range.end || index + 1 == rich.runs().len())
+                    }
+                })
                 .map(|g| (g.x, g.x + g.w))
                 .collect();
             spans.sort_by(|a, b| a.0.total_cmp(&b.0));
