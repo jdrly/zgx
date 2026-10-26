@@ -1676,6 +1676,16 @@ mod catch_up_tests {
         );
     }
 }
+/// Windows: the swap chain's buffers go before the chain they are of
+/// (`dxgi_present::Chain::release`).
+#[cfg(windows)]
+impl Drop for LayerPresent {
+    fn drop(&mut self) {
+        if let Some(chain) = &self.chain {
+            chain.release(self.buffers.drain(..).map(|(buffer, _)| buffer));
+        }
+    }
+}
 #[cfg(target_os = "macos")]
 impl LayerPresent {
     /// For `ZGX_PRESENT_LOG`: which plane this presents.
@@ -2888,9 +2898,10 @@ impl GpuRenderer {
             #[cfg(target_os = "macos")]
             layer_present: layer_presenting.then(LayerPresent::default),
             #[cfg(windows)]
-            layer_present: own_chain.map(|chain| LayerPresent {
-                chain: Some(chain),
-                ..Default::default()
+            layer_present: own_chain.map(|chain| {
+                let mut present = LayerPresent::default();
+                present.chain = Some(chain);
+                present
             }),
             #[cfg(target_os = "macos")]
             metal_frame: Default::default(),
@@ -3031,11 +3042,11 @@ impl GpuRenderer {
         if let Some(present) = &mut self.layer_present
             && let Some(chain) = present.chain.take()
         {
-            present.buffers.clear();
+            chain.release(present.buffers.drain(..).map(|(buffer, _)| buffer));
             present.shown = None;
             present.history.clear();
             // Only before the first frame, which draws it whole.
-            present.chain = Some(chain.remade(&self.device, true)?);
+            present.chain = Some(chain.remade(true)?);
             return Ok(());
         }
         // The old swap chain, and the window's composition target with it,
@@ -3149,11 +3160,11 @@ impl GpuRenderer {
         if let Some(present) = &mut self.layer_present
             && let Some(chain) = &mut present.chain
         {
-            present.buffers.clear();
+            chain.release(present.buffers.drain(..).map(|(buffer, _)| buffer));
             present.shown = None;
             present.history.clear();
             let resized = chain
-                .resize(&self.device, width, height)
+                .resize(width, height)
                 .and_then(|()| chain.buffers(&self.device, width, height));
             match resized {
                 Ok(buffers) => present.buffers = buffers.into_iter().map(|b| (b, None)).collect(),
@@ -8256,12 +8267,12 @@ impl GpuRenderer {
             self.view = self.target.create_view(&Default::default());
             self.target_copy_bind = None;
             let present = self.layer_present.as_mut().expect("presenting");
-            present.buffers.clear();
+            let chain = present.chain.as_mut().expect("a swap chain");
+            chain.release(present.buffers.drain(..).map(|(buffer, _)| buffer));
             present.shown = None;
             present.history.clear();
-            let chain = present.chain.as_mut().expect("a swap chain");
             if chain.buffers_made() {
-                chain.resize(&self.device, width, height)?;
+                chain.resize(width, height)?;
             }
             present.buffers = chain
                 .buffers(&self.device, width, height)?

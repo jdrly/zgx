@@ -66,6 +66,7 @@ pub(crate) struct Buffer {
 
 /// The window's swap chain and the composition visual showing it.
 pub(crate) struct Chain {
+    device: wgpu::Device,
     hwnd: HWND,
     swap_chain: IDXGISwapChain3,
     /// Signalled when a frame may start without queueing more than
@@ -147,6 +148,7 @@ impl Chain {
             target.SetRoot(&visual).map_err(|e| fail("SetRoot", e))?;
             dcomp.Commit().map_err(|e| fail("Commit", e))?;
             Ok(Self {
+                device: device.clone(),
                 hwnd,
                 swap_chain,
                 waitable,
@@ -159,7 +161,8 @@ impl Chain {
         }
     }
     /// The swap chain's buffers, `width` by `height`, wrapped as wgpu
-    /// textures. Drop them all before `resize` and with the chain.
+    /// textures. `release` them before `resize`, `remade` and the chain's
+    /// drop.
     pub fn buffers(
         &mut self,
         device: &wgpu::Device,
@@ -174,7 +177,7 @@ impl Chain {
         };
         for index in 0..BUFFERS {
             // SAFETY: A buffer of the swap chain, which outlives the wrapper:
-            // its owner drops the wrappers before `resize` and the chain.
+            // its owner releases the wrappers before `resize` and the chain.
             let resource: ID3D12Resource = unsafe { self.swap_chain.GetBuffer(index) }
                 .map_err(|e| GpuError(format!("swap chain buffer {index}: {e}")))?;
             // SAFETY: The swap chain made this texture in `FORMAT`, this size,
@@ -222,18 +225,23 @@ impl Chain {
     pub fn buffers_made(&self) -> bool {
         self.wrapped
     }
-    /// Resize the buffers, once every wrapper of them (`buffers`) is
-    /// dropped; take the new ones from `buffers`.
-    pub fn resize(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Result<(), GpuError> {
-        // wgpu releases a dropped texture's resource once the GPU is done
-        // with it.
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        // SAFETY: No reference to the old buffers remains (above).
+    /// Let go of `buffers`, the wrappers of this chain's buffers, before it
+    /// resizes or goes. Each is destroyed, its views and bind groups with
+    /// it, and freed once the GPU has finished with it, now: wgpu frees a
+    /// texture merely dropped at its next upkeep, which can come after the
+    /// swap chain went, and Direct3D (as Windows Server's is) raises an
+    /// exception that ends the process when a buffer is released after its
+    /// swap chain.
+    pub fn release(&self, buffers: impl IntoIterator<Item = Buffer>) {
+        for buffer in buffers {
+            buffer.texture.destroy();
+        }
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+    /// Resize the buffers, once every wrapper of them was `release`d; take
+    /// the new ones from `buffers`.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        // SAFETY: No reference to the old buffers remains (`release`).
         unsafe {
             self.swap_chain.ResizeBuffers(
                 BUFFERS,
@@ -298,16 +306,15 @@ impl Chain {
         Ok(result != DXGI_STATUS_OCCLUDED)
     }
     /// The chain made again, opaque unless `transparent`, the size it was,
-    /// once every wrapper of its buffers is dropped. The old one, and the
-    /// window's composition target with it, go first.
-    pub fn remade(self, device: &wgpu::Device, transparent: bool) -> Result<Self, GpuError> {
-        let hwnd = self.hwnd;
+    /// once every wrapper of its buffers was `release`d. The old one, and
+    /// the window's composition target with it, go first.
+    pub fn remade(self, transparent: bool) -> Result<Self, GpuError> {
+        let (device, hwnd) = (self.device.clone(), self.hwnd);
         // SAFETY: Reads the swap chain's description.
         let desc = unsafe { self.swap_chain.GetDesc1() }
             .map_err(|e| GpuError(format!("GetDesc1: {e}")))?;
         drop(self);
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        Self::new(device, hwnd, desc.Width, desc.Height, transparent)
+        Self::new(&device, hwnd, desc.Width, desc.Height, transparent)
     }
     /// For `ZGX_PRESENT_LOG`'s frame statistics.
     pub fn swap_chain(&self) -> &IDXGISwapChain3 {
