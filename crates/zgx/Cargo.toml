@@ -19,6 +19,7 @@ taffy = { package = "zgx-taffy", version = "=0.9.0", path = "../../vendor/taffy"
 stacker = "0.1.25"
 smallvec = "1.16"
 rustc-hash = "2.1"
+foldhash = { version = "0.2", default-features = false }
 
 [features]
 # `ZGX_PROFILE=1` also times styles and text within their phases: a check

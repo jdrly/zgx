@@ -1826,7 +1826,8 @@ pub fn keyed<K: Eq + std::hash::Hash + Clone + 'static>(
     View::new(Kind::Region(Box::new(move |ui, root, environment| {
         let weak = ui.downgrade();
         let runtime = ui.runtime.clone();
-        let mut entries: HashMap<K, NodeId> = HashMap::new();
+        let mut entries: HashMap<K, NodeId, crate::KeyHasher> =
+            HashMap::with_hasher(crate::key_hasher());
         // The last pass's keys and their children, in order.
         let mut last: (Vec<K>, Vec<NodeId>) = (Vec::new(), Vec::new());
         ui.bind(root, move || {
@@ -1842,7 +1843,11 @@ pub fn keyed<K: Eq + std::hash::Hash + Clone + 'static>(
                     return;
                 }
             }
-            let unique: std::collections::HashSet<_> = keys.iter().collect();
+            let mut unique = std::collections::HashSet::with_capacity_and_hasher(
+                keys.len(),
+                crate::key_hasher(),
+            );
+            unique.extend(keys.iter());
             assert_eq!(unique.len(), keys.len(), "duplicate component child key");
             let Some(mut ui) = weak.upgrade() else {
                 return;
@@ -1870,14 +1875,28 @@ pub fn keyed<K: Eq + std::hash::Hash + Clone + 'static>(
                     added.push((key.clone(), node));
                 }
                 entries.extend(added);
-                entries.retain(|key, node| {
-                    if unique.contains(key) {
-                        true
-                    } else {
-                        ui.remove(*node);
-                        false
+                // Every key shown now is held: only more than that left.
+                // Those go in the order they were in, the same every run (a
+                // map's iteration is not), as what their removal repaints
+                // follows it.
+                if entries.len() > unique.len() {
+                    for key in &last.0 {
+                        if !unique.contains(key)
+                            && let Some(node) = entries.remove(key)
+                        {
+                            ui.remove(node);
+                        }
                     }
-                });
+                    // Any not in the last order (left by a pass that did not finish).
+                    entries.retain(|key, node| {
+                        if unique.contains(key) {
+                            true
+                        } else {
+                            ui.remove(*node);
+                            false
+                        }
+                    });
+                }
                 let order: Vec<_> = keys.iter().map(|key| entries[key]).collect();
                 assert!(ui.scene.borrow_mut().reorder_children(root, &order));
                 transaction.commit();

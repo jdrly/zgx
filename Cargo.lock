@@ -4411,6 +4411,7 @@ dependencies = [
 name = "zgx"
 version = "0.1.2"
 dependencies = [
+ "foldhash 0.2.0",
  "objc2-core-foundation",
  "objc2-core-video",
  "rustc-hash 2.1.3",
