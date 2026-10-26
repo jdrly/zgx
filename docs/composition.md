@@ -926,6 +926,11 @@ means, as ARIA's attributes do in HTML; a view that sets none pays nothing:
   arrows along the axis, Home and End move among them. A field inside keeps its
   arrows. `ListBox` is vertical and `Toolbar` and `TabList` horizontal without
   asking, and a virtual list with `keyboard_navigation(true)` is one stop too.
+  A `ListBox` also takes typing, jumping to the next option whose name starts
+  with what was typed (letters within 750 ms build a prefix, the same letter
+  again cycles), and Page Up and Page Down move a page of its options, as a
+  browser's list box and AppKit's tables do; so does a keyboard virtual list,
+  reading rows it has not mounted by their `row_text`.
   A `RadioGroup` (`radio_group`, Luau `role = "radiogroup"`) takes every arrow,
   and they choose the radio they move to, wrapping at the ends, as a browser's
   and AppKit's radio buttons do; Tab lands on the checked one.

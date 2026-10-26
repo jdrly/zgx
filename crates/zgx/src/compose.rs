@@ -5390,6 +5390,9 @@ fn apply_accessibility(ui: &mut Ui, root: NodeId, accessibility: Accessibility, 
             ui.input.set_group_current(&ui.scene.borrow(), member);
         }
     }
+    if role == Some(Role::ListBox) {
+        crate::typeahead::mount_list_box(ui, root);
+    }
     {
         let mut semantics = ui.semantics.borrow_mut();
         if semantics.get(root).is_none() {

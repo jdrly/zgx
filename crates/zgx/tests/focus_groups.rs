@@ -278,3 +278,61 @@ fn a_radio_group_is_one_tab_stop_and_its_arrows_choose_wrapping() {
     });
     assert_eq!(size.get(), "s");
 }
+
+#[test]
+fn typing_in_a_list_box_jumps_by_name_and_page_keys_move_a_page() {
+    let mut ui = Ui::new(500., 300.);
+    let names = [
+        "Apple",
+        "Banana",
+        "Blueberry",
+        "Cherry",
+        "Date",
+        "Fig",
+        "Grape",
+        "Kiwi",
+    ];
+    let mut list = column().role(Role::ListBox);
+    for name in names {
+        list = list.child(
+            row()
+                .id(name)
+                .h(20.)
+                .shrink_0()
+                .role(Role::ListBoxOption)
+                .on_click(|| {})
+                .child(text(name)),
+        );
+    }
+    let offset = ui.signal(0_f32);
+    let view = ui.mount(column().child(scroll(offset).h(60.).child(list)));
+    ui.prepare_frame();
+    let focused = |ui: &Ui| {
+        let id = ui.input.focused()?;
+        names.into_iter().find(|name| view.find(name) == Some(id))
+    };
+    ui.input.focus(&ui.scene, view.find("Apple"));
+    let typed = |ui: &mut Ui, text: &str| {
+        ui.dispatch(InputEvent::KeyDown {
+            key: Key::Character(text.into()),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    };
+    typed(&mut ui, "b");
+    assert_eq!(focused(&ui), Some("Banana"));
+    typed(&mut ui, "l");
+    assert_eq!(focused(&ui), Some("Blueberry"), "bl");
+    // A page: as much as its 60-point scroll view shows (three options),
+    // as a browser's list box goes to the last one showing, then on.
+    ui.input.focus(&ui.scene, view.find("Apple"));
+    press(&mut ui, Key::PageDown, false);
+    ui.prepare_frame();
+    assert_eq!(focused(&ui), Some("Blueberry"));
+    press(&mut ui, Key::PageDown, false);
+    ui.prepare_frame();
+    assert_eq!(focused(&ui), Some("Date"));
+    press(&mut ui, Key::PageUp, false);
+    ui.prepare_frame();
+    assert_eq!(focused(&ui), Some("Blueberry"));
+}

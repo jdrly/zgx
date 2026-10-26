@@ -39,6 +39,7 @@ pub mod rich_text;
 mod scroll_keys;
 pub mod selection;
 pub mod text_layout;
+mod typeahead;
 
 pub mod affine;
 pub mod background;

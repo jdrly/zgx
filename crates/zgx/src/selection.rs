@@ -223,6 +223,9 @@ pub(crate) struct State {
     /// Virtual lists' row text for copying rows they have not mounted
     /// (`View::row_text`), by the node holding their rows.
     row_texts: HashMap<NodeId, RowText>,
+    /// Every virtual list's row text, selectable or not, by the list: what
+    /// typing jumps to and find searches in rows it has not mounted.
+    list_texts: HashMap<NodeId, RowText>,
     /// Where the anchor and the focus lie in virtual lists, if they do.
     anchor_row: Option<RowAddress>,
     focus_row: Option<RowAddress>,
@@ -253,40 +256,50 @@ pub(crate) type RowText = Rc<dyn Fn(usize) -> Option<String>>;
 /// Removes a virtual list's row text once it is unmounted.
 struct RowTextGuard {
     ui: WeakUi,
-    content: NodeId,
+    root: NodeId,
+    content: Option<NodeId>,
 }
 impl Drop for RowTextGuard {
     fn drop(&mut self) {
         if let Some(ui) = self.ui.upgrade()
             && let Ok(mut state) = ui.selection_state().try_borrow_mut()
         {
-            state.row_texts.remove(&self.content);
+            state.list_texts.remove(&self.root);
+            if let Some(content) = self.content {
+                state.row_texts.remove(&content);
+            }
         }
     }
+}
+
+/// Virtual list `root`'s row text (`View::row_text`), if it has one.
+pub(crate) fn list_row_text(ui: &Ui, root: NodeId) -> Option<RowText> {
+    ui.selection_state().borrow().list_texts.get(&root).cloned()
 }
 
 /// The virtual list at `root` copies the rows a selection spans and it has
 /// not mounted from `text` (`View::row_text`).
 pub(crate) fn mount_row_text(ui: &mut Ui, root: NodeId, text: RowText) {
-    // Only a selection copies it.
-    if !ui.scene.borrow().is_selectable(root) {
-        return;
-    }
-    // Its rows' parent: the list's content, in its viewport.
+    // Its rows' parent: the list's content, in its viewport; only a
+    // selection copies it.
     let content = {
         let scene = ui.scene.borrow();
         let viewport = scene.children(root).first().copied();
-        viewport.and_then(|viewport| scene.children(viewport).first().copied())
+        viewport
+            .and_then(|viewport| scene.children(viewport).first().copied())
+            .filter(|_| scene.is_selectable(root))
     };
-    let Some(content) = content else {
-        return;
-    };
-    ui.selection_state()
-        .borrow_mut()
-        .row_texts
-        .insert(content, text);
+    {
+        let state = ui.selection_state();
+        let mut state = state.borrow_mut();
+        state.list_texts.insert(root, text.clone());
+        if let Some(content) = content {
+            state.row_texts.insert(content, text);
+        }
+    }
     let guard = RowTextGuard {
         ui: ui.downgrade(),
+        root,
         content,
     };
     ui.retain(root, guard);

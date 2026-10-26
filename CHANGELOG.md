@@ -7,6 +7,7 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 ### Added
 
 - `radio(label, selected, value)` and `radio_group(label)`: radio buttons as a browser's and AppKit's, one Tab stop per group landing on the checked one, the arrows (all four) moving and choosing, wrapping at the ends. Any `Role::RadioGroup` (Luau `role = "radiogroup"`, `segmented`) is such a group now; its arrows stopped at the ends and chose nothing.
+- Typing in a list box (`Role::ListBox`, Luau `role = "listbox"`) or a keyboard virtual list (`keyboard_navigation`, Luau `keyboard = true`) jumps to the next option or row whose text starts with what was typed, as a browser's list box and AppKit's tables do: rows not mounted by their `row_text`, without mounting them. A list box's Page Up and Page Down move a page of its options.
 
 ### Changed
 
