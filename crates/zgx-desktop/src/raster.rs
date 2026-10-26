@@ -158,6 +158,21 @@ impl Raster {
                     if item.effects.blur_radius > 0. {
                         self.blur(visible, item.effects.blur_radius.ceil().min(64.) as usize);
                     }
+                    // Find's marks, under the selection.
+                    for mark in scene.text_marks(item.id) {
+                        let rect = Rect::new(
+                            item.bounds.x + mark.rect.x,
+                            item.bounds.y + mark.rect.y,
+                            mark.rect.width,
+                            mark.rect.height,
+                        );
+                        let style = zgx::scene::QuadStyle {
+                            fill: tint(mark.color, item.color()),
+                            radius: 2.,
+                            ..Default::default()
+                        };
+                        self.quad(item.id, rect, clip, style, item.effects);
+                    }
                     // A text selection, under the glyphs, and what recolours them.
                     if let Some(highlight) = scene.text_highlight(item.id) {
                         for r in &highlight.rects {

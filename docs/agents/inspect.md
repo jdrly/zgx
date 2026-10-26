@@ -42,6 +42,16 @@ zgx inspect errors                    # the script error, type errors, lint find
 zgx inspect lint                      # zgx lint over the app's scripts: file:line:col rule message
 zgx inspect frames 5                  # the last frames: where their time went, what ran and why
 zgx inspect snapshot '#messages' --out list.png   # what it looks like, as the window last drew it
+zgx inspect search "overflow"         # find in page: the count, the current match, the first five
+zgx inspect search --next             # the window's find steps on; --prev back, --all every match, --close
+```
+
+`search` is the window's find in page (Command-F), as a user's: case and accents ignored, over all the window's text, fields' values and virtual lists' rows they have not mounted (counted whole before it answers, for at most 2 s; `+` after the count if not done). It answers how many, which is current, and the first five (`--all`, every one; `n` as JSON), each where it is (`@node`, or a list's `@node row 1500`), its range and the text around it (`…[match]…`), and its box while it shows. The window's bar shows the same, its marks too:
+
+```text
+6 matches for "cafe", 1 current
+* 1 @12 [Café] one
+  2 @14 [cafe] two
 ```
 
 `frames` is where each frame's time went and why the app did what it did: the frame's time, the states written (named ones by name, the rest counted) and the runs they caused with their total; then its phases, the costliest first (each counted once, with its instructions where the platform counts them); then the costliest runs, each with its time, what it is and the state that queued it:
@@ -97,7 +107,7 @@ The answer comes once the tape and what follows it (springing back from an edge)
 
 ## As MCP tools
 
-`zgx inspect mcp` serves the same commands as MCP tools on stdio (`zgx_tree`, `zgx_node`, `zgx_find`, `zgx_state`, `zgx_set_state`, `zgx_click`, `zgx_type`, `zgx_key`, `zgx_scroll`, `zgx_command`, `zgx_errors`, `zgx_lint`, `zgx_frames`, `zgx_snapshot`, `zgx_record`, `zgx_replay`, `zgx_wait`, `zgx_sleep`, `zgx_apps`), each answering the text the CLI prints, with `isError` when it failed. Every tool takes an optional `app` (a pid) for when several apps run.
+`zgx inspect mcp` serves the same commands as MCP tools on stdio (`zgx_tree`, `zgx_node`, `zgx_find`, `zgx_state`, `zgx_set_state`, `zgx_click`, `zgx_type`, `zgx_key`, `zgx_scroll`, `zgx_command`, `zgx_errors`, `zgx_lint`, `zgx_frames`, `zgx_search`, `zgx_snapshot`, `zgx_record`, `zgx_replay`, `zgx_wait`, `zgx_sleep`, `zgx_apps`), each answering the text the CLI prints, with `isError` when it failed. Every tool takes an optional `app` (a pid) for when several apps run.
 
 ```sh
 claude mcp add zgx -- zgx inspect mcp      # Claude Code; any MCP client runs the same command

@@ -6,6 +6,9 @@ zgx is on crates.io from 0.1.0 (`zgx = "0.1"`); this lists what changed for apps
 
 ### Added
 
+- **Find in page**: Command-F (Control-F elsewhere) opens a find bar at the window's top right, as a browser's: matches across all the window's text, fields and virtual lists' rows (those not mounted too), case and accents ignored, marked behind the text (theme tokens `find.match`, `find.current`), Enter and Command-G (Control-G, F3) stepping, Escape closing with the match selected. `zgx inspect search` (MCP `zgx_search`) answers it for agents. An app whose keymap or menu binds Command-F keeps its own.
+  - *Opt out:* `Ui::set_find_in_page(false)` (Rust; a Luau setting follows).
+
 - `radio(label, selected, value)` and `radio_group(label)`: radio buttons as a browser's and AppKit's, one Tab stop per group landing on the checked one, the arrows (all four) moving and choosing, wrapping at the ends. Any `Role::RadioGroup` (Luau `role = "radiogroup"`, `segmented`) is such a group now; its arrows stopped at the ends and chose nothing.
 - Typing in a list box (`Role::ListBox`, Luau `role = "listbox"`) or a keyboard virtual list (`keyboard_navigation`, Luau `keyboard = true`) jumps to the next option or row whose text starts with what was typed, as a browser's list box and AppKit's tables do: rows not mounted by their `row_text`, without mounting them. A list box's Page Up and Page Down move a page of its options.
 

@@ -344,6 +344,10 @@ impl EditorHandle {
     pub fn set_select_on_focus(&self, select: bool) {
         self.hint.select_on_focus.set(select);
     }
+    /// Whether it is a password's (`set_secure`).
+    pub(crate) fn is_secure(&self) -> bool {
+        self.hint.secure.get()
+    }
     /// A password field: its text shows as a bullet per character (each in
     /// that character's place, so carets and selections work), and copying
     /// or cutting it gives nothing.
@@ -595,7 +599,7 @@ pub struct Ui {
     pub input: InputDispatcher,
     /// The accessibility tree hosts project to the platform.
     pub semantics: Rc<RefCell<Semantics>>,
-    storage: Rc<UiStorage>,
+    pub(crate) storage: Rc<UiStorage>,
 }
 // One focused-editor snapshot per document. Large or unaccounted custom layouts
 // remain usable but are never retained by this reuse entry.
@@ -957,6 +961,12 @@ pub(crate) struct UiStorage {
     selection: RefCell<crate::selection::State>,
     /// Virtual lists' scroll-to-row requests, by list (`NodeHandle::scroll_to_row`).
     list_reveals: RefCell<std::collections::HashMap<NodeId, Signal<crate::compose::RowReveal>>>,
+    /// Find in page, while open (`find`).
+    pub(crate) find: RefCell<Option<crate::find::Session>>,
+    /// The app turned find in page off.
+    pub(crate) find_off: Cell<bool>,
+    /// Virtual lists' rows' indices from their places, by list.
+    pub(crate) list_rows: RefCell<std::collections::HashMap<NodeId, crate::find::RowIndex>>,
     /// What the last primary press went to: the keyboard scrolls the scroll
     /// view around it (`scroll_keys`).
     last_pressed: Cell<Option<NodeId>>,
@@ -1172,6 +1182,9 @@ impl Ui {
             primary_paste_on: Cell::new(true),
             selection: Default::default(),
             list_reveals: Default::default(),
+            find: RefCell::new(None),
+            find_off: Cell::new(false),
+            list_rows: Default::default(),
             last_pressed: Cell::new(None),
             elastic: Default::default(),
             scrollbar_fades: RefCell::new(Vec::new()),
@@ -1264,6 +1277,13 @@ impl Ui {
         }
         self.selection_after_dispatch(selection, result);
         self.scroll_after_dispatch(scroll, result);
+    }
+    /// After the document had key `event`: find in page's keys, if nothing
+    /// took it.
+    fn find_after_dispatch(&self, event: &InputEvent, result: &mut crate::input::DispatchResult) {
+        if crate::find::after_dispatch(self, event, result.default_prevented) {
+            result.default_prevented = true;
+        }
     }
     /// A handle that does not keep the document alive.
     pub fn downgrade(&self) -> WeakUi {
@@ -2364,6 +2384,18 @@ impl Ui {
     /// An error does not roll back application mutations; correct the dependency
     /// and call again. Native window hosts propagate this error to `Application::run`.
     pub fn try_prepare_frame(&self) -> Result<(), LayoutFeedbackError> {
+        if self.storage.preparing_frame.get() {
+            return Ok(());
+        }
+        self.prepare_frame_once()?;
+        // Find in page's marks where text mounted or moved, and what its
+        // bar asked for.
+        if self.storage.find.borrow().is_some() {
+            crate::find::sync(self);
+        }
+        Ok(())
+    }
+    fn prepare_frame_once(&self) -> Result<(), LayoutFeedbackError> {
         if self.storage.preparing_frame.replace(true) {
             return Ok(());
         }
@@ -2650,8 +2682,12 @@ impl Ui {
             event => event,
         };
         let scroll = (elastic && matches!(event, InputEvent::Scroll { .. })).then(|| event.clone());
+        let key = matches!(event, InputEvent::KeyDown { .. }).then(|| event.clone());
         let mut result = dispatch(self, event);
         self.after_dispatch(after, &mut result);
+        if let Some(key) = key {
+            self.find_after_dispatch(&key, &mut result);
+        }
         if let Some(event) = scroll {
             crate::elastic::after_scroll(self, &event, &result);
         }
@@ -2676,6 +2712,7 @@ impl Ui {
             crate::compose_scrollbar::next_fade(self),
             crate::elastic::next_step(self),
             crate::caret_blink::next(self),
+            crate::find::next_step(self),
         ]
         .into_iter()
         .flatten()
@@ -2741,6 +2778,13 @@ impl Ui {
         };
         // The focused editor's caret blinking.
         let keys = if crate::caret_blink::advance(self, now) {
+            self.try_prepare_frame()?;
+            true
+        } else {
+            keys
+        };
+        // Find in page counting a list's rows.
+        let keys = if crate::find::advance(self, now) {
             self.try_prepare_frame()?;
             true
         } else {

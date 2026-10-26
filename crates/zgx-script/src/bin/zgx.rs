@@ -189,6 +189,8 @@ ZGX_INSPECT_SOCKET=1): with one running, --app is not needed.
   snapshot <target> [--width PX] [--out file.png]
   record               record stop [--out gesture.tape]
   replay <target> <gesture.tape>         its pacing, through the window's input
+  search [query] [--next] [--prev] [--all] [--close]
+                       find in page: count, current, the first matches
   sleep <ms>           raw <json>
   help                 what the app answers
   mcp                  serve these as MCP tools on stdio, for agents
@@ -220,7 +222,9 @@ fn inspect(args: Vec<String>) -> ExitCode {
                 println!("{INSPECT_USAGE}");
                 return ExitCode::SUCCESS;
             }
-            "--all" | "--full" | "--gone" => flags.push((arg[2..].to_string(), None)),
+            "--all" | "--full" | "--gone" | "--next" | "--prev" | "--close" => {
+                flags.push((arg[2..].to_string(), None))
+            }
             "--out" => match args.next() {
                 Some(path) => out = Some(path),
                 None => {
@@ -294,6 +298,7 @@ fn inspect(args: Vec<String>) -> ExitCode {
         "state" => put("name", arg(1)),
         "sleep" => put("ms", arg(1)),
         "frames" => put("n", arg(1)),
+        "search" => put("query", arg(1)),
         "set" => {
             put("name", arg(1));
             match arg(2).map(|v| Value::from_json(&v).unwrap_or_else(|| Value::from(v.as_str()))) {
@@ -430,6 +435,19 @@ const TOOLS: &[Tool] = &[
         "find",
         &[("target", "string", true)],
         "Every node a target matches.",
+    ),
+    (
+        "zgx_search",
+        "search",
+        &[
+            ("query", "string", false),
+            ("next", "boolean", false),
+            ("prev", "boolean", false),
+            ("all", "boolean", false),
+            ("n", "number", false),
+            ("close", "boolean", false),
+        ],
+        "Find in page, as Cmd/Ctrl+F: case and accents ignored, all text including fields and virtual lists' unmounted rows. Answers the count, the current match and the first n (5; all with all): where each is (@node, or a list's row), its range, the text around it, its box if shown. next/prev step the current match in the window.",
     ),
     (
         "zgx_state",

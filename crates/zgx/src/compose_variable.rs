@@ -394,7 +394,12 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
             let mut discovery: Option<(usize, usize, usize)> = None;
             let mut handled_request = 0;
             // Scroll-to-row requests (`NodeHandle::scroll_to_row`).
-            let reveal = crate::compose::list_reveal(ui, root);
+            let rows = heights.clone();
+            let reveal = crate::compose::list_reveal(
+                ui,
+                root,
+                std::rc::Rc::new(move |y: f32| rows.index.borrow().row_at(y + 0.5)),
+            );
             let mut handled_reveal = 0;
             // A destination followed through measurement: the row, where it
             // shows, the position it was put at, the focus then, and whether

@@ -191,6 +191,8 @@ export type ColorToken =
 	| "$selection.inactive"
 	| "$selection.text"
 	| "$selection.text.inactive"
+	| "$find.match"
+	| "$find.current"
 export type NumberToken =
 	"$glass.blur"
 	| "$font.size.xs"
@@ -319,6 +321,8 @@ export type TokenName =
 	| "selection.text"
 	| "selection.text.inactive"
 	| "selection.radius"
+	| "find.match"
+	| "find.current"
 
 -- "#rgb", "#rrggbb", "#rrggbbaa", "rgb(…)", "rgba(…)", "hsl(…)", a few
 -- names, 0xrrggbb, or a colour token ("$text.secondary"; `ColorToken`

@@ -2092,16 +2092,26 @@ impl RowAlign {
 pub(crate) type RowReveal = (u64, usize, RowAlign);
 /// The list at `root` takes scroll-to-row requests (`NodeHandle::scroll_to_row`)
 /// on the signal this returns, while it is mounted.
-pub(crate) fn list_reveal(ui: &mut Ui, root: NodeId) -> Signal<RowReveal> {
+/// `row_index`: a mounted row's index from its place down the list's
+/// content (find in page tells its rows apart by it).
+pub(crate) fn list_reveal(
+    ui: &mut Ui,
+    root: NodeId,
+    row_index: crate::find::RowIndex,
+) -> Signal<RowReveal> {
     let reveal = ui.signal((0_u64, 0_usize, RowAlign::Nearest));
     ui.list_reveals().borrow_mut().insert(root, reveal.clone());
+    ui.storage.list_rows.borrow_mut().insert(root, row_index);
     struct Forget(WeakUi, NodeId);
     impl Drop for Forget {
         fn drop(&mut self) {
-            if let Some(ui) = self.0.upgrade()
-                && let Ok(mut reveals) = ui.list_reveals().try_borrow_mut()
-            {
-                reveals.remove(&self.1);
+            if let Some(ui) = self.0.upgrade() {
+                if let Ok(mut reveals) = ui.list_reveals().try_borrow_mut() {
+                    reveals.remove(&self.1);
+                }
+                if let Ok(mut rows) = ui.storage.list_rows.try_borrow_mut() {
+                    rows.remove(&self.1);
+                }
             }
         }
     }
@@ -2200,7 +2210,11 @@ pub fn virtual_list<K: Eq + std::hash::Hash + Clone + 'static>(
             let (mut keys, mut order) = (Vec::new(), Vec::new());
             let mut handled_request = 0;
             // Scroll-to-row requests (`NodeHandle::scroll_to_row`).
-            let reveal = list_reveal(ui, root);
+            let reveal = list_reveal(
+                ui,
+                root,
+                Rc::new(move |y: f32| Some((y / row_height).round().max(0.) as usize)),
+            );
             let mut handled_reveal = 0;
             ui.bind(root, move || {
                 let length = count();

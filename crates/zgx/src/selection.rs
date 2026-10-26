@@ -869,7 +869,7 @@ impl Ui {
         })
     }
     /// `id`'s layout as it paints, kept while a gesture moves over it.
-    fn selection_layout(&self, scene: &Scene, id: NodeId) -> Option<Rc<dyn TextLayout>> {
+    pub(crate) fn selection_layout(&self, scene: &Scene, id: NodeId) -> Option<Rc<dyn TextLayout>> {
         let source = Source::of(scene, id)?;
         let width = scene.layout_bounds(id).width;
         let revision = scene.text_shaper_revision();
@@ -2254,7 +2254,7 @@ fn shape(scene: &Scene, id: NodeId, width: f32) -> Option<Rc<dyn TextLayout>> {
     })
 }
 
-fn text_of(scene: &Scene, id: NodeId) -> Option<Arc<str>> {
+pub(crate) fn text_of(scene: &Scene, id: NodeId) -> Option<Arc<str>> {
     match scene.kind(id) {
         NodeKind::Text { text, .. } if !scene.font(id).masked => Some(text.clone()),
         NodeKind::RichText { text } => Some(text.text_arc()),

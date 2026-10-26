@@ -2436,6 +2436,10 @@ impl Scene {
     pub fn layout_bounds(&self, id: NodeId) -> Rect {
         self.node(id).bounds
     }
+    /// Whether `id` itself (not its ancestors) takes part in layout.
+    pub(crate) fn shown_in_layout(&self, id: NodeId) -> bool {
+        self.contains(id) && own_visible(&self.node(id).style)
+    }
     /// Visible allocation after ancestor opacity, clipping and viewport intersection.
     /// This does not attempt occlusion testing against overlapping siblings.
     /// Layout visibility excludes hidden/display-none nodes and their descendants.
@@ -9821,7 +9825,7 @@ mod nonfinite_transform_tests {
 mod advanced_layout;
 #[path = "scene_select.rs"]
 mod select;
-pub use select::{TextHighlight, TextLeaf};
+pub use select::{TextHighlight, TextLeaf, TextMark};
 #[path = "scene_view.rs"]
 mod view;
 pub use view::{CanvasView, GridFill, GridMark};

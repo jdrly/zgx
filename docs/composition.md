@@ -164,6 +164,23 @@ Some(text))` (`None` past its end) and it copies the rows out of view too, in
 order and whole, so select-all and copy on a long transcript copies all of
 it. Without `row_text`, nothing extra is kept, and only mounted rows copy.
 
+Find in page is the window's, as a browser's: Command-F (Control-F elsewhere)
+opens a bar at its top right, and what is typed there is found in all the
+window's text (text, rich text, fields' values, and virtual lists' rows,
+those not mounted by their `row_text`, else by building the row's description
+without mounting it), case and accents ignored as Chrome's and Safari's do
+("cafe" finds "Café", composed and decomposed forms alike, curly quotes as
+straight ones). Each match is marked behind its text (`find.match`), the
+current one apart (`find.current`) and scrolled into view; Enter and
+Command-G (Control-G, F3) go to the next, with Shift the one before,
+wrapping; Escape closes it, the match selected where the text is selectable.
+A long list's rows are counted a slice a frame (the bar says `+` until
+done), and nothing runs once they are, or while no find is open. A keymap or
+menu item binding the key keeps it (the code editor example's own find);
+`Ui::set_find_in_page(false)` turns it off. `Ui::find_text`, `find_next`,
+`find_status` and `find_results` do from code what the bar does, and `zgx
+inspect search` from an agent.
+
 A secondary press (a control-click on macOS) on selected text opens a menu
 with Copy and Select All, unless the region has a `context_menu` of its own;
 elsewhere the press goes on to an enclosing view's menu. Copy uses the

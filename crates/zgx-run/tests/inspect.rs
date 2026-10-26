@@ -353,3 +353,49 @@ fn a_tape_records_and_replays_through_the_host_saying_how_frames_were_paced() {
         })
     );
 }
+
+#[test]
+fn search_answers_the_count_the_current_match_and_the_first_few() {
+    let app = TestApp::new(|runtime| {
+        ScriptHost::inline(
+            runtime,
+            "app",
+            r#"return ui.column { ui.text { "Café one" }, ui.text { "cafe two" }, ui.text { "CAFE three" },
+    ui.text { "cafés four" }, ui.text { "café five" }, ui.text { "cafe six" }, ui.text { "nothing" } }"#,
+        )
+    });
+    let session = Session::new(&app.ui, app.handle.clone(), &app.host, None);
+    let answer = ask(&app, &session, r#"{"cmd":"search","query":"cafe"}"#);
+    let said = text(&answer);
+    assert!(
+        said.starts_with("6 matches for \"cafe\", 1 current"),
+        "{said}"
+    );
+    let data = answer.field("data").unwrap();
+    assert_eq!(data.field("count").and_then(Value::as_f64), Some(6.));
+    assert!(data.field("done").is_some_and(Value::truthy));
+    assert_eq!(data.field("current").and_then(Value::as_f64), Some(1.));
+    let Some(Value::List(matches)) = data.field("matches") else {
+        panic!("matches: {}", answer.to_json());
+    };
+    assert_eq!(matches.len(), 5, "the first five, by default");
+    assert_eq!(
+        matches[0].field("context").map(Value::to_string).as_deref(),
+        Some("[Café] one")
+    );
+    assert!(matches[0].field("rect").is_some(), "shown: its box");
+    // Every match, the next current in the window too.
+    let answer = ask(&app, &session, r#"{"cmd":"search","next":true,"all":true}"#);
+    let data = answer.field("data").unwrap();
+    assert_eq!(data.field("current").and_then(Value::as_f64), Some(2.));
+    let Some(Value::List(matches)) = data.field("matches") else {
+        panic!("matches");
+    };
+    assert_eq!(matches.len(), 6);
+    assert_eq!(app.ui.find_status().current, Some(1));
+    text(&ask(&app, &session, r#"{"cmd":"search","close":true}"#));
+    assert!(!app.ui.find_status().open);
+    // Nothing open, no query: says so.
+    let said = error(&ask(&app, &session, r#"{"cmd":"search"}"#));
+    assert!(said.contains("query"), "{said}");
+}

@@ -1120,6 +1120,44 @@ mod dynamic_tests {
         view.unmount();
     }
     #[test]
+    fn an_apps_find_shortcut_keeps_it_from_find_in_page() {
+        let mut ui = Ui::new(400., 300.);
+        let root = ui.scene.borrow().root();
+        let output = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fallback = output.clone();
+        let _listener = ui.input.listen(root, move |event| {
+            if event.phase != EventPhase::Capture
+                && let InputEvent::Action(action) = &event.event
+                && let Some(action) = action.downcast_ref::<MenuAction>()
+            {
+                fallback.borrow_mut().push(action.0.clone());
+                event.prevent_default();
+            }
+        });
+        // As the code editor example's Edit menu has it.
+        let model = vec![AppMenu::new(
+            "Edit",
+            [AppMenuEntry::item("Find…", "find")
+                .accelerator(MenuAccelerator::primary(Key::Character("f".into())))],
+        )];
+        let _binding = ui.input.bind_keys(root, keymap(&model));
+        let view = ui.mount(compose::column().child(compose::text("apple")));
+        ui.prepare_frame();
+        let command = Modifiers {
+            control: !cfg!(target_os = "macos"),
+            meta: cfg!(target_os = "macos"),
+            ..Default::default()
+        };
+        ui.dispatch(InputEvent::KeyDown {
+            key: Key::Character("f".into()),
+            modifiers: command,
+            repeat: false,
+        });
+        assert_eq!(*output.borrow(), ["find"], "the app's Find");
+        assert!(!ui.find_status().open, "not zgx's");
+        view.unmount();
+    }
+    #[test]
     fn replacement_unregisters_shortcuts_and_focused_action_can_override() {
         let mut ui = Ui::new(400., 300.);
         let root = ui.scene.borrow().root();

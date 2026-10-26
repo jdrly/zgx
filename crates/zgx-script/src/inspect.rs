@@ -177,6 +177,7 @@ const HELP: &str = "commands (one JSON object a line, `cmd` and its fields):
   errors                                         script error, type errors, lint, layout warnings
   lint                                           zgx lint over the app's scripts, file:line
   frames  [n=10]                                 the last frames that did anything: their phases, what ran and why
+  search  [query] [next] [prev] [all] [n=5] [close]  find in page: the count, the current match, the first n
   wait    target [text] [gone] [timeout_ms=3000] until it shows (the text), or is gone
   sleep   ms                                     let the app run
 targets: #id, \"label or text\", role:button, @12, row 3, [2], a >> b (inside)";
@@ -478,6 +479,26 @@ impl Session {
                     Value::Nil,
                 ))
             })(),
+            "search" => (|| {
+                let flag = |name: &str| field(name).is_some_and(|v| v.truthy());
+                if flag("close") {
+                    ui.close_find();
+                    return Ok(("find closed".to_string(), Value::Nil));
+                }
+                match text("query") {
+                    Some(query) => ui.find_text(&query),
+                    None if ui.find_status().open => {}
+                    None => return Err("search takes a `query` (no find is open)".to_string()),
+                }
+                ui.finish_find_count(std::time::Duration::from_secs(2));
+                if flag("next") {
+                    ui.find_next();
+                }
+                if flag("prev") {
+                    ui.find_previous();
+                }
+                Ok(self.search(&ui, flag("all"), number("n").map_or(5, |n| n as usize)))
+            })(),
             "frames" => Ok(self.frames(number("n").map_or(10, |n| n as usize))),
             "wait" => {
                 let session = self.clone();
@@ -551,6 +572,94 @@ impl Session {
 
     /// The last `n` frames that did anything: per frame, the states
     /// written and the effects they ran, each with its time.
+    /// Find in page's answer: how many matches, which is current, and the
+    /// first `n` (all with `all`), each where it is, its text around it and
+    /// its box if it shows.
+    fn search(&self, ui: &Ui, all: bool, n: usize) -> (String, Value) {
+        let status = ui.find_status();
+        let limit = if all { usize::MAX } else { n };
+        let mut found: Vec<(usize, zgx::find::Found)> =
+            ui.find_results(limit).into_iter().enumerate().collect();
+        if let Some(current) = status.current
+            && current >= found.len()
+            && let Some(at) = ui.find_results(current + 1).pop()
+        {
+            found.push((current, at));
+        }
+        let more = if status.done { "" } else { "+" };
+        let mut lines = vec![match status.current {
+            Some(c) => format!(
+                "{}{more} matches for {:?}, {} current",
+                status.count,
+                status.query,
+                c + 1
+            ),
+            None => format!("{}{more} matches for {:?}", status.count, status.query),
+        }];
+        let matches: Vec<Value> = found
+            .iter()
+            .map(|(i, f)| {
+                let (at, row) = match f.at {
+                    zgx::find::FoundAt::Text(node) | zgx::find::FoundAt::Editor(node) => {
+                        (format!("@{}", driver::number(node)), None)
+                    }
+                    zgx::find::FoundAt::Row { list, row } => {
+                        (format!("@{}", driver::number(list)), Some(row))
+                    }
+                };
+                let context = ui.find_context(f, 24);
+                let mark = if status.current == Some(*i) { "*" } else { " " };
+                let place = match row {
+                    Some(row) => format!("{at} row {row}"),
+                    None => at.clone(),
+                };
+                lines.push(format!("{mark} {} {place} {context}", i + 1));
+                let mut fields = vec![
+                    ("n", Value::Num((*i + 1) as f64)),
+                    ("at", Value::from(at.as_str())),
+                    (
+                        "range",
+                        Value::List(
+                            vec![
+                                Value::Num(f.range.start as f64),
+                                Value::Num(f.range.end as f64),
+                            ]
+                            .into(),
+                        ),
+                    ),
+                    ("context", Value::from(context.as_str())),
+                ];
+                if let Some(row) = row {
+                    fields.push(("row", Value::Num(row as f64)));
+                }
+                if let Some(r) = ui.find_rect(f) {
+                    fields.push((
+                        "rect",
+                        Value::List(
+                            [r.x, r.y, r.width, r.height]
+                                .map(|v| Value::Num(v.round() as f64))
+                                .to_vec()
+                                .into(),
+                        ),
+                    ));
+                }
+                Value::record(fields)
+            })
+            .collect();
+        let data = Value::record([
+            ("query", Value::from(status.query.as_str())),
+            ("count", Value::Num(status.count as f64)),
+            ("done", Value::Bool(status.done)),
+            (
+                "current",
+                status
+                    .current
+                    .map_or(Value::Nil, |c| Value::Num((c + 1) as f64)),
+            ),
+            ("matches", Value::List(matches.into())),
+        ]);
+        (lines.join("\n"), data)
+    }
     fn frames(&self, n: usize) -> (String, Value) {
         let names: std::collections::HashMap<usize, String> = self
             .0

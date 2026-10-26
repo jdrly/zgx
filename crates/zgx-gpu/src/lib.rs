@@ -29,6 +29,8 @@ mod upload;
 pub use font_cache::set_desktop_sans_serif;
 pub use surface::PresentationStatus;
 
+/// The corner radius of find's marks behind text.
+const MARK_RADIUS: f32 = 2.;
 const MAX_ATLAS: u32 = 2048;
 const INITIAL_ATLAS: u32 = 512;
 /// An atlas that fills again within this many frames of its last recycle
@@ -5482,6 +5484,26 @@ impl GpuRenderer {
                             && outer.x + outer.width >= bounds.x + bounds.width
                             && outer.y + outer.height >= bounds.y + bounds.height
                     };
+                    // Find's marks, under the selection: rounded a little,
+                    // as a browser's.
+                    quads.extend(scene.text_marks(item.id).iter().map(|m| {
+                        let rect = [
+                            bounds.x + m.rect.x,
+                            bounds.y + m.rect.y,
+                            m.rect.width,
+                            m.rect.height,
+                        ];
+                        Quad {
+                            rect,
+                            uv: [0.; 4],
+                            color: rgba(m.color, item.effects.opacity),
+                            fade: rect,
+                            options: [item.effects.edge_fade, 0., 0., 0.],
+                            shape: [MARK_RADIUS, 0., 0., 1.],
+                            border: [0.; 4],
+                            mask: NO_MASK,
+                        }
+                    }));
                     // A text selection, under the glyphs; rounded, its box
                     // rides in `fade`, as a rounded run background's does.
                     let highlight = scene.text_highlight(item.id);
