@@ -545,12 +545,11 @@ impl Scene {
                 if !kept {
                     crate::deep(0, || self.measure_hidden(child, hidden));
                 }
-                (child, Rect::default())
+                (child, Rect::default(), hidden)
             })
             .collect::<Vec<_>>();
-        let asked = vec![Some(hidden); children.len()];
         let constraints = self.relevant(id, constraints);
-        self.store_measurement(id, constraints, (0., 0.), children, asked);
+        self.store_measurement(id, constraints, (0., 0.), children);
         (0., 0.)
     }
     pub(super) fn measure_advanced(
@@ -852,7 +851,6 @@ impl Scene {
             - root_layout.border.top
             - root_layout.border.bottom)
             .max(0.);
-        let mut asked = Vec::with_capacity(ids.len());
         let positions = ids
             .into_iter()
             .zip(children)
@@ -877,7 +875,6 @@ impl Scene {
                 } else {
                     self.measure(child, child_constraints);
                 }
-                asked.push(Some(child_constraints));
                 (
                     child,
                     Rect::new(
@@ -886,11 +883,12 @@ impl Scene {
                         child_layout.size.width,
                         child_layout.size.height,
                     ),
+                    child_constraints,
                 )
             })
             .collect();
         let size = (root_layout.size.width, root_layout.size.height);
-        self.store_measurement(id, constraints, size, positions, asked);
+        self.store_measurement(id, constraints, size, positions);
         self.node_mut(id).advanced_layout = Some(cache);
         size
     }

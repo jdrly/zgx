@@ -1407,14 +1407,14 @@ struct Constraints {
     force_width: Option<f32>,
     force_height: Option<f32>,
 }
+type ChildPlacement = (NodeId, Rect, Constraints);
 struct Measurement {
     constraints: Constraints,
     size: (f32, f32),
-    children: Vec<(NodeId, Rect)>,
-    /// The constraints each child was last measured with for this result. A
-    /// later probe (a flex basis, an intrinsic size) can leave a child holding
-    /// another result; `arrange` restores this one before placing it.
-    child_constraints: Vec<Option<Constraints>>,
+    /// Each child's place and the constraints that measured it. A later
+    /// probe can leave it holding another result; `arrange` restores this
+    /// one before placing it.
+    children: Vec<ChildPlacement>,
     /// Layout pass that produced this result. A dirty node may reuse only
     /// results from the pass in progress.
     pass: u64,
@@ -5628,15 +5628,13 @@ impl Scene {
         let pass = self.layout_pass;
         let node = self.node_mut(id);
         let stale = node.dirty & LAYOUT != 0;
-        let (mut children, mut child_constraints) = match &mut node.measurement {
-            Some(last) if layout.is_some() && stale && last.pass != pass => (
-                std::mem::take(&mut last.children),
-                std::mem::take(&mut last.child_constraints),
-            ),
-            _ => (Vec::new(), Vec::new()),
+        let mut children = match &mut node.measurement {
+            Some(last) if layout.is_some() && stale && last.pass != pass => {
+                std::mem::take(&mut last.children)
+            }
+            _ => Vec::new(),
         };
         children.clear();
-        child_constraints.clear();
         let (mut width, mut height) = match layout {
             None => self.leaf_size(id, &style, available_w),
             // An empty box (a bar, a swatch, a spacer): its padding and size,
@@ -6057,8 +6055,11 @@ impl Scene {
                             (cross + m.left, down + m.top)
                         }
                     };
-                    children.push((*child, Rect::new(cx + padding.left, cy + padding.top, w, h)));
-                    child_constraints.push(Some(kept[i]));
+                    children.push((
+                        *child,
+                        Rect::new(cx + padding.left, cy + padding.top, w, h),
+                        kept[i],
+                    ));
                     cursor += main(sizes[i]) + main_margin(s) + style.gap + extra_gap;
                 }
                 for &child in &absolute {
@@ -6071,10 +6072,10 @@ impl Scene {
                         ..Constraints::default()
                     };
                     let ((w, h), placed) = self.measure_kept(child, placed);
-                    child_constraints.push(Some(placed));
                     children.push((
                         child,
                         Rect::new(padding.left + margin.left, padding.top + margin.top, w, h),
+                        placed,
                     ));
                 }
                 self.scratch.push(Scratch {
@@ -6103,13 +6104,7 @@ impl Scene {
             style.min_height,
             style.max_height,
         );
-        self.store_measurement(
-            id,
-            constraints,
-            (width, height),
-            children,
-            child_constraints,
-        );
+        self.store_measurement(id, constraints, (width, height), children);
         (width, height)
     }
     /// An empty box whose size its style or constraints fix (a bar, a
@@ -6159,20 +6154,15 @@ impl Scene {
             last.size = size;
             last.pass = pass;
             last.children.clear();
-            last.child_constraints.clear();
             node.arrange_dirty = true;
             return Some(size);
         }
-        let (mut children, mut child_constraints) = match &mut node.measurement {
-            Some(last) if stale && last.pass != pass => (
-                std::mem::take(&mut last.children),
-                std::mem::take(&mut last.child_constraints),
-            ),
-            _ => (Vec::new(), Vec::new()),
+        let mut children = match &mut node.measurement {
+            Some(last) if stale && last.pass != pass => std::mem::take(&mut last.children),
+            _ => Vec::new(),
         };
         children.clear();
-        child_constraints.clear();
-        self.store_measurement(id, constraints, size, children, child_constraints);
+        self.store_measurement(id, constraints, size, children);
         Some(size)
     }
     /// A leaf's own size: its text's at `available_w` (when it wraps), its
@@ -6276,11 +6266,9 @@ impl Scene {
         let lead = *ids.last().unwrap();
         let size = self.measure(lead, constraints);
         let mut children = Vec::with_capacity(ids.len());
-        let mut asked = Vec::with_capacity(ids.len());
         for child in ids {
             if child == lead {
-                children.push((child, Rect::new(0., 0., size.0, size.1)));
-                asked.push(Some(constraints));
+                children.push((child, Rect::new(0., 0., size.0, size.1), constraints));
                 continue;
             }
             let margin = self.node(child).style.margin;
@@ -6292,22 +6280,18 @@ impl Scene {
                 ..Constraints::default()
             };
             let (w, h) = self.measure(child, within);
-            children.push((child, Rect::new(margin.left, margin.top, w, h)));
-            asked.push(Some(within));
+            children.push((child, Rect::new(margin.left, margin.top, w, h), within));
         }
-        self.store_measurement(id, constraints, size, children, asked);
+        self.store_measurement(id, constraints, size, children);
         size
     }
     /// Make a new result current, keeping earlier ones that are still valid.
-    /// `child_constraints`: what each child's place was measured under,
-    /// which `arrange` lays it out by again.
     fn store_measurement(
         &mut self,
         id: NodeId,
         constraints: Constraints,
         size: (f32, f32),
-        children: Vec<(NodeId, Rect)>,
-        child_constraints: Vec<Option<Constraints>>,
+        children: Vec<ChildPlacement>,
     ) {
         // `constraints` are as `measure` looks results up (`relevant`).
         let pass = self.layout_pass;
@@ -6352,7 +6336,6 @@ impl Scene {
             constraints,
             size,
             children,
-            child_constraints,
             pass,
         });
         if overfull {
@@ -6389,7 +6372,7 @@ impl Scene {
         if !arrange_dirty && node.bounds == bounds {
             return;
         }
-        let count = cache.children.len().min(cache.child_constraints.len());
+        let count = cache.children.len();
         let changed = node.bounds != bounds;
         if changed || arrange_dirty {
             report.layout_nodes += 1;
@@ -6432,8 +6415,7 @@ impl Scene {
         // node's result as it is.
         for at in 0..count {
             let cache = self.node(id).measurement.as_ref().unwrap();
-            let ((child, mut rect), constraints) =
-                (cache.children[at], cache.child_constraints[at]);
+            let (child, mut rect, constraints) = cache.children[at];
             // Right to left: laid out left to right, mirrored in its box.
             if rtl {
                 rect.x = bounds.width - rect.x - rect.width;
@@ -6441,15 +6423,13 @@ impl Scene {
             // Cached: promotes the matching result; evicted: re-measures.
             // Kept as its results are (`measure_kept`): its current one is
             // found here without asking.
-            if let Some(constraints) = constraints {
-                let node = self.node(child);
-                let current = node.measurement.as_ref().is_some_and(|m| {
-                    m.constraints == constraints
-                        && (node.dirty & LAYOUT == 0 || m.pass == self.layout_pass)
-                });
-                if !current {
-                    self.measure_full(child, constraints);
-                }
+            let node = self.node(child);
+            let current = node.measurement.as_ref().is_some_and(|m| {
+                m.constraints == constraints
+                    && (node.dirty & LAYOUT == 0 || m.pass == self.layout_pass)
+            });
+            if !current {
+                self.measure_full(child, constraints);
             }
             crate::deep(level + 1, || {
                 let covered = covered || changed;
