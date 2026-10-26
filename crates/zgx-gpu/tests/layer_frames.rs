@@ -241,6 +241,38 @@ fn tiles_fill_the_plain_layer_exactly_after_the_host_grows() {
     }
 }
 
+/// A region of the shown frame (`ShownFrame::read`) is those rows and
+/// columns of the whole frame (`shown_pixels`), clipped to it.
+#[cfg(target_os = "macos")]
+fn shown_frame_regions_are_the_whole_frames_rows() {
+    let mut window = Window::new(3);
+    let (width, height, whole) = {
+        window.show();
+        window.gpu.shown_pixels().expect("a surface shown")
+    };
+    let frame = window.gpu.shown_frame().expect("a frame shown");
+    let (x, y, w, h) = (37, 11, 64, 9);
+    let (rw, rh, region) = frame.read(x, y, w, h).expect("a region");
+    assert_eq!((rw, rh), (w, h));
+    for row in 0..h as usize {
+        let at = ((y as usize + row) * width as usize + x as usize) * 4;
+        assert_eq!(
+            &region[row * w as usize * 4..][..w as usize * 4],
+            &whole[at..at + w as usize * 4],
+            "row {row}"
+        );
+    }
+    // Past the right and bottom edges: clipped.
+    let (cw, ch, _) = frame
+        .read(width - 5, height - 3, 64, 64)
+        .expect("a clipped region");
+    assert_eq!((cw, ch), (5, 3));
+    assert!(
+        frame.read(width, 0, 4, 4).is_none(),
+        "a region outside the frame"
+    );
+}
+
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -250,5 +282,7 @@ fn main() {
         println!("layer_frames: plain frames flip tiles whose contents are set once");
         tiles_fill_the_plain_layer_exactly_after_the_host_grows();
         println!("layer_frames: tiles fill the plain layer exactly after the host grows");
+        shown_frame_regions_are_the_whole_frames_rows();
+        println!("layer_frames: shown frame regions are the whole frame's rows");
     }
 }

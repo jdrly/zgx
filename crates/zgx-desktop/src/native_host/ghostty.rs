@@ -2218,16 +2218,9 @@ mod tests {
 mod iosurface {
     use std::ffi::c_void;
 
-    const READ_ONLY: u32 = 1; // kIOSurfaceLockReadOnly
     #[link(name = "IOSurface", kind = "framework")]
     unsafe extern "C" {
         pub fn IOSurfaceGetTypeID() -> usize;
-        fn IOSurfaceLock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
-        fn IOSurfaceUnlock(surface: *const c_void, options: u32, seed: *mut u32) -> i32;
-        fn IOSurfaceGetWidth(surface: *const c_void) -> usize;
-        fn IOSurfaceGetHeight(surface: *const c_void) -> usize;
-        fn IOSurfaceGetBytesPerRow(surface: *const c_void) -> usize;
-        fn IOSurfaceGetBaseAddress(surface: *const c_void) -> *const u8;
     }
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -2241,25 +2234,13 @@ mod iosurface {
         surface: *const c_void,
         max_width: u32,
     ) -> Option<std::sync::Arc<zgx::image::ImageData>> {
-        // SAFETY: `surface` is a live IOSurface (the caller checked its type,
-        // and its layer holds it). Locked read-only, its base address is
-        // readable for `height` rows of `stride` bytes until it is unlocked
-        // below; nothing of it is kept past that.
+        // SAFETY: `surface` is a live IOSurface of four bytes a pixel (the
+        // caller checked its type, and its layer holds it).
         unsafe {
-            if IOSurfaceLock(surface, READ_ONLY, std::ptr::null_mut()) != 0 {
-                return None;
-            }
-            let (width, height) = (IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface));
-            let stride = IOSurfaceGetBytesPerRow(surface);
-            let base = IOSurfaceGetBaseAddress(surface);
-            let image = if width == 0 || height == 0 || base.is_null() || stride < width * 4 {
-                None
-            } else {
-                let bytes = std::slice::from_raw_parts(base, stride * height);
+            zgx_gpu::iosurface::with_pixels(surface, |bytes, width, height, stride| {
                 crate::thumbnail::image(bytes, width, height, stride, max_width as usize)
-            };
-            IOSurfaceUnlock(surface, READ_ONLY, std::ptr::null_mut());
-            image
+            })
+            .flatten()
         }
     }
 }
