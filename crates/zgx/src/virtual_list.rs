@@ -399,6 +399,64 @@ impl HeightIndex {
         }
         index
     }
+
+    // Both endpoints walk the same prefix until their decisions differ.
+    // Keep each search's addition order: the sums are compensated, and
+    // changing their order could change which row a boundary selects.
+    fn search_pair(&self, low: f64, high: f64) -> (usize, usize) {
+        let mut index = 0;
+        let mut sum = HeightSum::default();
+        let mut step = 1usize << (usize::BITS - self.count().leading_zeros() - 1);
+        while step > 0 {
+            let next = index + step;
+            if next <= self.count() {
+                let mut candidate = sum;
+                candidate.add(self.tree[next].sum);
+                candidate.add(self.tree[next].correction);
+                let value = candidate.value();
+                let a = value <= low;
+                let b = value < high;
+                if a != b {
+                    let first = if a { (next, candidate) } else { (index, sum) };
+                    let last = if b { (next, candidate) } else { (index, sum) };
+                    return (
+                        self.search_tail(low, true, first.0, first.1, step >> 1),
+                        self.search_tail(high, false, last.0, last.1, step >> 1),
+                    );
+                }
+                if a {
+                    index = next;
+                    sum = candidate;
+                }
+            }
+            step >>= 1;
+        }
+        (index, index)
+    }
+    #[inline(always)]
+    fn search_tail(
+        &self,
+        value: f64,
+        inclusive: bool,
+        mut index: usize,
+        mut sum: HeightSum,
+        mut step: usize,
+    ) -> usize {
+        while step > 0 {
+            let next = index + step;
+            if next <= self.count() {
+                let mut candidate = sum;
+                candidate.add(self.tree[next].sum);
+                candidate.add(self.tree[next].correction);
+                if candidate.value() < value || (inclusive && candidate.value() == value) {
+                    index = next;
+                    sum = candidate;
+                }
+            }
+            step >>= 1;
+        }
+        index
+    }
     /// The rows a viewport `viewport_height` tall, scrolled `offset` down,
     /// shows, widened by `overscan` each way.
     pub fn visible_range(
@@ -417,11 +475,9 @@ impl HeightIndex {
         } else {
             0.
         };
-        let first = self.search(offset, true).min(self.count() - 1);
-        let end = self
-            .search(offset + viewport, false)
-            .saturating_add(1)
-            .min(self.count());
+        let (first, end) = self.search_pair(offset, offset + viewport);
+        let first = first.min(self.count() - 1);
+        let end = end.saturating_add(1).min(self.count());
         first.saturating_sub(overscan)..end.saturating_add(overscan).min(self.count())
     }
 }
@@ -429,6 +485,62 @@ impl HeightIndex {
 #[cfg(test)]
 mod height_index_tests {
     use super::*;
+    /// The shared descent finds what the two searches it replaces find, each
+    /// with its own additions: for equal, nearly equal (a tiny viewport far
+    /// down rounds back to its start) and far apart endpoints, and heights
+    /// from subnormal to huge.
+    #[test]
+    fn a_shared_descent_finds_both_endpoints_as_two_searches_do() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let heights = [
+            f32::MIN_POSITIVE / 8.,
+            1e-30,
+            0.1,
+            1.,
+            20.,
+            33.3,
+            1e6,
+            3e30,
+            f32::MAX / 1e6,
+        ];
+        let mut checked = 0;
+        for round in 0..60 {
+            let count = 1 + (next() % 300) as usize;
+            let mut index = HeightIndex::new(count, 10.);
+            for row in 0..count {
+                let height = heights[(next() % heights.len() as u64) as usize];
+                index.set_height(row, height).unwrap();
+            }
+            let total = index.prefix(count);
+            for _ in 0..400 {
+                let low = match next() % 4 {
+                    0 => 0.,
+                    1 => total,
+                    2 => total * (next() % 1000) as f64 / 1000.,
+                    _ => index.prefix((next() % (count as u64 + 1)) as usize),
+                };
+                let high = match next() % 4 {
+                    0 => low,
+                    1 => low + 1e-9,
+                    2 => low + f64::from(heights[(next() % heights.len() as u64) as usize]),
+                    _ => low + total * (next() % 1000) as f64 / 1000.,
+                };
+                assert_eq!(
+                    index.search_pair(low, high),
+                    (index.search(low, true), index.search(high, false)),
+                    "round {round}: {low} to {high} over {count} rows"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 24_000);
+    }
     #[test]
     fn heterogeneous_ranges_match_linear_oracle_after_updates() {
         let mut heights = [10., 30., 5., 60., 15., 1., 80.];
