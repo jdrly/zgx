@@ -5,7 +5,6 @@ local icons = require("../icons")
 local state = require("../state")
 local sessions = require("../sessions")
 local actions = require("../actions")
-local sidebar = require("./sidebar")
 local controls = require("./controls")
 local menu = require("./menu")
 local kit = require("./kit")
@@ -14,6 +13,9 @@ local frames = require("../frames")
 
 local tabs, active, focus = state.tabs, state.active, state.focus
 local dragging, tab_drop, tab_slot = state.dragging, state.tab_drop, state.tab_slot
+
+-- The strip's start, past the window's traffic lights.
+local TRAFFIC_LIGHTS = 78
 
 -- A tab's shape, shared by the tab, the chip that follows the pointer while
 -- one is dragged, and the ghost of the tab a dragged pane would open as.
@@ -608,19 +610,8 @@ function M.Titlebar(): Node
 		end,
 		gap = "$terminal.tab.strip_gap",
 		pr = "$terminal.inset",
-		-- Room for the traffic lights and the sidebar toggle (drawn over this,
-		-- app.luau) while the sidebar is closed; a little air after an open
-		-- one. It eases as the sidebar does, so the tabs slide clear of the
-		-- toggle rather than under it.
-		controls.drag_space {
-			w = function()
-				return if state.sidebar:get() then 6 else sidebar.TOGGLE_LEFT + sidebar.TOGGLE_SIZE
-			end,
-			layout = "width",
-			layout_ease = sidebar.EASE,
-			layout_duration = sidebar.DURATION,
-			shrink = 0,
-		},
+		-- Room for the traffic lights.
+		controls.drag_space { w = TRAFFIC_LIGHTS, shrink = 0 },
 		ui.row {
 			gap = "$terminal.tab.strip_gap",
 			items = "center",

@@ -91,8 +91,6 @@ M.tab_slot = ui.state("tab_slot", {} :: Slot)
 M.lifted = ui.state("lifted", "")
 -- Browser panes waiting to have their address bar focused.
 M.address_focus = ui.state("address_focus", "")
--- The agents sidebar is open.
-M.sidebar = ui.state("sidebar", true)
 -- The panel palette (⌘K) is open; what is typed in it, and the row chosen.
 M.palette = ui.state("palette", false)
 M.palette_query = ui.state("palette_query", "")

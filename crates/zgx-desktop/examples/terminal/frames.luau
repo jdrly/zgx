@@ -6,7 +6,7 @@
 --
 -- The frames do not depend on the content area's size: each edge is a
 -- percentage of it plus points (layout.Edge), which zgx resolves itself.
--- Resizing the area (the window, the sidebar opening) runs no script: this
+-- Resizing the area (the window) runs no script: this
 -- works out frames only when the structure or a ratio changes.
 local theme = require("./theme")
 local state = require("./state")

@@ -1,4 +1,6 @@
--- Context menus: frosted like the rest of the window.
+-- Context menus: frosted like the rest of the window. No shadow of their
+-- own: a menu shows in a window of its own, whose rim macOS draws round
+-- what it shows (a shadow would get a rim of its own, a box round the menu).
 local theme = require("../theme")
 
 local M = {}
@@ -13,7 +15,6 @@ local STYLE: Styles = {
 	backdrop_blur = 30,
 	border = 1,
 	border_color = "$terminal.menu.line",
-	shadow = "$terminal.menu.shadow",
 }
 M.STYLE = STYLE
 

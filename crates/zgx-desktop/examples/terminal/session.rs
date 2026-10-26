@@ -1404,6 +1404,14 @@ fn spawn(hello: &serde_json::Value, cols: u16, rows: u16) -> Option<Session> {
     let var = |env: &[(String, String)], key: &str| {
         env.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
     };
+    // ssh sends TERM=xterm-256color (the integration's `ssh-env`), unless
+    // the Ghostty config turned an ssh feature on itself: few hosts know
+    // xterm-ghostty.
+    for (key, features) in &mut env {
+        if key == "GHOSTTY_SHELL_FEATURES" && !features.contains("ssh-") {
+            features.push_str(",ssh-env");
+        }
+    }
     let shell = var(&env, "SHELL").unwrap_or_else(|| "/bin/zsh".into());
     let name = shell.rsplit('/').next().unwrap_or("zsh").to_owned();
     // Ghostty's zsh integration (prompt marks, the directory, titles), as it

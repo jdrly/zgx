@@ -11,8 +11,7 @@
 --   saved.luau     the layout across launches
 --   commands.luau  the menu bar's commands
 --   frames.luau    where the active tab's panes go
---   agents.luau    the coding agents in every pane, as the session server sees them (the sidebar)
---   components/    the views: the titlebar, sidebar, panes, dividers, the sheets,
+--   components/    the views: the titlebar, panes, dividers, the sheets,
 --                  the ⌘K palette, plugins' panels
 --
 -- Plugins (terminal/plugins.rs) add panels: each runs in a VM of its own,
@@ -21,10 +20,10 @@
 local theme = require("./theme")
 local state = require("./state")
 local sessions = require("./sessions")
+local actions = require("./actions")
 local saved = require("./saved")
 local commands = require("./commands")
 local tabs = require("@components/tabs")
-local sidebar = require("@components/sidebar")
 local content = require("@components/content")
 local confirm = require("@components/confirm")
 local palette = require("@components/palette")
@@ -41,6 +40,26 @@ ui.effect(function()
 	ui.invoke("set_title", if name ~= "" then name else "Terminal")
 end)
 
+-- What the system opened with the app (terminal/opened.rs): a folder, a
+-- script or an ssh:// link, each a tab starting there and typing what runs it.
+local opened = ui.shared("opened", nil :: { { dir: string, input: string? } }?)
+ui.effect(function()
+	local tabs = opened:get()
+	if not tabs or #tabs == 0 then
+		return
+	end
+	ui.invoke("take_opened")
+	ui.batch(function()
+		for _, tab in tabs do
+			actions.new_tab(sessions.start_dir(tab.dir))
+			local term = sessions.session(actions.current() :: string)
+			if term and tab.input then
+				term:input(tab.input)
+			end
+		end
+	end)
+end)
+
 return ui.row {
 	w_full = true,
 	h_full = true,
@@ -48,8 +67,6 @@ return ui.row {
 	items = "stretch",
 	bg = theme.tint,
 	on_key = confirm.on_key,
-	-- The agents running in every tab, by status (components/sidebar.luau).
-	sidebar.Sidebar(),
 	ui.column {
 		grow = 1,
 		shrink = 1,
@@ -58,8 +75,6 @@ return ui.row {
 		tabs.Titlebar(),
 		content(),
 	},
-	-- Over the sidebar's header and the titlebar, past the traffic lights.
-	sidebar.Toggle(),
 	confirm.Sheet(),
 	-- ⌘K: a new pane (components/palette.luau).
 	palette.Palette(),

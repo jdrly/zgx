@@ -40,7 +40,6 @@
 		"terminal.menu.line": "#ffffff14",
 		"terminal.menu.hover": "#ffffff12",
 		"terminal.menu.separator": "#ffffff0f",
-		"terminal.menu.shadow": "0 6 18 0 #00000040",
 		// Buttons, switches, sheets and labels (components/kit.luau).
 		"terminal.bright": "#ffffff",
 		"terminal.on_fill": "#ffffff",

@@ -11,6 +11,8 @@
 //! panes it had, attaches them again (see `terminal/session.rs`).
 #[path = "terminal/activity.rs"]
 mod activity;
+#[path = "terminal/opened.rs"]
+mod opened;
 #[path = "terminal/plugins.rs"]
 mod plugins;
 #[path = "terminal/program_status.rs"]
@@ -19,7 +21,7 @@ mod program_status;
 mod session;
 
 use std::{path::Path, time::Duration};
-use zgx_desktop::{Application, FontData, Glass, Titlebar, WindowOptions};
+use zgx_desktop::{Application, ApplicationEvent, FontData, Glass, Titlebar, WindowOptions};
 use zgx_script::{Capability, ScriptHost, Value};
 
 const TITLE: &str = "Terminal";
@@ -58,6 +60,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         application = application.font(FontData::new(std::sync::Arc::<[u8]>::from(bytes))?);
     }
+    // Folders, scripts and ssh:// links the system opens with the app
+    // (terminal/opened.rs): the bundle's Info.plist says which.
+    let opened = opened::Opened::default();
+    let asked = opened.clone();
+    application = application
+        .application_id("sh.zeron.zterm")?
+        .on_application_event(move |event, _| {
+            if let ApplicationEvent::OpenUrls(urls) = event {
+                asked.push(&urls);
+            }
+        });
     application
         .window(WindowOptions {
             title: TITLE.into(),
@@ -112,6 +125,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|json| Value::from_json(&json))
                 .unwrap_or(Value::Nil);
             host.shared("saved_layout", saved);
+            opened.publish(host.shared("opened", Value::Nil));
+            let taken = opened.clone();
+            host.action("take_opened", move |_| taken.take());
             host.action("end_session", |id| {
                 if let Value::Str(id) = id {
                     session::kill(&id);

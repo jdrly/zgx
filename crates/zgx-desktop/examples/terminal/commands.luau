@@ -102,9 +102,6 @@ function M.declare()
 			sessions.focus_view(pane)
 		end
 	end)
-	command("toggle_sidebar", "Toggle Agents Sidebar", "View", "cmd+ctrl+s", function()
-		state.sidebar:set(not state.sidebar:peek())
-	end)
 	command("equalize", "Equalize Panes", "View", "cmd+ctrl+=", function()
 		local root = actions.root_of(active:peek())
 		if root then
