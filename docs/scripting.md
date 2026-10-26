@@ -1,5 +1,7 @@
 # Scripting zgx with Luau
 
+Coming from React? [docs/coming-from-react.md](coming-from-react.md) maps its patterns (state, effects, context, lists, data loading, forms, modals) to these, with the performance rules.
+
 `zgx-script` builds interfaces from [Luau](https://luau.org) scripts. A script runs once per load and returns a description of components, state bindings and animations; Rust lowers it to ordinary retained views. Layout, drawing, state and animation all stay in Rust. The script is called again only for event handlers, components as they mount, and properties it explicitly computes with a function. Text templates (`"Count: {count}"`) and every animation run without calling the script.
 
 ```lua
