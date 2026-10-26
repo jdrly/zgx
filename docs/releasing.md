@@ -46,6 +46,7 @@ Where a patch adds an API zgx calls (winit's `xdg_surface`, wgpu-hal's `expose_p
 
 1. Each fork is packaged and built from its package, against crates.io.
 2. Every published workspace crate is packaged and built from its package, in dependency order (`cargo publish --workspace --dry-run`). That build leaves the workspace's `[patch.crates-io]` out: winit, wgpu-hal and AccessKit come from crates.io, as an app depending on zgx gets them, so what only builds with a vendored patch fails it. The forks, which crates.io has only once the release publishes them, are given from `vendor/` (`--config 'patch.crates-io.zgx-cosmic-text.path="vendor/cosmic-text"'`) for that run alone.
+3. A new app with no lockfile depends on what 1 and 2 packaged, every other crate resolved afresh from crates.io as `cargo add` resolves it, and runs a Luau script headless. zgx's lockfile holds its dependencies where they were tested; a new app's does not, and a new release of one (luau0-src 0.22.1, Luau 744) failed every Luau app at start while 1 and 2 passed.
 
 It never publishes. It doesn't run on pull requests: CI's time is unchanged. Locally, `scripts/release_check.sh --allow-dirty` checks uncommitted work.
 
