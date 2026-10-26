@@ -1386,8 +1386,11 @@ impl Host {
                         let entries = crate::wheel_tape::parse(&text)?;
                         let (count, last) = (entries.len(), entries.last().map(|e| e.after));
                         tape.play(std::time::Instant::now(), entries, at);
-                        // The loop wakes for the first event.
-                        handle.request_redraw();
+                        // The loop wakes for the first event, and paints what it
+                        // changes: `request_redraw` would repaint the whole
+                        // window, which a wheel does not (a measured gesture's
+                        // first frame read as a whole repaint).
+                        handle.wake();
                         Ok(format!(
                             "playing {count} events over {:.0} ms",
                             last.unwrap_or_default().as_secs_f64() * 1e3
