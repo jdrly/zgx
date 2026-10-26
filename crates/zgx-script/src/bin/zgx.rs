@@ -191,6 +191,7 @@ ZGX_INSPECT_SOCKET=1): with one running, --app is not needed.
   replay <target> <gesture.tape>         its pacing, through the window's input
   search [query] [--next] [--prev] [--all] [--close]
                        find in page: count, current, the first matches
+  zoom [in|out|reset|150%]               the window's zoom and its viewport
   sleep <ms>           raw <json>
   help                 what the app answers
   mcp                  serve these as MCP tools on stdio, for agents
@@ -299,6 +300,7 @@ fn inspect(args: Vec<String>) -> ExitCode {
         "sleep" => put("ms", arg(1)),
         "frames" => put("n", arg(1)),
         "search" => put("query", arg(1)),
+        "zoom" => put("to", arg(1)),
         "set" => {
             put("name", arg(1));
             match arg(2).map(|v| Value::from_json(&v).unwrap_or_else(|| Value::from(v.as_str()))) {
@@ -448,6 +450,12 @@ const TOOLS: &[Tool] = &[
             ("close", "boolean", false),
         ],
         "Find in page, as Cmd/Ctrl+F: case and accents ignored, all text including fields and virtual lists' unmounted rows. Answers the count, the current match and the first n (5; all with all): where each is (@node, or a list's row), its range, the text around it, its box if shown. next/prev step the current match in the window.",
+    ),
+    (
+        "zgx_zoom",
+        "zoom",
+        &[("to", "string", false)],
+        "The window's zoom, as a browser's page zoom (Cmd/Ctrl +, -, 0): `to` is in, out, reset, a factor (1.5) or a percent (150%). Answers the zoom and the viewport in points.",
     ),
     (
         "zgx_state",

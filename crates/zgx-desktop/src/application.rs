@@ -143,6 +143,8 @@ enum Event {
     #[cfg(target_os = "macos")]
     NativeMenuAction(crate::MenuAction),
     Wake(u64),
+    /// The window's zoom changed (`Ui::set_zoom`): its content scale follows.
+    Zoom(u64),
     /// A sleep on another thread is now the earliest timer: see `zgx::timer::host`.
     Timers,
     Redraw(u64),
@@ -1176,7 +1178,11 @@ struct Host {
     ime_cancellation: crate::native_ime::CancellationTracker,
     native_focused: bool,
     x11: bool,
+    /// The scale its content draws at: the display's times the window's
+    /// zoom (`Ui::zoom`), the display's itself at 100%.
     scale_factor: f64,
+    /// The display's scale: window frames, sizes and screen positions.
+    display_scale: f64,
     /// What the window last showed, and its scale, for `Ui::snapshot`.
     #[cfg(target_os = "macos")]
     shown: std::rc::Rc<std::cell::RefCell<Option<(zgx_gpu::ShownFrame, f64)>>>,
@@ -1518,6 +1524,7 @@ impl Host {
             native_focused: false,
             x11: false,
             scale_factor: 1.,
+            display_scale: 1.,
             #[cfg(target_os = "macos")]
             shown,
             force: true,
@@ -2560,7 +2567,8 @@ impl Host {
         zgx::profile::mark("window created");
         let mut renderer = self.make_renderer(&window)?;
         zgx::profile::mark("renderer made");
-        self.scale_factor = window.scale_factor();
+        self.display_scale = window.scale_factor();
+        self.scale_factor = self.content_scale();
         renderer.set_scale_factor(self.scale_factor as f32);
         self.context
             .ui
@@ -2708,6 +2716,12 @@ impl Host {
                 let _ = proxy.send_event(Event::Wake(token));
             });
         }
+        {
+            let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+            self.context.ui.on_zoom(move || {
+                let _ = proxy.send_event(Event::Zoom(token));
+            });
+        }
         self.window = Some(window);
         #[cfg(target_os = "macos")]
         {
@@ -2745,7 +2759,7 @@ impl Host {
                 let minimum = self
                     .options
                     .min_size
-                    .map(|(w, h)| LogicalSize::new(w, h).to_physical::<u32>(self.scale_factor));
+                    .map(|(w, h)| LogicalSize::new(w, h).to_physical::<u32>(self.display_scale));
                 let size = minimum.map_or(PhysicalSize::new(bounds.size.0, bounds.size.1), |min| {
                     PhysicalSize::new(bounds.size.0.max(min.width), bounds.size.1.max(min.height))
                 });
@@ -2810,7 +2824,7 @@ impl Host {
                         (width.max(min_w), height.max(min_h))
                     });
                 if let Some(size) = window.request_inner_size(
-                    LogicalSize::new(width, height).to_physical::<u32>(self.scale_factor),
+                    LogicalSize::new(width, height).to_physical::<u32>(self.display_scale),
                 ) && apply_viewport(
                     &mut self.options,
                     &self.context.ui,
@@ -3178,10 +3192,12 @@ impl Host {
             }
             // Reported as a window first reaches its display, unchanged.
             WindowEvent::ScaleFactorChanged { scale_factor, .. }
-                if scale_factor == self.scale_factor => {}
+                if scale_factor == self.display_scale => {}
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // This event is authoritative. Some X11 XSETTINGS paths leave
                 // Window::scale_factor() stale for an existing native window.
+                self.display_scale = scale_factor;
+                let scale_factor = self.content_scale();
                 if self.x11 {
                     let ratio = (self.scale_factor / scale_factor) as f32;
                     self.cursor.0 *= ratio;
@@ -3722,11 +3738,61 @@ impl Host {
             self.global_scale(),
         ))
     }
-    /// Global units per point of its content (`popup_window::global_scale`).
+    /// Global units per point of its content (`popup_window::global_scale`),
+    /// its zoom's points.
     fn global_scale(&self) -> f64 {
-        self.window
+        let base = self
+            .window
             .as_deref()
-            .map_or(1., crate::popup_window::global_scale)
+            .map_or(1., crate::popup_window::global_scale);
+        zoomed(base, self.context.ui.zoom())
+    }
+    /// The scale its content draws at: the display's at 100%, exactly (no
+    /// multiply), else the display's times the zoom.
+    fn content_scale(&self) -> f64 {
+        zoomed(self.display_scale, self.context.ui.zoom())
+    }
+    /// The window's zoom changed: its content draws at the display's scale
+    /// times it, reflowed in the logical viewport its size then has, as a
+    /// display change does; what each scroll view showed at its top stays
+    /// there. Nothing more runs while it stays.
+    fn apply_zoom(&mut self) -> Result<(), Box<dyn Error>> {
+        let scale = self.content_scale();
+        if scale == self.scale_factor {
+            return Ok(());
+        }
+        let anchors = self.context.ui.zoom_anchors();
+        if let Some(window) = &self.window {
+            crate::popup_window::set_zoom(window.id(), self.context.ui.zoom());
+        }
+        let ratio = (self.scale_factor / scale) as f32;
+        self.cursor.0 *= ratio;
+        self.cursor.1 *= ratio;
+        self.scale_factor = scale;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scale_factor(scale as f32);
+        }
+        self.context
+            .ui
+            .scene
+            .borrow_mut()
+            .set_pixel_scale(scale as f32);
+        if let Some(window) = self.window.clone() {
+            apply_viewport(
+                &mut self.options,
+                &self.context.ui,
+                &self.context.viewport,
+                window.inner_size(),
+                scale,
+            );
+            window.request_redraw();
+        }
+        self.context.ui.refresh_text_geometry();
+        self.ime_geometry = None;
+        self.force = true;
+        self.context.ui.try_prepare_frame()?;
+        self.context.ui.restore_zoom_anchors(anchors);
+        Ok(())
     }
     /// The platform's drag moved or ended, at a global point: the window's
     /// pointer, which the platform reports to its session meanwhile. Back
@@ -4649,7 +4715,7 @@ impl WindowManager {
         let Some(host) = self.hosts.get(&token) else {
             return false;
         };
-        let (scale, (left, top)) = (host.scale_factor, host.content_origin.unwrap_or_default());
+        let (scale, (left, top)) = (host.display_scale, host.content_origin.unwrap_or_default());
         let ended = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (left + position.x / scale, top + position.y / scale);
@@ -4805,6 +4871,21 @@ impl WindowManager {
         }
     }
     fn menu_action(&mut self, token: u64, action: crate::MenuAction) {
+        // The window's zoom items, which zgx puts in the View menu.
+        if let Some(zoom) = crate::app_menu::zoom_action(&action) {
+            if let Some(host) = self.hosts.get(&token)
+                && !host.context.window.is_closed()
+            {
+                use crate::app_menu::ZoomAction;
+                let ui = &host.context.ui;
+                match zoom {
+                    ZoomAction::In => ui.zoom_in(),
+                    ZoomAction::Out => ui.zoom_out(),
+                    ZoomAction::Reset => ui.reset_zoom(),
+                }
+            }
+            return;
+        }
         // Find in page's items, which zgx puts in the Edit menu.
         if let Some(find) = crate::app_menu::find_action(&action) {
             if let Some(host) = self.hosts.get_mut(&token)
@@ -4900,6 +4981,7 @@ impl WindowManager {
             crate::services::remove(window.id());
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             crate::text_drop::remove(window.id());
+            crate::popup_window::set_zoom(window.id(), 1.);
             // Its drag, if X11's, goes with it.
             #[cfg(target_os = "linux")]
             if crate::native_drag::active(window.id()) {
@@ -5275,6 +5357,13 @@ impl WindowManager {
                             .ui
                             .set_popup_screens(crate::popup_window::popup_screens(window));
                     }
+                }
+            }
+            Event::Zoom(token) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && let Err(error) = host.apply_zoom()
+                {
+                    self.fail(event_loop, error);
                 }
             }
             Event::Wake(token) => {
@@ -5773,6 +5862,10 @@ fn map_key(key: &WKey) -> Option<Key> {
     })
 }
 
+/// `scale` zoomed by `zoom`: `scale` itself at 100%, no multiply to round it.
+fn zoomed(scale: f64, zoom: f64) -> f64 {
+    if zoom == 1. { scale } else { scale * zoom }
+}
 fn apply_viewport(
     options: &mut WindowOptions,
     ui: &Ui,
@@ -5792,8 +5885,11 @@ fn apply_viewport(
     {
         return false;
     }
-    options.width = width;
-    options.height = height;
+    // The window's size in points, as it was asked for: the display's, its
+    // content's zoom apart.
+    let zoom = ui.zoom();
+    options.width = zoomed(width, zoom);
+    options.height = zoomed(height, zoom);
     ui.scene.borrow_mut().resize(width as f32, height as f32);
     viewport.set((width as f32, height as f32));
     true
@@ -6409,6 +6505,61 @@ mod tests {
         assert_eq!(
             shortcut_key(Key::Enter, code(KeyCode::Enter), ctrl),
             Key::Enter
+        );
+    }
+    #[test]
+    fn content_scale_is_the_displays_exactly_at_100_percent() {
+        for display in [1., 1.25, 1.5, 1.75, 2., 2.25, 3., 1. / 3.] {
+            assert_eq!(
+                zoomed(display, 1.).to_bits(),
+                display.to_bits(),
+                "{display}"
+            );
+            assert_eq!(zoomed(display, 1.5), display * 1.5);
+        }
+        // The viewport reflows in the zoom's points; the window keeps its
+        // size in the display's.
+        let mut ui = Ui::new(100., 100.);
+        let viewport = ui.signal((0_f32, 0_f32));
+        let mut options = WindowOptions::default();
+        let size = PhysicalSize::new(1600, 1200);
+        assert!(apply_viewport(&mut options, &ui, &viewport, size, 2.));
+        assert_eq!(viewport.get(), (800., 600.));
+        assert_eq!((options.width, options.height), (800., 600.));
+        ui.set_zoom(1.25);
+        assert!(apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            size,
+            zoomed(2., ui.zoom())
+        ));
+        assert_eq!(viewport.get(), (640., 480.));
+        assert_eq!(
+            (options.width, options.height),
+            (800., 600.),
+            "the window's points"
+        );
+        // The system's text scale and the zoom compose: a text's size is
+        // its points times the text scale, drawn at the content scale.
+        let view = ui.mount(zgx::style::Styled::text_size(
+            zgx::compose::text("Big"),
+            zgx::theme::tok::FONT_SIZE_MD,
+        ));
+        ui.prepare_frame();
+        let font = |ui: &Ui| match ui.scene.borrow().kind(view.node()) {
+            zgx::scene::NodeKind::Text { font_size, .. } => *font_size,
+            _ => panic!("a text"),
+        };
+        let plain = font(&ui);
+        ui.theme().set_system_text_scale(1.5);
+        ui.prepare_frame();
+        assert_eq!(font(&ui), plain * 1.5, "the system's text scale");
+        let pixels = font(&ui) as f64 * zoomed(2., ui.zoom());
+        assert_eq!(
+            pixels,
+            plain as f64 * 1.5 * 2. * 1.25,
+            "times the zoom, in pixels"
         );
     }
     #[test]

@@ -921,6 +921,12 @@ pub(crate) struct UiStorage {
     popup_soon_sent: Cell<bool>,
     /// The host's way to picture what the window last showed (`Ui::on_snapshot`).
     snapshotter: RefCell<Option<Snapshotter>>,
+    /// The window's zoom (`zoom`), 1 at 100%.
+    pub(crate) zoom: Cell<f64>,
+    /// The app turned zoom off (`set_zoomable`).
+    pub(crate) zoom_off: Cell<bool>,
+    /// The host, told the zoom changed (`on_zoom`).
+    pub(crate) zoom_host: RefCell<Option<Rc<dyn Fn()>>>,
     /// The host's wheel recorder and player (`Ui::on_wheel_tape`).
     wheel_taper: RefCell<Option<WheelTaper>>,
     /// The display's refresh period (`Ui::set_refresh_interval`).
@@ -1160,6 +1166,9 @@ impl Ui {
             popup_soon: RefCell::new(None),
             popup_soon_sent: Cell::new(false),
             snapshotter: RefCell::new(None),
+            zoom: Cell::new(1.),
+            zoom_off: Cell::new(false),
+            zoom_host: RefCell::new(None),
             wheel_taper: RefCell::new(None),
             refresh_interval: Cell::new(std::time::Duration::from_micros(16_667)),
             popup_previews: Cell::new(false),
@@ -2697,6 +2706,10 @@ impl Ui {
         self.after_dispatch(after, &mut result);
         if let Some(key) = key {
             self.find_after_dispatch(&key, &mut result);
+            // The window's zoom keys, for keys nothing took.
+            if !result.default_prevented && crate::zoom::after_dispatch(self, &key) {
+                result.default_prevented = true;
+            }
         }
         if let Some(event) = scroll {
             crate::elastic::after_scroll(self, &event, &result);

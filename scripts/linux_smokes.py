@@ -100,6 +100,7 @@ SMOKES = [
     ("clipboard-image", "python3 scripts/clipboard_image_smoke.py {bin}/clipboard_image --output {out}", False),
     ("selectable-text", "python3 scripts/selectable_text_smoke.py {bin}/selectable_text --output {out}", False),
     ("find-in-page", "python3 scripts/find_in_page_smoke.py {bin}/selectable_text --output {out}", False),
+    ("zoom", "python3 scripts/zoom_smoke.py {bin}/zoom_probe --output {out}", False),
     ("luau-views", "python3 scripts/luau_views_smoke.py {bin}/luau_probe --output {out}", False),
     ("editor-autoscroll", "python3 scripts/editor_autoscroll_smoke.py {bin}/editor_autoscroll --output {out}", False),
     ("transparency", "python3 scripts/transparency_smoke.py {bin}/transparency --output {out}", False),
@@ -136,7 +137,7 @@ SMOKES = [
 
 # Examples probes run by name rather than as `{bin}/name` in their command
 # (the shader warm-up's, and those of probes given the examples directory).
-FIXTURES = ("windows", "drag_probe", "tab_windows", "submenus", "gallery", "kitchen_sink", "paint_styles",
+FIXTURES = ("windows", "drag_probe", "zoom_probe", "tab_windows", "submenus", "gallery", "kitchen_sink", "paint_styles",
             "canvas", "svg_transform", "animated_image")
 
 

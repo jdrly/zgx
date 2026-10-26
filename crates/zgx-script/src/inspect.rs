@@ -178,6 +178,7 @@ const HELP: &str = "commands (one JSON object a line, `cmd` and its fields):
   lint                                           zgx lint over the app's scripts, file:line
   frames  [n=10]                                 the last frames that did anything: their phases, what ran and why
   search  [query] [next] [prev] [all] [n=5] [close]  find in page: the count, the current match, the first n
+  zoom    [to: in|out|reset|1.5|150%]            the window's zoom (Cmd/Ctrl +, -, 0) and its viewport in points
   wait    target [text] [gone] [timeout_ms=3000] until it shows (the text), or is gone
   sleep   ms                                     let the app run
 targets: #id, \"label or text\", role:button, @12, row 3, [2], a >> b (inside)";
@@ -498,6 +499,43 @@ impl Session {
                     ui.find_previous();
                 }
                 Ok(self.search(&ui, flag("all"), number("n").map_or(5, |n| n as usize)))
+            })(),
+            "zoom" => (|| {
+                match text("to").as_deref() {
+                    None => {}
+                    Some("in") => ui.zoom_in(),
+                    Some("out") => ui.zoom_out(),
+                    Some("reset") => ui.reset_zoom(),
+                    Some(other) => {
+                        let factor = other.trim_end_matches('%').parse::<f64>().map_err(|_| {
+                            format!("zoom takes in, out, reset or a factor, not `{other}`")
+                        })?;
+                        // 150 or 150% as a percent, 1.5 as a factor.
+                        ui.set_zoom(if factor > 5. || other.ends_with('%') {
+                            factor / 100.
+                        } else {
+                            factor
+                        });
+                    }
+                }
+                let zoom = ui.zoom();
+                let (width, height) = {
+                    let scene = ui.scene.borrow();
+                    let b = scene.bounds(scene.root());
+                    (b.width, b.height)
+                };
+                Ok((
+                    format!("zoom {:.0}%, {width:.0}x{height:.0} points", zoom * 100.),
+                    Value::record([
+                        ("zoom", Value::Num(zoom)),
+                        (
+                            "viewport",
+                            Value::List(
+                                vec![Value::Num(width as f64), Value::Num(height as f64)].into(),
+                            ),
+                        ),
+                    ]),
+                ))
             })(),
             "frames" => Ok(self.frames(number("n").map_or(10, |n| n as usize))),
             "wait" => {
