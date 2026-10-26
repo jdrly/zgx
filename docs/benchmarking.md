@@ -245,20 +245,26 @@ Builds happen in a worktree of their own under `$ZGX_CELLS_DIR` (default
 it stops at a system dialog without touching it. There are three parts:
 
 - **gestures**, the first frame after idle. The mail example runs under
-  `zgx-run --inspect` with `ZGX_PRESENT_LOG=1`. Each round idles 4 s, so the
-  window trims (at 1.5 s), then plays a wheel tape (`scripts/perf/tapes/`,
-  modeled flings) through `zgx inspect replay`, twice, and samples 5 s at
-  rest. Per cell, the first frame after each trim gives:
-  - whether it was forced whole (`render forced=`) or caught up from the
-    shown surface (`catch_up=1`);
-  - its render to present, and first to second present;
-  - whether a warm-up came first, and how far ahead.
+  `zgx-run --inspect`. Each round idles 4 s, so the window trims (at 1.5 s),
+  then plays a wheel tape (`scripts/perf/tapes/`, modeled flings) through
+  `zgx inspect replay`, twice, and samples 5 s at rest. Each cell launches
+  twice a round:
+  - **With `ZGX_PRESENT_LOG=1`**, for the timings only: the first frame after
+    each trim is checked for being forced whole (`render forced=`), caught up
+    from the shown surface (`draw … catch_up=`) and warmed. Then its render
+    to present and render to second present are read.
+  - **Without the log**, for late frames (over 1.5 refreshes), CPU and
+    instructions per frame shown, and CPU at rest. The log samples the layer
+    tree every 4 ms on the main thread: 1.25% of a core and about 32 M
+    instructions a second on a window otherwise at 0.002%.
 
-  The tapes also give late frames (over 1.5 refreshes), CPU and
-  instructions per frame shown, and CPU at rest.
-- **animate**: the animation workload at the display's rate. This gives CPU,
-  GPU power, instructions and WindowServer CPU (`macsample`), and counts any
-  warm-ups in its present log (it has no input, so there should be none).
+  Render to second present is the time the second frame shows. First to
+  second present widens whenever the first frame shows sooner, so judge by
+  render to second.
+- **animate**: the animation workload at the display's rate, without the log.
+  This gives CPU, GPU power, instructions and WindowServer CPU (`macsample`).
+  One short logged launch per cell counts warm-ups; it has no input, so there
+  should be none.
 - **scroll**: the heavy and lab workloads scrolling, as 15 s trials plus
   pacing captures (`framepace`: p99, long intervals).
 

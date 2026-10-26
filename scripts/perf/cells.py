@@ -30,12 +30,15 @@ Parts:
   `zgx-run --inspect`, with the present log. Per round: idle 4 s (the window
   trims at 1.5 s), the fling tape at '#messages' with the app's CPU and
   instructions sampled over it, idle 4 s, the edge tape, then 5 s sampled at
-  rest. Reported per cell: each gesture's first frame after the trim (forced
-  whole?, caught up?), its render-to-present, first-to-second present, late
-  frames (over 1.5 refreshes), CPU and instructions per frame shown, and CPU
-  at rest.
+  rest; each cell launches twice a round, once with the present log for the
+  first frames' timings (the log's layer sampler is work of its own) and once
+  without it for everything else. Reported per cell: each gesture's first
+  frame after the trim (forced whole?, warmed?), its render-to-present and
+  render-to-second-present, late frames (over 1.5 refreshes), CPU and
+  instructions per frame shown, and CPU at rest.
 - animate: the animation workload at the display's rate, 15 s trials
-  (macsample: CPU, GPU power, instructions, WindowServer).
+  (macsample: CPU, GPU power, instructions, WindowServer), and one short
+  logged launch a cell counting warm-ups (none: it has no input).
 - scroll: the heavy and lab workloads scrolling, 15 s trials and 16 s pacing
   captures (framepace: p99, long intervals).
 
@@ -154,37 +157,59 @@ def measure(spec):
     subprocess.run(['osascript', '-e', hide.format('false')], capture_output=True)
     try:
         parts = spec.get('parts', {})
-        for r in range(rounds.get('gestures', 4)):
-            for name in order(parts.get('gestures', []), r):
-                dialogs()
-                log = OUT / f'{name}-{r}.present.log'
-                cli = binary(name, 'zgx')
-                app = subprocess.Popen([binary(name, 'zgx-run'), '--inspect', str(mail)], env=env_of(name, ZGX_PRESENT_LOG='1'),
-                                       cwd=CWD, stdout=open(log, 'w'), stderr=subprocess.STDOUT)
-                time.sleep(3)
-                front(app.pid)
-                row = {}
-                for tape, path in TAPES.items():
-                    time.sleep(4)  # idle: trimmed, the gesture starts cold
-                    got = {}
-                    sampler = threading.Thread(target=lambda: got.update(sample(app.pid, 0, 2.6)))
+        # Each round launches every cell twice: with the present log, for the
+        # first frames' timings only (the log samples the layer tree every
+        # 4 ms on the main thread, work of its own), and without it, for late
+        # frames, CPU and instructions per frame shown, and CPU at rest.
+        def gesture_launch(name, r, logged):
+            log = OUT / f'{name}-{r}.present.log' if logged else None
+            extra = {'ZGX_PRESENT_LOG': '1'} if logged else {}
+            app = subprocess.Popen([binary(name, 'zgx-run'), '--inspect', str(mail)], env=env_of(name, **extra), cwd=CWD,
+                                   stdout=open(log, 'w') if log else subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            time.sleep(3)
+            front(app.pid)
+            row = {}
+            for tape, path in TAPES.items():
+                time.sleep(4)  # idle: trimmed, the gesture starts cold
+                got = {}
+                sampler = None if logged else threading.Thread(target=lambda: got.update(sample(app.pid, 0, 2.6)))
+                if sampler:
                     sampler.start()
-                    answer = subprocess.run([cli, 'inspect', 'replay', '#messages', str(path)], capture_output=True, text=True, cwd=CWD, timeout=60)
+                answer = subprocess.run([binary(name, 'zgx'), 'inspect', 'replay', '#messages', str(path)],
+                                        capture_output=True, text=True, cwd=CWD, timeout=60)
+                if sampler:
                     sampler.join()
-                    text = (answer.stdout + answer.stderr).strip()
-                    row[tape] = {'replay': text, 'sample': got}
-                    print(f'gestures {r} {name:12} {tape:5} {text.splitlines()[0][:160] if text else "no answer"}', flush=True)
+                text = (answer.stdout + answer.stderr).strip()
+                row[tape] = {'replay': text, 'sample': got}
+                print(f'gestures {r} {name:12} {"logged" if logged else "plain ":6} {tape:5} {text.splitlines()[0][:150] if text else "no answer"}', flush=True)
+            if not logged:
                 time.sleep(2)
                 row['rest'] = sample(app.pid, 0, 5)
-                row['exit_code'] = stop(app)
-                out['gestures'].setdefault(name, []).append(row)
-                time.sleep(2)
+            row['exit_code'] = stop(app)
+            time.sleep(2)
+            return row
+        for r in range(rounds.get('gestures', 4)):
+            for name in order(parts.get('gestures', []), r):
+                for logged in (True, False) if r % 2 == 0 else (False, True):
+                    dialogs()
+                    row = gesture_launch(name, r, logged)
+                    if not logged:
+                        out['gestures'].setdefault(name, []).append(row)
+        # Animate has no input, so a warm-up must never fire: one short logged
+        # launch a cell counts them; the trials run without the log.
+        for name in parts.get('animate', []):
+            dialogs()
+            p = subprocess.Popen([binary(name, 'animation_workload')], cwd=CWD, stdout=subprocess.DEVNULL,
+                                 stderr=open(OUT / f'animate-{name}.present.log', 'w'),
+                                 env=env_of(name, ZGX_MODE='animate', ZGX_SECONDS='6', ZGX_FONT_FILE=font, ZGX_PRESENT_LOG='1'))
+            time.sleep(0.5); front(p.pid)
+            p.wait(timeout=30)
+            time.sleep(1)
         for r in range(rounds.get('animate', 3)):
             for name in order(parts.get('animate', []), r):
                 dialogs()
-                p = subprocess.Popen([binary(name, 'animation_workload')], cwd=CWD, stdout=subprocess.DEVNULL,
-                                     stderr=open(OUT / f'animate-{name}-{r}.present.log', 'w'),
-                                     env=env_of(name, ZGX_MODE='animate', ZGX_SECONDS='15', ZGX_FONT_FILE=font, ZGX_PRESENT_LOG='1'))
+                p = subprocess.Popen([binary(name, 'animation_workload')], cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     env=env_of(name, ZGX_MODE='animate', ZGX_SECONDS='15', ZGX_FONT_FILE=font))
                 time.sleep(0.5); front(p.pid)
                 s = sample(p.pid, 4.5, 10)
                 s['exit_code'] = p.wait(timeout=30)
@@ -241,6 +266,8 @@ def gestures(path):
                 g['warm'], g['warm_t'] = True, t
             elif w.startswith('render ') and 'render' not in g:
                 g['render'], g['render_t'] = w, t
+            elif ' draw ' in w and 'render' in g and 'draw' not in g:
+                g['draw'] = w
             elif ' present frame=' in w and 'render' in g:
                 presents.append((t, w))
                 if len(presents) == 2:
@@ -249,6 +276,7 @@ def gestures(path):
             g['first_present'] = presents[0][1]
             g['render_to_present_ms'] = (presents[0][0] - g['render_t']) * 1e3
             g['first_to_second_ms'] = (presents[1][0] - presents[0][0]) * 1e3
+            g['render_to_second_ms'] = (presents[1][0] - g['render_t']) * 1e3
             if g['warm']:
                 g['warm_lead_ms'] = (g['render_t'] - g['warm_t']) * 1e3
             found.append(g)
@@ -274,16 +302,16 @@ def report(path):
                     cpu.append(s['cpu_percent_one_core'] / 100 * s['wall_seconds'] / frames * 1e6)
                     instr.append(s['instructions'] / frames / 1e3)
         rest = [row['rest']['cpu_percent_one_core'] for row in rows if 'error' not in row['rest']]
-        print(f"  {name:12} n={len(gs):2} forced {sum('forced=true' in g['render'] for g in gs)} caught-up {sum('catch_up=1' in g['first_present'] for g in gs)} "
+        print(f"  {name:12} n={len(gs):2} forced {sum('forced=true' in g['render'] for g in gs)} caught-up {sum(bool(re.search(r'catch_up=[1-9]', g.get('draw', ''))) for g in gs)} "
               f"warm {sum(g['warm'] for g in gs)} (lead {med([g['warm_lead_ms'] for g in gs if 'warm_lead_ms' in g]):4.1f} ms) | "
-              f"first render→present {med([g['render_to_present_ms'] for g in gs]):5.2f} ms, first→second {med([g['first_to_second_ms'] for g in gs]):5.2f} ms "
-              f"(max {max([g['first_to_second_ms'] for g in gs], default=float('nan')):5.2f}) | late {sum(lates)} | "
+              f"first render→present {med([g['render_to_present_ms'] for g in gs]):5.2f} ms, render→second {med([g['render_to_second_ms'] for g in gs]):5.2f} ms "
+              f"(first→second {med([g['first_to_second_ms'] for g in gs]):5.2f}) | late {sum(lates)} | "
               f"per frame shown {med(cpu):6.1f} µs, {med(instr):6.0f} K instr | rest {med(rest):5.3f}%")
     if res['animate']:
         print('animate')
     for name, rows in res['animate'].items():
         ok = [r for r in rows if 'error' not in r]
-        warms = sum(1 for p in glob.glob(f'{out}/animate-{glob.escape(name)}-*.present.log') for line in open(p, errors='replace') if line.rstrip().endswith(' warm'))
+        warms = sum(1 for p in glob.glob(f'{out}/animate-{glob.escape(name)}.present.log') for line in open(p, errors='replace') if line.rstrip().endswith(' warm'))
         print(f"  {name:12} cpu {med([r['cpu_percent_one_core'] for r in ok]):5.2f}% gpu {med([r['gpu_system_watts'] * 1000 for r in ok]):6.1f} mW "
               f"instr {med([r['instructions'] / r['wall_seconds'] / 1e6 for r in ok]):6.1f} M/s ws cpu {med([r['windowserver_cpu_percent'] for r in ok]):5.1f} warm-ups {warms} n={len(ok)}")
     if res['scroll']['trials']:
