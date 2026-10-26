@@ -798,6 +798,32 @@ impl Layer {
                 transactional,
             }
         });
+        // DIAGNOSTIC (the flush lane's ZGX_DRAWABLE_CS_ALT): no colorspace on
+        // even Unix seconds, sRGB on odd, for paired-second WindowServer
+        // measurement (scripts/windowserver_alternate.py). Not for main.
+        if std::env::var_os("ZGX_DRAWABLE_CS_ALT").is_some() {
+            thread_local! {
+                static LAST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+            }
+            let even = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs())
+                .is_multiple_of(2);
+            if LAST.get() != Some(even) {
+                LAST.set(Some(even));
+                let layer = &drawables.layer;
+                transaction(|| {
+                    if even {
+                        layer.setColorspace(None);
+                    // SAFETY: CoreGraphics' constant CFString, read only.
+                    } else if let Some(space) =
+                        CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+                    {
+                        layer.setColorspace(Some(&space));
+                    }
+                });
+            }
+        }
         let size = CGSize::new(width as f64, height as f64);
         if drawables.layer.drawableSize() != size {
             drawables.layer.setDrawableSize(size);
