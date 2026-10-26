@@ -22,7 +22,10 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, DXGI_STATUS_OCCLUDED, HANDLE, HWND, RECT, WAIT_OBJECT_0},
         Graphics::{
-            Direct3D12::ID3D12Resource,
+            Direct3D12::{
+                D3D12_FENCE_FLAG_NONE, ID3D12CommandQueue, ID3D12Device, ID3D12Fence,
+                ID3D12Resource,
+            },
             DirectComposition::{
                 DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget,
                 IDCompositionVisual,
@@ -67,6 +70,9 @@ pub(crate) struct Buffer {
 /// The window's swap chain and the composition visual showing it.
 pub(crate) struct Chain {
     device: wgpu::Device,
+    /// wgpu's queue, which the swap chain presents on, and its device.
+    queue: ID3D12CommandQueue,
+    raw: ID3D12Device,
     hwnd: HWND,
     swap_chain: IDXGISwapChain3,
     /// Signalled when a frame may start without queueing more than
@@ -94,12 +100,13 @@ impl Chain {
         transparent: bool,
     ) -> Result<Self, GpuError> {
         let fail = |what: &str, error: windows::core::Error| GpuError(format!("{what}: {error}"));
-        // SAFETY: Reads the raw queue only; the guard is dropped before wgpu is
+        // SAFETY: Reads the raw queue and device only; the guard is dropped before wgpu is
         // called again.
-        let queue = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }
-            .ok_or_else(|| GpuError("not a Direct3D 12 device".into()))?
-            .raw_queue()
-            .clone();
+        let (queue, raw) = {
+            let hal = unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }
+                .ok_or_else(|| GpuError("not a Direct3D 12 device".into()))?;
+            (hal.raw_queue().clone(), hal.raw_device().clone())
+        };
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width,
             Height: height,
@@ -149,6 +156,8 @@ impl Chain {
             dcomp.Commit().map_err(|e| fail("Commit", e))?;
             Ok(Self {
                 device: device.clone(),
+                queue: queue.clone(),
+                raw,
                 hwnd,
                 swap_chain,
                 waitable,
@@ -241,6 +250,7 @@ impl Chain {
     /// Resize the buffers, once every wrapper of them was `release`d; take
     /// the new ones from `buffers`.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
+        self.wait_idle();
         // SAFETY: No reference to the old buffers remains (`release`).
         unsafe {
             self.swap_chain.ResizeBuffers(
@@ -316,6 +326,26 @@ impl Chain {
         drop(self);
         Self::new(&device, hwnd, desc.Width, desc.Height, transparent)
     }
+    /// Wait until the queue has run all it was given, presents included:
+    /// wgpu waits for its own submissions alone, and a swap chain resized or
+    /// released while a present of it is still queued raises an exception
+    /// that ends the process on Windows Server's Direct3D (CI's runners).
+    /// wgpu waits likewise for its own (`wait_for_present_queue_idle`).
+    fn wait_idle(&self) {
+        // SAFETY: A fence of our own, signalled on wgpu's queue; a null
+        // event makes SetEventOnCompletion wait until it is reached.
+        unsafe {
+            let Ok(fence) = self
+                .raw
+                .CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE)
+            else {
+                return;
+            };
+            if self.queue.Signal(&fence, 1).is_ok() && fence.GetCompletedValue() < 1 {
+                let _ = fence.SetEventOnCompletion(1, HANDLE::default());
+            }
+        }
+    }
     /// For `ZGX_PRESENT_LOG`'s frame statistics.
     pub fn swap_chain(&self) -> &IDXGISwapChain3 {
         &self.swap_chain
@@ -324,6 +354,7 @@ impl Chain {
 
 impl Drop for Chain {
     fn drop(&mut self) {
+        self.wait_idle();
         // SAFETY: The swap chain's waitable, closed once.
         let _ = unsafe { CloseHandle(self.waitable) };
     }
