@@ -259,6 +259,10 @@ impl InputDispatcher {
                 active.destination = None;
             }
         }
+        if away {
+            // Back over a destination here, its delay starts again.
+            self.arm_spring(None);
+        }
         if away && let Some(id) = drag.destination.filter(|id| scene.borrow().contains(*id)) {
             self.route(scene, id, drag.event(DragPhase::Leave, false));
         }
@@ -417,16 +421,17 @@ impl InputDispatcher {
             away: false,
             moves_window: false,
         };
-        let pressed = {
+        let (pressed, orphans) = {
             let mut state = self.state.borrow_mut();
             state.drag = Some(drag.clone());
-            state.drag_orphans.clear();
             state.spring = None;
             let pressed = state.pressed.take();
             state.key_pressed = None;
             state.clicks.0 = None;
-            pressed
+            (pressed, std::mem::take(&mut state.drag_orphans))
         };
+        // A last drag's orphaned listeners, out of the borrow (see `finish`).
+        drop(orphans);
         if let Some(pressed) = pressed.filter(|id| *id != source && scene.borrow().contains(*id)) {
             self.route(scene, pressed, InputEvent::PointerCancel);
         }
@@ -524,13 +529,13 @@ impl InputDispatcher {
     /// (macOS's spring-loading delay), or `None` where it is turned off.
     /// [`SPRING_DELAY`] until set.
     pub fn set_spring_delay(&self, delay: Option<std::time::Duration>) {
-        let mut state = self.state.borrow_mut();
-        state.spring_delay = delay;
-        state.spring_off = delay.is_none();
+        self.state.borrow_mut().spring_delay = Some(delay);
     }
     fn spring_delay(&self) -> Option<std::time::Duration> {
-        let state = self.state.borrow();
-        (!state.spring_off).then(|| state.spring_delay.unwrap_or(SPRING_DELAY))
+        self.state
+            .borrow()
+            .spring_delay
+            .unwrap_or(Some(SPRING_DELAY))
     }
     /// When the destination a drag rests on springs open, if one is waiting.
     pub fn next_spring_deadline(&self) -> Option<Instant> {
@@ -607,11 +612,14 @@ impl InputDispatcher {
             event.outside = outside;
         }
         let torn = self.to_source(scene, drag.source, end).prevented;
-        {
+        // The source's orphaned listeners go out of the borrow: what they
+        // hold (a preview's view, say) may reach input as it drops.
+        let orphans = {
             let mut state = self.state.borrow_mut();
             state.drag_ending = None;
-            state.drag_orphans.clear();
-        }
+            std::mem::take(&mut state.drag_orphans)
+        };
+        std::mem::drop(orphans);
         self.state.borrow_mut().drag_ended = Some(DragEnded {
             source: drag.source,
             preview: drag.preview,

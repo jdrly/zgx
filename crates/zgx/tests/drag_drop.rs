@@ -215,6 +215,36 @@ fn a_drag_outlives_its_removed_source_and_drops_where_it_led() {
     );
     target.unmount();
 }
+/// What a removed source's listeners hold goes once the drag ends, and may
+/// reach input as it goes.
+#[test]
+fn a_removed_sources_listeners_drop_after_the_drag_lets_input_go() {
+    struct Touches(zgx::input::InputDispatcher, Rc<RefCell<bool>>);
+    impl Drop for Touches {
+        fn drop(&mut self) {
+            *self.1.borrow_mut() = self.0.is_dragging();
+        }
+    }
+    let mut ui = Ui::new(400., 200.);
+    let dropped_while_dragging = Rc::new(RefCell::new(true));
+    let held = Touches(ui.input.clone(), dropped_while_dragging.clone());
+    let source = ui.mount(div().size(100., 80.).on_drag(|| Card(1)).on_drag_end(
+        move |_: &Card, _| {
+            let _ = &held;
+        },
+    ));
+    ui.prepare_frame();
+    down(&ui, 20., 20.);
+    moved(&ui, 35., 20.);
+    source.unmount();
+    ui.prepare_frame();
+    up(&ui, 230., 30.);
+    assert!(!ui.input.is_dragging());
+    assert!(
+        !*dropped_while_dragging.borrow(),
+        "dropped as the drag ended"
+    );
+}
 #[test]
 fn nearest_typed_destination_wins_and_removed_target_cannot_receive_drop() {
     let mut ui = Ui::new(400., 200.);
@@ -706,6 +736,17 @@ fn a_drag_resting_on_a_destination_springs_it_open_once() {
         ui.input.next_spring_deadline().is_none(),
         "nothing waits after the drag"
     );
+    // Over another window a while and back: the delay starts again.
+    down(&ui, 20., 20.);
+    moved(&ui, 110., 20.);
+    ui.input.set_drag_away(&ui.scene, true);
+    ui.input.set_drag_away(&ui.scene, false);
+    let back = Instant::now();
+    moved(&ui, 110., 20.);
+    let due = ui.input.next_spring_deadline().expect("waiting to spring");
+    assert!(due >= back + zgx::input::SPRING_DELAY, "from the return");
+    up(&ui, 110., 20.);
+    assert_eq!(*sprang.borrow(), 2);
     // Turned off by the platform: never.
     ui.input.set_spring_delay(None);
     down(&ui, 20., 20.);

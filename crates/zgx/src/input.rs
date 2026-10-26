@@ -637,10 +637,9 @@ struct State {
     drag_ended: Option<drag::DragEnded>,
     /// The destination the drag rests on, toward springing it open.
     spring: Option<drag::SpringArm>,
-    /// The spring-loading delay the host set (`set_spring_delay`), and
-    /// whether it turned spring-loading off.
-    spring_delay: Option<std::time::Duration>,
-    spring_off: bool,
+    /// The spring-loading delay the host set (`set_spring_delay`): `None`
+    /// until it does, `Some(None)` where it turned spring-loading off.
+    spring_delay: Option<Option<std::time::Duration>>,
     /// The physical key of the key event being dispatched (`set_key_code`).
     key_code: Option<Rc<str>>,
     /// The scroll view a wheel gesture is latched to, the axis it moves
