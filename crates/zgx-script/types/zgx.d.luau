@@ -353,6 +353,24 @@ export type TextAlign = "start" | "end" | "left" | "center" | "right"
 -- "mono" (or "monospace"), "sans" ("sans-serif"), "serif", or a family name.
 -- A family name, or a font token (`FontToken`).
 export type Font = string
+-- How a node mixes with what lies beneath it: CSS `mix-blend-mode`.
+export type BlendMode =
+	"normal"
+	| "multiply"
+	| "screen"
+	| "overlay"
+	| "darken"
+	| "lighten"
+	| "color-dodge"
+	| "color-burn"
+	| "hard-light"
+	| "soft-light"
+	| "difference"
+	| "exclusion"
+	| "hue"
+	| "saturation"
+	| "color"
+	| "luminosity"
 -- Cursor names, or CSS's spellings of them ("nwse-resize").
 export type Cursor =
 	"default"
@@ -1156,6 +1174,8 @@ export type Styles = {
 	brightness: number?,
 	contrast: number?,
 	saturate: number?,
+	-- Mixes the node with what lies beneath it (CSS `mix-blend-mode`).
+	blend: BlendMode?,
 	blur: number?,
 	backdrop_blur: Num?,
 	fade: Pair?,
@@ -1319,6 +1339,7 @@ export type StyleProps = {
 	brightness: Reactive<number>?,
 	contrast: Reactive<number>?,
 	saturate: Reactive<number>?,
+	blend: Reactive<BlendMode>?,
 	blur: Reactive<number>?,
 	backdrop_blur: Reactive<Num>?,
 	fade: Reactive<Pair>?,
@@ -1674,6 +1695,7 @@ export type Props = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -1978,6 +2000,7 @@ export type Props_opacity = Reactive<Num>?
 export type Props_brightness = Reactive<number>?
 export type Props_contrast = Reactive<number>?
 export type Props_saturate = Reactive<number>?
+export type Props_blend = Reactive<BlendMode>?
 export type Props_blur = Reactive<number>?
 export type Props_backdrop_blur = Reactive<Num>?
 export type Props_fade = Reactive<Pair>?
@@ -2187,6 +2210,7 @@ export type ContainerProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -2505,6 +2529,7 @@ export type ScrollProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -2830,6 +2855,7 @@ export type TextProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -3147,6 +3173,7 @@ export type MarkdownViewProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -3512,6 +3539,7 @@ export type RichProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -3823,6 +3851,7 @@ export type ImageProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -4144,6 +4173,7 @@ export type SvgProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -4457,6 +4487,7 @@ export type CanvasProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -4800,6 +4831,7 @@ export type CheckboxProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -5119,6 +5151,7 @@ export type InputProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -5494,6 +5527,7 @@ export type ProgressProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -5806,6 +5840,7 @@ export type SliderProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -6131,6 +6166,7 @@ export type SegmentedProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -6452,6 +6488,7 @@ export type StepperProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -6774,6 +6811,7 @@ export type DisclosureProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -7095,6 +7133,7 @@ export type AccordionProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -7406,6 +7445,7 @@ export type SectionProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -7724,6 +7764,7 @@ export type SeparatorProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -8041,6 +8082,7 @@ export type TabsProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -8366,6 +8408,7 @@ export type TreeProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -8701,6 +8744,7 @@ export type DataGridProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -9032,6 +9076,7 @@ export type CalendarProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -9355,6 +9400,7 @@ export type DatePickerProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -9676,6 +9722,7 @@ export type TimeFieldProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -9996,6 +10043,7 @@ export type ComboboxProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -10325,6 +10373,7 @@ export type CommandPaletteProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -10642,6 +10691,7 @@ export type SelectProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -10962,6 +11012,7 @@ export type SplitProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -11294,6 +11345,7 @@ export type ListProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -11665,6 +11717,7 @@ export type LayerProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -11982,6 +12035,7 @@ export type ModalProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -12314,6 +12368,7 @@ export type PopoverProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -12651,6 +12706,7 @@ export type MenuItemProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -12967,6 +13023,7 @@ export type SubmenuProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -13287,6 +13344,7 @@ export type WebViewProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -13621,6 +13679,7 @@ export type TerminalProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -13933,6 +13992,7 @@ export type SlotProps = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -14250,6 +14310,7 @@ export type EachOptions = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
@@ -14570,6 +14631,7 @@ export type PresenceOptions = {
 	brightness: Props_brightness,
 	contrast: Props_contrast,
 	saturate: Props_saturate,
+	blend: Props_blend,
 	blur: Props_blur,
 	backdrop_blur: Props_backdrop_blur,
 	fade: Props_fade,
