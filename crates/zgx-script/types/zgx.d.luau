@@ -2954,6 +2954,13 @@ export type TextProps = {
 	-- points; `drag_preview` builds what follows the pointer.
 	on_drag: Props_on_drag,
 	drag_preview: Props_drag_preview,
+	-- Where the preview goes: its point `drag_preview_anchor` (fractions
+	-- of its size, `{ 0.5, 0 }` its top middle) `drag_preview_offset`
+	-- points from the pointer. `{ 0.5, 0 }` and `{ 0, 16 }` hang it below
+	-- the pointer, leaving what the drag is over in view; without either,
+	-- it keeps the grab point under the pointer.
+	drag_preview_anchor: Props_drag_preview_anchor,
+	drag_preview_offset: Props_drag_preview_offset,
 	on_drag_end: Props_on_drag_end,
 	-- What the drag carries to other apps as it leaves the window (macOS):
 	-- Finder takes files, Mail text, a browser links.
@@ -2970,6 +2977,10 @@ export type TextProps = {
 	on_drag_over: Props_on_drag_over,
 	on_drag_leave: Props_on_drag_leave,
 	on_drop: Props_on_drop,
+	-- Spring-loading: an accepted drag has rested on it for the system's
+	-- delay (0.5 s by default), or Space was pressed. Open what it stands
+	-- for (show a tab); return `false` to decline. Once per stay.
+	on_drag_spring: Props_on_drag_spring,
 	-- A secondary click (control-click on macOS) shows the returned
 	-- `menu_item`s, `submenu`s and separators as a menu at the pointer;
 	-- returning nil (or nothing) shows none.
@@ -3092,9 +3103,12 @@ export type MarkdownViewProps = {
 	fade_overflow: Props_fade_overflow,
 	snap: Props_snap,
 	clip_inset: Props_clip_inset,
+	clip_feather: Props_clip_feather,
 	layer: Props_layer,
 	fit: Props_fit,
 	tint: Props_tint,
+	dither: Props_dither,
+	characters: Props_characters,
 	cursor: Props_cursor,
 	-- Text.
 	text_size: Props_text_size,
