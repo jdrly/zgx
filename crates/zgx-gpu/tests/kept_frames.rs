@@ -328,3 +328,88 @@ fn a_box_patched_alone_is_the_box_drawn_afresh() {
     }
     assert!(patched >= 16, "{patched} frames patched");
 }
+
+/// Frames drawn whole whose kept frames are lost before they patch (a
+/// fling repaints the window each frame) stop keeping after two, and keep
+/// again once frames would patch; each frame as drawn afresh.
+fn wholes(whole: Signal<u32>, leaf: Signal<u32>) -> View {
+    div()
+        .size(SIZE.0, SIZE.1)
+        // A change of the root's colour repaints the window, its children
+        // with it: a kept frame can't patch it.
+        .reactive_style(move || {
+            Styles::new().bg(Color(10 + (whole.get() * 9 % 40) as u8, 18, 24, 255))
+        })
+        .child(
+            div()
+                .absolute()
+                .ml(20.)
+                .mt(20.)
+                // Large enough that its frames draw from the kept frame
+                // (over `KEPT_SHARE` of the window).
+                .w(240.)
+                .bg(Color(94, 177, 255, 255))
+                .reactive_style(move || Styles::new().h(70. + (leaf.get() % 7) as f32 * 9.)),
+        )
+}
+
+#[test]
+fn frames_drawn_whole_stop_keeping_once_their_kept_frames_go_unpatched() {
+    let window = |whole: u32, leaf: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let (a, b) = (ui.signal(whole), ui.signal(leaf));
+        ui.mount(wholes(a.clone(), b.clone()));
+        (ui, gpu, a, b)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, whole, leaf) = window(0, 0);
+    draw(&mut ui, &mut gpu);
+    let (mut w, mut l) = (0, 0);
+    // A frame: the window repainted (`true`) or the bar alone; whether it
+    // patched, each checked against the scene drawn afresh.
+    let mut frame = |repaint: bool| {
+        match repaint {
+            true => w += 1,
+            false => l += 1,
+        }
+        whole.set(w);
+        leaf.set(l);
+        let stats = draw(&mut ui, &mut gpu);
+        let (mut fresh, mut fresh_gpu, _, _) = window(w, l);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {w}/{l} differs from the scene drawn afresh"
+        );
+        stats.patched_items > 0
+    };
+    // One frame drawn whole and the bar's next: patched from it, as before.
+    for _ in 0..3 {
+        assert!(!frame(true));
+        assert!(frame(false), "a bar after one frame drawn whole patches");
+    }
+    // Frames drawn whole in a row lose their kept frames unpatched: after
+    // two, the next keeps none, so the bar's frame after them draws whole.
+    for _ in 0..4 {
+        assert!(!frame(true));
+    }
+    assert!(!frame(false), "frames drawn whole in a row stopped keeping");
+    // The bar alone again: frames that would patch keep again (after the
+    // re-keep backoff of `would_patch`, which those frames drawn whole
+    // grew), and the bar's frames patch.
+    let patched = (0..10).filter(|_| frame(false)).count();
+    assert!(patched >= 5, "{patched} of the bar's 10 frames patched");
+    // And a frame drawn whole between them keeps: the bar's next patches.
+    assert!(!frame(true));
+    assert!(
+        frame(false),
+        "a bar after one frame drawn whole patches again"
+    );
+}

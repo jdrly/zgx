@@ -813,6 +813,8 @@ struct Kept {
     viewport: Rect,
     scale: f32,
     background: Color,
+    /// Whether a frame has patched it yet.
+    patched: bool,
 }
 /// What `render_flat` makes: a frame (`FRAME`, or the kept frame when
 /// `draw_made`), or items' quads and draws alone, with where each
@@ -854,6 +856,9 @@ const KEPT_SHARE: f32 = 0.1;
 /// lost its kept frame keeps one again (`render_once`): one alone may be a
 /// change's last, and keeping costs a whole frame.
 const KEEP_AGAIN: u8 = 2;
+/// Kept frames lost in a row before they patched once, after which a frame
+/// drawn whole keeps none (`GpuRenderer::unpatched_keeps`).
+const UNPATCHED_KEEPS: u8 = 2;
 /// Whether `item` is a box `render_kept` makes alone (`patch_box`): a
 /// flat colour, or a box without decoration, shadows or a pass over its
 /// content, drawn flat (no layer, filter, clip region or fade mask).
@@ -2075,6 +2080,9 @@ pub struct GpuRenderer {
     /// While no frame is kept, how many in a row a kept one would have
     /// patched (`would_patch`).
     patchable: Patchable,
+    /// Kept frames in a row lost before they patched once (`render_once`):
+    /// past `UNPATCHED_KEEPS`, a frame drawn whole keeps none.
+    unpatched_keeps: u8,
     /// Where each item's quads and draws lay in a frame made to keep or
     /// patch (`render_flat`): first quad, quads, room, first draw, draws' end.
     item_ranges: Vec<(u32, u32, u32, u32, u32)>,
@@ -2537,6 +2545,7 @@ impl GpuRenderer {
             patch_stats: GpuStats::default(),
             patched: false,
             patchable: Patchable::default(),
+            unpatched_keeps: 0,
             item_ranges: Vec::new(),
             patch_clips: Vec::new(),
             box_quads: Vec::new(),
@@ -2878,12 +2887,31 @@ impl GpuRenderer {
         }
         // Only leaves repainted since the window was drawn whole: their
         // instances patched in place, the rest drawn as they were.
+        let unpatched = self.kept.as_ref().is_some_and(|kept| !kept.patched);
         if let Some(regions) = &merged
             && let Some(stats) = self.render_kept(scene, damage, regions, viewport)?
         {
+            self.unpatched_keeps = 0;
+            if let Some(kept) = &mut self.kept {
+                kept.patched = true;
+            }
             self.patched = true;
             self.rendered_serial = Some(scene.flush_serial());
             return Ok(stats);
+        }
+        // A kept frame lost before it patched once (one kept each frame a
+        // fling repaints whole, lost to the next): after a few, frames drawn
+        // whole keep none until frames in a row would patch.
+        // (Still kept: patched, drawn as usual for its little damage.)
+        match &mut self.kept {
+            None if unpatched => {
+                self.unpatched_keeps = self.unpatched_keeps.saturating_add(1);
+            }
+            Some(kept) if merged.is_some() => {
+                kept.patched = true;
+                self.unpatched_keeps = 0;
+            }
+            _ => {}
         }
         // Kept up to date, drawn as usual this frame (little damage).
         let maintained = self.kept.is_some();
@@ -2894,6 +2922,10 @@ impl GpuRenderer {
             (Some(regions), false) => self.would_patch(scene, regions, viewport),
             _ => 0,
         };
+        // A frame that would patch: the next drawn whole keeps again.
+        if patchable > 0 {
+            self.unpatched_keeps = 0;
+        }
         // Drawn whole and kept to patch from: a frame whole anyway (the
         // first, a full repaint), one after a patched frame, so that
         // patching goes on after a change it can't patch, or one after
@@ -2908,12 +2940,13 @@ impl GpuRenderer {
             && (self.fresh
                 || was_patched
                 || patchable >= KEEP_AGAIN
-                || damage.iter().any(|d| {
-                    d.x <= 0.
-                        && d.y <= 0.
-                        && d.x + d.width >= viewport.width
-                        && d.y + d.height >= viewport.height
-                }));
+                || self.unpatched_keeps < UNPATCHED_KEEPS
+                    && damage.iter().any(|d| {
+                        d.x <= 0.
+                            && d.y <= 0.
+                            && d.x + d.width >= viewport.width
+                            && d.y + d.height >= viewport.height
+                    }));
         if !maintained {
             self.kept = None;
         }
@@ -3428,6 +3461,7 @@ impl GpuRenderer {
             viewport,
             scale: self.scale,
             background: self.background,
+            patched: false,
         }));
         Ok(drawn)
     }
@@ -3437,6 +3471,9 @@ impl GpuRenderer {
     /// were. Only the repainted items are visited (the scene names them),
     /// not the window's. `None` when it can't: then the frame is drawn as
     /// usual.
+    // Out of line: once a frame, and its loops over the repainted items then
+    // compile alone, whatever `render_once` around it holds.
+    #[inline(never)]
     fn render_kept(
         &mut self,
         scene: &Scene,
