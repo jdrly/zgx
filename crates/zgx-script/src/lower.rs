@@ -302,8 +302,11 @@ pub(crate) fn bridge<T: PartialEq + Clone + 'static>(
 
 /// A controlled input's text (`value = function`): what the function shows
 /// while the input isn't focused; focused, what is being typed, each edit
-/// told to `on_change`. Enter, or leaving it changed, tells `on_commit`, and
-/// it shows the function's text again. With the listener that does that.
+/// told to `on_change` (the function's answer to an edit, a number
+/// formatted, waits until it is left). A change from elsewhere while it is
+/// focused (a send clearing the draft) shows at once. Enter, or leaving it
+/// changed, tells `on_commit`, and it shows the function's text again. With
+/// the listener that does that.
 fn controlled_input(
     cx: &mut Context,
     shown: &Source,
@@ -320,12 +323,16 @@ fn controlled_input(
     // The function's latest text, and whether the input is being edited.
     let latest: Rc<std::cell::RefCell<String>> = Rc::default();
     let editing: Rc<std::cell::Cell<bool>> = Rc::default();
+    // An edit was told to `on_change`: the function's next change is its
+    // answer, not a change from elsewhere.
+    let echo: Rc<std::cell::Cell<bool>> = Rc::default();
     let (source, svm) = (resolve_owned(shown), vm.clone());
-    let (t, l, e) = (text.clone(), latest.clone(), editing.clone());
+    let (t, l, e, o) = (text.clone(), latest.clone(), editing.clone(), echo.clone());
     cx.retain(runtime.effect(move || {
         let now = resolve_value(&source, &svm).to_string();
+        let changed = *l.borrow() != now;
         *l.borrow_mut() = now.clone();
-        if !e.get() {
+        if !e.get() || (!o.replace(false) && changed) {
             t.set(now);
         }
     }));
@@ -341,6 +348,7 @@ fn controlled_input(
         cx.retain(runtime.effect(move || {
             let now = t.get();
             if e.get() && now != *l.borrow() {
+                echo.set(true);
                 quiet.untracked(|| run(&change, &vm, &actions, now));
             }
         }));

@@ -2931,3 +2931,38 @@ fn an_image_shows_a_bitmap_given_kept_in_state_or_returned() {
     assert_eq!(size(&mut h, "returned"), (1, 1), "nothing shown: empty");
     assert_eq!(h.error(), None);
 }
+
+#[test]
+fn a_controlled_input_keeps_its_typing_and_shows_changes_from_elsewhere() {
+    let mut h = Harness::inline(
+        r##"local name = ui.state("name", "")
+        local told = ui.state("told", "")
+        ui.command { id = "clear", run = function() name:set("") end }
+        return ui.column {
+            ui.input { id = "field", w = 200,
+                -- Shown in capitals: what is typed stays as typed meanwhile.
+                value = function() return name:get():upper() end,
+                on_change = function(t) name:set(t); told:set(t) end },
+            ui.text { id = "told", "{told}" },
+            ui.button { id = "other", w = 40, h = 20, "o" },
+        }"##,
+    );
+    h.type_text("field", "ada");
+    h.frames(1);
+    assert_eq!(h.text("told"), "ada");
+    assert_eq!(h.text("field"), "ada", "the function's answer waits");
+    // A change from elsewhere shows while it is focused, as a send
+    // clearing a composer does.
+    assert!(h.host.run_command("clear"));
+    h.frames(1);
+    assert_eq!(h.text("told"), "ada", "not told back to on_change");
+    h.ui.dispatch(zgx::input::InputEvent::Text("b".into()));
+    h.settle();
+    h.frames(1);
+    assert_eq!(h.text("told"), "b", "typing goes on from what it shows");
+    // Left, it shows the function's text.
+    h.click("other");
+    h.frames(1);
+    assert_eq!(h.text("field"), "B");
+    assert_eq!(h.error(), None);
+}
