@@ -709,7 +709,12 @@ impl QuadStyle {
     }
     /// The area it paints for a node at `bounds`: the box with its shadows
     /// and outline.
+    #[inline]
     pub fn paint_bounds(&self, bounds: Rect) -> Rect {
+        // Most boxes (a bar, a fill) have neither: the box itself.
+        if self.decoration.is_none() && self.shadow.is_none() && self.outline.is_none() {
+            return bounds;
+        }
         let painted = self.shadows().iter().fold(bounds, |paint, shadow| {
             paint.union(
                 bounds
@@ -4376,21 +4381,36 @@ impl Scene {
         };
         let clips = clip_axes(&node.style) != (false, false);
         let past_clip = clips && matches!(node.kind, NodeKind::Quad(_) | NodeKind::Panel { .. });
-        let at = |bounds: Rect| {
-            let bounds = bounds.translated(transform);
-            let clip = match clips {
-                true => clipped_bounds(parent_clip, bounds, &node.style),
-                false => parent_clip,
-            };
-            let own = match past_clip {
-                true => parent_clip,
-                false => clip,
-            };
-            let painted = self.painted_of(id, node, bounds, node.effects.blur_radius)?;
-            own.and_then(|clip| painted.intersection(clip))
-                .map(quantized)
-        };
+        let at =
+            |bounds| self.leaf_rect(id, node, bounds, transform, parent_clip, clips, past_clip);
         (at(was), at(now))
+    }
+    /// One of `leaf_damage`'s areas: leaf `id` at `bounds`, translated by
+    /// `transform` within `parent_clip`. Inlined into it, twice.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn leaf_rect(
+        &self,
+        id: NodeId,
+        node: &Node,
+        bounds: Rect,
+        transform: Transform,
+        parent_clip: Option<Rect>,
+        clips: bool,
+        past_clip: bool,
+    ) -> Option<Rect> {
+        let bounds = bounds.translated(transform);
+        let clip = match clips {
+            true => clipped_bounds(parent_clip, bounds, &node.style),
+            false => parent_clip,
+        };
+        let own = match past_clip {
+            true => parent_clip,
+            false => clip,
+        };
+        let painted = self.painted_of(id, node, bounds, node.effects.blur_radius)?;
+        own.and_then(|clip| painted.intersection(clip))
+            .map(quantized)
     }
     fn add_damage(&mut self, rect: Rect) {
         self.add_damage_as::<false>(rect);
