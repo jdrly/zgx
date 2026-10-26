@@ -107,10 +107,6 @@ impl KeptQuads {
             _ => wrote.push((start, end)),
         }
     }
-    /// Its quads moved (a splice): no buffer holds them as they are now.
-    pub(crate) fn moved(&mut self) {
-        *self = Self::new();
-    }
 }
 impl MappedRing {
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {

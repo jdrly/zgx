@@ -3954,7 +3954,6 @@ impl GpuRenderer {
         if !splices.is_empty() {
             match self.splice(scene, &mut kept, &splices, viewport)? {
                 Some(made) => {
-                    kept.upload.moved();
                     stats.add_made(&made);
                     stats.patched_items += made.patched_items;
                 }
@@ -4276,6 +4275,7 @@ impl GpuRenderer {
         // items are found again by node (`by_node`).
         let mut replaced = Vec::new();
         let mut renumbered = false;
+        let mut shifted_from = u32::MAX;
         // Last first: what a splice moves lies after it, spliced already.
         for (&(first, end, _), mut new) in splices.iter().zip(made_items).rev() {
             let old = &kept.items[first..end];
@@ -4311,6 +4311,12 @@ impl GpuRenderer {
                     }),
             );
             let quad_shift = (made_to - made_from) as i64 - (quads_to - quads_from) as i64;
+            // Written over: its own quads, or from them on when what
+            // follows moves.
+            match quad_shift {
+                0 => kept.upload.wrote(quads_from, quads_to),
+                _ => shifted_from = shifted_from.min(quads_from),
+            }
             let draw_shift =
                 (made_draws_to - made_draws_from) as i64 - (draws_to - draws_from) as i64;
             let item_shift = new.len() as i64 - (end - first) as i64;
@@ -4343,6 +4349,9 @@ impl GpuRenderer {
                 }
             }
             kept.items.splice(first..end, new);
+        }
+        if shifted_from != u32::MAX {
+            kept.upload.wrote(shifted_from, kept.quads.len() as u32);
         }
         // (Each node's first item: a box's border pass comes after it.)
         if renumbered {
