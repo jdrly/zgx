@@ -1419,6 +1419,25 @@ struct Measurement {
     /// results from the pass in progress.
     pass: u64,
 }
+#[inline(never)]
+fn promote_measurement(
+    current: &mut Option<Measurement>,
+    alternates: &mut Vec<Measurement>,
+    index: usize,
+) -> (f32, f32) {
+    if let Some(current) = current {
+        // Keep the same MRU order without moving the untouched suffix twice.
+        alternates[..=index].rotate_right(1);
+        std::mem::swap(current, &mut alternates[0]);
+        current.size
+    } else {
+        let hit = alternates.remove(index);
+        let size = hit.size;
+        *current = Some(hit);
+        size
+    }
+}
+
 /// Flex layout measures a child with its natural, flexed and stretched
 /// constraints in one pass, and taffy adds min- and max-content probes, each
 /// ancestor on a changed path asking again. Every result of the pass in
@@ -5615,11 +5634,7 @@ impl Scene {
         if let Some(index) = node.alternates.iter().position(usable) {
             // Promote it: `arrange` places children from the current result.
             let node = self.node_mut(id);
-            let hit = node.alternates.remove(index);
-            let size = hit.size;
-            if let Some(previous) = node.measurement.replace(hit) {
-                node.alternates.insert(0, previous);
-            }
+            let size = promote_measurement(&mut node.measurement, &mut node.alternates, index);
             node.arrange_dirty = true;
             return (size, constraints);
         }
@@ -8678,6 +8693,45 @@ mod measure_work_tests {
         assert_eq!(scene.measure_calls - before, 21);
         assert_eq!(scene.bounds(bars[3]), Rect::new(18., 5., 4., 30.));
         assert_eq!(scene.bounds(bars[4]), Rect::new(24., 0., 4., 10.));
+    }
+    /// Promoting a kept result leaves the results as taking it out and
+    /// putting the current one first did: the same current, the same order
+    /// after it, for every length, every hit and either kind of current.
+    #[test]
+    fn a_promoted_result_leaves_the_order_removing_and_inserting_did() {
+        let made = |size: f32| Measurement {
+            constraints: Constraints::default(),
+            size: (size, 0.),
+            children: Vec::new(),
+            pass: 0,
+        };
+        let sizes = |list: &[Measurement]| list.iter().map(|m| m.size.0).collect::<Vec<_>>();
+        for len in 1..=64 {
+            for index in 0..len {
+                for with_current in [true, false] {
+                    let fresh = || {
+                        let current = with_current.then(|| made(-1.));
+                        let alternates: Vec<_> = (0..len).map(|i| made(i as f32)).collect();
+                        (current, alternates)
+                    };
+                    let (mut old_current, mut old) = fresh();
+                    let hit = old.remove(index);
+                    let old_size = hit.size;
+                    if let Some(previous) = old_current.replace(hit) {
+                        old.insert(0, previous);
+                    }
+                    let (mut new_current, mut new) = fresh();
+                    let new_size = promote_measurement(&mut new_current, &mut new, index);
+                    assert_eq!(new_size, old_size, "{len} {index} {with_current}");
+                    assert_eq!(
+                        new_current.map(|m| m.size.0),
+                        old_current.map(|m| m.size.0),
+                        "{len} {index} {with_current}"
+                    );
+                    assert_eq!(sizes(&new), sizes(&old), "{len} {index} {with_current}");
+                }
+            }
+        }
     }
     #[test]
     fn a_hidden_subtree_is_measured_once_to_no_box() {
