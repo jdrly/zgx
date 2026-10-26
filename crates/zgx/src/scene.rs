@@ -1693,20 +1693,6 @@ struct Slot {
 }
 /// Where a parent's children are damaged (`Scene::damage_context`).
 type DamageContext = Option<(Transform, Option<Rect>)>;
-/// What `Scene::leaf_damage` reads of a leaf beside its box, the same
-/// before and after layout moves it (`Scene::leaf_place`).
-#[derive(Clone, Copy)]
-struct LeafPlace {
-    /// Its parent's translation and its own.
-    transform: Transform,
-    /// The clip it paints within.
-    parent_clip: Option<Rect>,
-    /// Whether it clips what it holds (`clip_axes`).
-    clips: bool,
-    /// Whether its own paint reaches past that clip (`paints_past_clip`).
-    past_clip: bool,
-    blur_radius: f32,
-}
 /// What a [`Scene::flush`] did, for renderers and diagnostics.
 #[derive(Default, Debug)]
 pub struct FrameReport {
@@ -4355,58 +4341,78 @@ impl Scene {
         self.damage.first() == Some(&self.viewport)
             || self.damage_grid.as_ref().is_some_and(DamageGrid::full)
     }
-    /// What `leaf_damage` reads of leaf `id` (no children) beside its box,
-    /// where nothing is transformed or filtered: worked out once for its
-    /// damage where it was and where layout places it. `None`: it damages
-    /// nothing. `context`: its parent's, as `damage_subtree_with` keeps it.
-    /// Out of line: `arrange` stays small.
+    /// What `damage_subtree_with` would add for leaf `id` (no children)
+    /// where nothing is transformed or filtered, at its box `was` and at
+    /// `now`, where layout places it: worked out together, from one look at
+    /// the node. Each is quantized as `add_damage` quantizes it: two such
+    /// areas sharing their extent along an axis and overlapping are,
+    /// together, their union. `context`: its parent's, as
+    /// `damage_subtree_with` keeps it. Out of line: `arrange` stays small.
     #[inline(never)]
-    fn leaf_place(&self, id: NodeId, context: &mut Option<DamageContext>) -> Option<LeafPlace> {
+    fn leaf_damage(
+        &self,
+        id: NodeId,
+        context: &mut Option<DamageContext>,
+        was: Rect,
+        now: Rect,
+    ) -> (Option<Rect>, Option<Rect>) {
         if self.damage_is_full() {
-            return None;
+            return (None, None);
         }
         let node = self.node(id);
-        let (parent, parent_clip) =
-            (*context.get_or_insert_with(|| self.damage_context(node.parent)))?;
+        let Some((parent, parent_clip)) =
+            *context.get_or_insert_with(|| self.damage_context(node.parent))
+        else {
+            return (None, None);
+        };
         // As `damage_subtree_in` and `damage_painted` work it out.
         let unplaced = node.measurement.is_none() && node.bounds == Rect::default();
         if !own_visible(&node.style) || unplaced {
-            return None;
+            return (None, None);
         }
+        let transform = Transform {
+            x: parent.x + node.transform.x,
+            y: parent.y + node.transform.y,
+        };
         let clips = clip_axes(&node.style) != (false, false);
-        Some(LeafPlace {
-            transform: Transform {
-                x: parent.x + node.transform.x,
-                y: parent.y + node.transform.y,
-            },
-            parent_clip,
-            clips,
-            past_clip: clips && matches!(node.kind, NodeKind::Quad(_) | NodeKind::Panel { .. }),
-            blur_radius: node.effects.blur_radius,
-        })
-    }
-    /// What `damage_subtree_with` would add for leaf `id` at `bounds` (its
-    /// box before or after layout moves it), placed as `place` says,
-    /// quantized as `add_damage` quantizes it: two such areas sharing their
-    /// extent along an axis and overlapping are, together, their union.
-    #[inline(never)]
-    fn leaf_damage(&self, id: NodeId, place: &LeafPlace, bounds: Rect) -> Option<Rect> {
-        let node = self.node(id);
-        let bounds = bounds.translated(place.transform);
-        let clip = match place.clips {
-            true => clipped_bounds(place.parent_clip, bounds, &node.style),
-            false => place.parent_clip,
+        let past_clip = clips && matches!(node.kind, NodeKind::Quad(_) | NodeKind::Panel { .. });
+        let at = |bounds: Rect| {
+            let bounds = bounds.translated(transform);
+            let clip = match clips {
+                true => clipped_bounds(parent_clip, bounds, &node.style),
+                false => parent_clip,
+            };
+            let own = match past_clip {
+                true => parent_clip,
+                false => clip,
+            };
+            let painted = self.painted_of(id, node, bounds, node.effects.blur_radius)?;
+            own.and_then(|clip| painted.intersection(clip))
+                .map(quantized)
         };
-        let own = match place.past_clip {
-            true => place.parent_clip,
-            false => clip,
-        };
-        let painted = self.painted_of(id, node, bounds, place.blur_radius)?;
-        own.and_then(|clip| painted.intersection(clip))
-            .map(quantized)
+        (at(was), at(now))
     }
     fn add_damage(&mut self, rect: Rect) {
         self.add_damage_as::<false>(rect);
+    }
+    /// A moved leaf's damage where it was and where it lands (`leaf_damage`).
+    fn add_moved_leaf_damage(&mut self, before: Option<Rect>, after: Option<Rect>) {
+        match (before, after) {
+            // A box growing or moving along one axis (a bar): one area, as
+            // the two would be marked or merged.
+            (Some(before), Some(after))
+                if (before.x == after.x && before.width == after.width
+                    || before.y == after.y && before.height == after.height)
+                    && before.intersects(after) =>
+            {
+                self.add_leaf_damage(before.union(after));
+            }
+            (before, after) => {
+                for rect in [before, after].into_iter().flatten() {
+                    self.add_leaf_damage(rect);
+                }
+            }
+        }
     }
     /// `add_damage` for a moved leaf (`arrange`), the grid first.
     #[inline(never)]
@@ -4685,7 +4691,7 @@ impl Scene {
     /// clip its children paint within. One walk up its ancestors checks they
     /// show and sums the translation (each of those walked them again);
     /// only an ancestor that clips sends the clip to `world`.
-    // Inlined into `damage_subtree_with` and `leaf_place`: damage runs it
+    // Inlined into `damage_subtree_with` and `leaf_damage`: damage runs it
     // for every node damaged alone.
     #[inline(always)]
     fn shown_context(&self, id: NodeId) -> DamageContext {
@@ -6088,20 +6094,17 @@ impl Scene {
         // A leaf, nothing transformed or filtered: what it painted is damaged
         // with what it will paint, once it is placed (see `leaf_damage`).
         let leaf = damage && childless && self.transformed + self.filtered == 0;
-        let place = match damage && leaf {
-            true => self.leaf_place(id, context),
-            false => None,
-        };
-        let before = match (damage, leaf) {
+        // A moved leaf's damage where it was and where it lands, worked out
+        // and added before its box changes: a leaf has no children, so no
+        // other damage comes between, and nothing it paints changes.
+        match (damage, leaf) {
             (true, true) => {
-                place.and_then(|place| self.leaf_damage(id, &place, self.node(id).bounds))
+                let (before, after) = self.leaf_damage(id, context, self.node(id).bounds, bounds);
+                self.add_moved_leaf_damage(before, after);
             }
-            (true, false) => {
-                self.damage_subtree_with(id, context);
-                None
-            }
-            _ => None,
-        };
+            (true, false) => self.damage_subtree_with(id, context),
+            _ => {}
+        }
         if changed {
             self.node_mut(id).bounds = bounds;
             self.invalidate(id, PAINTED);
@@ -6137,25 +6140,7 @@ impl Scene {
                 self.arrange(child, x, y, report, covered, level + 1, &mut children)
             });
         }
-        if damage && leaf {
-            let after = place.and_then(|place| self.leaf_damage(id, &place, bounds));
-            match (before, after) {
-                // A box growing or moving along one axis (a bar): one area,
-                // as the two would be marked or merged.
-                (Some(before), Some(after))
-                    if (before.x == after.x && before.width == after.width
-                        || before.y == after.y && before.height == after.height)
-                        && before.intersects(after) =>
-                {
-                    self.add_leaf_damage(before.union(after));
-                }
-                (before, after) => {
-                    for rect in [before, after].into_iter().flatten() {
-                        self.add_leaf_damage(rect);
-                    }
-                }
-            }
-        } else if damage {
+        if damage && !leaf {
             self.damage_subtree_with(id, context);
         }
         let node = self.node_mut(id);
