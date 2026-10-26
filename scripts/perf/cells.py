@@ -119,6 +119,26 @@ def stage_copy(source, target):
     target.chmod(0o755)
 
 
+def checked(row, log, seconds, mode):
+    """`row` with what the app reported in `log` (its ticks, frame rate) and
+    whether the run counts, as the comparison's `valid` judges it: it exited
+    cleanly, and ticked 58-61 times a second scrolling, or animated at the
+    rate it reported."""
+    text = log.read_text(errors='replace') if log.exists() else ''
+    ticks = re.search(r'"ticks":(\d+)|workload_ticks=(\d+)|animation_frames=(\d+)', text)
+    fps = re.search(r'fps=([0-9.]+)', text)
+    row['workload_ticks'] = int(next(g for g in ticks.groups() if g)) if ticks else -1
+    row['reported_fps'] = float(fps.group(1)) if fps else None
+    row['log'] = str(log)
+    rate = row['workload_ticks'] / seconds
+    if mode == 'animate':
+        paced = row['workload_ticks'] > 0 and row['reported_fps'] and abs(rate - row['reported_fps']) <= 0.15 * row['reported_fps']
+    else:
+        paced = 58 <= rate <= 61
+    row['valid'] = bool(row.get('exit_code') == 0 and 'error' not in row and paced)
+    return row
+
+
 def measure(spec):
     import preflight
     OUT.mkdir(parents=True, exist_ok=True)
@@ -208,35 +228,40 @@ def measure(spec):
         for r in range(rounds.get('animate', 3)):
             for name in order(parts.get('animate', []), r):
                 dialogs()
-                p = subprocess.Popen([binary(name, 'animation_workload')], cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                log = OUT / f'animate-{name}-{r}.log'
+                p = subprocess.Popen([binary(name, 'animation_workload')], cwd=CWD, stdout=open(log, 'w'), stderr=subprocess.STDOUT,
                                      env=env_of(name, ZGX_MODE='animate', ZGX_SECONDS='15', ZGX_FONT_FILE=font))
                 time.sleep(0.5); front(p.pid)
                 s = sample(p.pid, 4.5, 10)
                 s['exit_code'] = p.wait(timeout=30)
-                out['animate'].setdefault(name, []).append(s)
+                out['animate'].setdefault(name, []).append(checked(s, log, 15, 'animate'))
                 print(f"animate {r} {name:12} cpu {s.get('cpu_percent_one_core', float('nan')):5.2f} gpu {s.get('gpu_system_watts', float('nan')) * 1000:6.1f} mW", flush=True)
                 time.sleep(1)
         for r in range(rounds.get('scroll', 3)):
             for scene, example in SCENES.items():
                 for name in order(parts.get('scroll', []), r):
                     dialogs()
-                    def launch(seconds):
-                        p = subprocess.Popen([binary(name, example)], cwd=CWD, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    def launch(seconds, log):
+                        p = subprocess.Popen([binary(name, example)], cwd=CWD, stdout=open(log, 'w'), stderr=subprocess.STDOUT,
                                              env=env_of(name, ZGX_MODE='scroll', ZGX_SECONDS=str(seconds), ZGX_FONT_FILE=font))
                         time.sleep(0.5); front(p.pid)
                         return p
-                    p = launch(15)
+                    log = OUT / f'scroll-{scene}-{name}-{r}.log'
+                    p = launch(15, log)
                     s = sample(p.pid, 4.5, 10)
                     s['exit_code'] = p.wait(timeout=30)
-                    out['scroll']['trials'].setdefault(f'{scene}/{name}', []).append(s)
+                    out['scroll']['trials'].setdefault(f'{scene}/{name}', []).append(checked(s, log, 15, 'scroll'))
                     time.sleep(1)
-                    p = launch(16)
+                    log = OUT / f'scroll-{scene}-{name}-{r}.pacing.log'
+                    p = launch(16, log)
                     try:
                         pace = json.loads(subprocess.run([PACER, str(p.pid), '5', '8'], capture_output=True, text=True).stdout)
                     except ValueError as e:
                         pace = {'error': str(e)}
                     pace['exit_code'] = p.wait(timeout=30)
-                    out['scroll']['pacing'].setdefault(f'{scene}/{name}', []).append(pace)
+                    if pace.get('frames', 0) <= 0:
+                        pace.setdefault('error', 'no frames captured')
+                    out['scroll']['pacing'].setdefault(f'{scene}/{name}', []).append(checked(pace, log, 16, 'scroll'))
                     print(f"scroll {r} {scene}/{name:12} cpu {s.get('cpu_percent_one_core', float('nan')):5.2f} p99 {pace.get('interval_p99_ms', float('nan')):5.1f}", flush=True)
                     time.sleep(1)
     finally:
@@ -310,18 +335,19 @@ def report(path):
     if res['animate']:
         print('animate')
     for name, rows in res['animate'].items():
-        ok = [r for r in rows if 'error' not in r]
+        ok = [r for r in rows if r.get('valid', 'error' not in r)]
         warms = sum(1 for p in glob.glob(f'{out}/animate-{glob.escape(name)}.present.log') for line in open(p, errors='replace') if line.rstrip().endswith(' warm'))
         print(f"  {name:12} cpu {med([r['cpu_percent_one_core'] for r in ok]):5.2f}% gpu {med([r['gpu_system_watts'] * 1000 for r in ok]):6.1f} mW "
               f"instr {med([r['instructions'] / r['wall_seconds'] / 1e6 for r in ok]):6.1f} M/s ws cpu {med([r['windowserver_cpu_percent'] for r in ok]):5.1f} warm-ups {warms} n={len(ok)}")
     if res['scroll']['trials']:
         print('scroll')
     for key, rows in res['scroll']['trials'].items():
-        ok = [r for r in rows if 'error' not in r]
-        pc = [p for p in res['scroll']['pacing'].get(key, []) if 'error' not in p]
+        ok = [r for r in rows if r.get('valid', 'error' not in r)]
+        pc = [p for p in res['scroll']['pacing'].get(key, []) if p.get('valid', 'error' not in p)]
         print(f"  {key:16} cpu {med([r['cpu_percent_one_core'] for r in ok]):5.2f}% gpu {med([r['gpu_system_watts'] * 1000 for r in ok]):6.1f} mW "
               f"ws cpu {med([r['windowserver_cpu_percent'] for r in ok]):5.1f} instr {med([r['instructions'] / r['wall_seconds'] / 1e6 for r in ok]):6.1f} M/s "
-              f"p99 {med([p['interval_p99_ms'] for p in pc]):5.1f} ms long {med([p['long_interval_fraction'] * 100 for p in pc]):5.2f}% n={len(ok)}/{len(pc)}")
+              f"p99 {med([p['interval_p99_ms'] for p in pc]):5.1f} ms (range {min([p['interval_p99_ms'] for p in pc], default=float('nan')):.1f}–{max([p['interval_p99_ms'] for p in pc], default=float('nan')):.1f}) "
+              f"long {med([p['long_interval_fraction'] * 100 for p in pc]):5.2f}% valid {len(ok)}/{len(rows)} trials, {len(pc)}/{len(res['scroll']['pacing'].get(key, []))} captures")
 
 
 if __name__ == '__main__':
