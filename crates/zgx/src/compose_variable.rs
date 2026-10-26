@@ -516,9 +516,10 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
                             .max(0.)
                             .min(limit);
                     }
-                    let mut range = model.visible_range(position, height, overscan);
+                    let (mut range, first) =
+                        model.visible_range_and_row(position, height, overscan);
                     if measured && !range.is_empty() {
-                        let first = model.row_at(position).unwrap();
+                        let first = first.unwrap();
                         if let Some((previous_first, previous_start, previous_end)) = discovery
                             && previous_first == first
                         {
@@ -566,7 +567,7 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
                         discovery = None;
                     }
                     let geometry: Vec<_> = model.rows(range).collect();
-                    let next_anchor = model.row_at(position).map(|index| Anchor {
+                    let next_anchor = first.map(|index| Anchor {
                         revision,
                         length,
                         position,

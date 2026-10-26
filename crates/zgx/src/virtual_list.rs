@@ -480,6 +480,46 @@ impl HeightIndex {
         let end = end.saturating_add(1).min(self.count());
         first.saturating_sub(overscan)..end.saturating_add(overscan).min(self.count())
     }
+    // The anchor uses the raw offset; the viewport range clamps it. Reuse
+    // their first-row search only when both offsets are the same.
+    #[inline(always)]
+    pub(crate) fn visible_range_and_row(
+        &self,
+        offset: f32,
+        viewport_height: f32,
+        overscan: usize,
+    ) -> (Range<usize>, Option<usize>) {
+        if self.count() == 0 {
+            return (0..0, None);
+        }
+        if self.count() == 1 {
+            let end = usize::from(viewport_height.is_finite() && viewport_height > 0.);
+            return (0..end, Some(0));
+        }
+        if !viewport_height.is_finite() || viewport_height <= 0. {
+            return (0..0, self.row_at(offset));
+        }
+        let viewport = f64::from(viewport_height);
+        let total = self.prefix(self.count());
+        let raw = if offset.is_finite() {
+            f64::from(offset.max(0.))
+        } else {
+            0.
+        };
+        let low = raw.min((total - viewport).max(0.));
+        let (first, end) = self.search_pair(low, low + viewport);
+        let first = first.min(self.count() - 1);
+        let end = end.saturating_add(1).min(self.count());
+        let row = if low == raw {
+            Some(first)
+        } else {
+            self.row_at(offset)
+        };
+        (
+            first.saturating_sub(overscan)..end.saturating_add(overscan).min(self.count()),
+            row,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +529,59 @@ mod height_index_tests {
     /// with its own additions: for equal, nearly equal (a tiny viewport far
     /// down rounds back to its start) and far apart endpoints, and heights
     /// from subnormal to huge.
+    /// The rows a viewport shows and the row its offset falls in, found
+    /// together, are what the two queries find apart: for empty and
+    /// one-row lists, viewports of no height or no finite one, offsets
+    /// past either end or not finite, and every overscan.
+    #[test]
+    fn the_range_and_its_row_are_found_together_as_apart() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let heights = [f32::MIN_POSITIVE, 0.5, 1., 12., 40., 1e5, 1e20];
+        let viewports = [0., -1., f32::NAN, f32::INFINITY, 1e-6, 1., 30., 500., 1e30];
+        let mut checked = 0;
+        for round in 0..80 {
+            let count = match round % 4 {
+                0 => 0,
+                1 => 1,
+                _ => 2 + (next() % 200) as usize,
+            };
+            let mut index = HeightIndex::new(count, 10.);
+            for row in 0..count {
+                let height = heights[(next() % heights.len() as u64) as usize];
+                index.set_height(row, height).unwrap();
+            }
+            let total = index.content_height();
+            for _ in 0..120 {
+                let offset = match next() % 6 {
+                    0 => -5.,
+                    1 => f32::NAN,
+                    2 => f32::INFINITY,
+                    3 => total * 2.,
+                    4 => index.row_offset((next() % (count as u64 + 1)) as usize),
+                    _ => total * (next() % 1000) as f32 / 1000.,
+                };
+                let viewport = viewports[(next() % viewports.len() as u64) as usize];
+                for overscan in [0, 3, usize::MAX] {
+                    assert_eq!(
+                        index.visible_range_and_row(offset, viewport, overscan),
+                        (
+                            index.visible_range(offset, viewport, overscan),
+                            index.row_at(offset)
+                        ),
+                        "round {round}: {offset} {viewport} {overscan} over {count} rows"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 28_800);
+    }
     #[test]
     fn a_shared_descent_finds_both_endpoints_as_two_searches_do() {
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
