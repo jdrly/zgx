@@ -309,7 +309,8 @@ impl NativeHost {
             self.zoom = zoom;
             surfaces.set_zoom(zoom);
         }
-        if surfaces.differs(&split, &self.split) || rezoomed {
+        let moved = surfaces.differs(&split, &self.split) || rezoomed;
+        if moved {
             self.pending = true;
             #[cfg(target_os = "macos")]
             renderer.present_plain_for(SYNCED);
@@ -354,10 +355,15 @@ impl NativeHost {
                 }
             }
         }
-        self.placed = match zoom == 1. {
-            true => split.clone(),
-            false => Rc::new(split.zoomed(zoom)),
-        };
+        // Zoomed again only when something native moved: the platform
+        // reads only native views and backdrops (`differs`), and copying the
+        // whole split every frame of a zoomed window cost its sets' and maps'
+        // allocations for nothing.
+        if zoom == 1. {
+            self.placed = split.clone();
+        } else if moved {
+            self.placed = Rc::new(split.zoomed(zoom));
+        }
         self.split = split.clone();
         self.natives.set_split(split);
         Ok(damage)

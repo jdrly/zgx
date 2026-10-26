@@ -196,7 +196,9 @@ impl Pointer {
         let Some(page) = self.router.page(node) else {
             return;
         };
-        let scale = scale_of(hwnd);
+        // The router's split is zgx's: its points are the zoom's over the
+        // window's.
+        let scale = scale_of(hwnd) * self.router.zoom.get();
         let origin = self
             .router
             .natives
@@ -647,6 +649,10 @@ impl Surfaces {
     /// Move native views to `split`'s placements.
     pub fn apply(&mut self, natives: &NativeViews, split: &PlaneSplit) {
         let scale = self.scale();
+        // A page's pixels to its CSS pixel: the display's times the window's
+        // zoom, as a browser's zoom scales its page (placements come in the
+        // zoomed window's points already).
+        let page_scale = scale * self.pointer.router.zoom.get();
         let views = natives.views();
         // Unmounted: their cuts go (pages stay with their controllers).
         self.clips.retain(|(node, clip)| {
@@ -681,9 +687,10 @@ impl Surfaces {
             let (page, web) = match content {
                 // A closed page shows nothing (and gets no new page).
                 NativeContent::Web(web) if web.is_closed() => (None, Some(web.clone())),
-                NativeContent::Web(web) => {
-                    (webview2::backend(web, self.hwnd, scale), Some(web.clone()))
-                }
+                NativeContent::Web(web) => (
+                    webview2::backend(web, self.hwnd, page_scale),
+                    Some(web.clone()),
+                ),
                 _ => (None, None),
             };
             let same = match (&clip.page, &page) {
@@ -711,7 +718,13 @@ impl Surfaces {
                 clip.placed = None;
             }
             clip.web = web;
-            Self::place(&self.composition, clip, split.native(*node).cloned(), scale);
+            Self::place(
+                &self.composition,
+                clip,
+                split.native(*node).cloned(),
+                scale,
+                page_scale,
+            );
         }
         // Shown pages in paint order, between the base and the overlay.
         let mut shown: Vec<(usize, NodeId)> = self
@@ -787,6 +800,7 @@ impl Surfaces {
         clip: &mut Clip,
         placement: Option<NativePlacement>,
         scale: f32,
+        page_scale: f32,
     ) {
         let visible = placement
             .as_ref()
@@ -808,7 +822,7 @@ impl Surfaces {
             clip.placed = None;
             return;
         };
-        let key = (placement.clone(), scale);
+        let key = (placement.clone(), page_scale);
         if clip.placed.as_ref() != Some(&key) {
             let frame = frame_px(placement.frame, scale);
             // SAFETY: our visual, on the window's thread.
@@ -817,7 +831,7 @@ impl Surfaces {
                 let _ = clip.inner.SetOffsetY2(frame.1 as f32);
             }
             if let Some(page) = &clip.page {
-                page.set_bounds(frame, scale);
+                page.set_bounds(frame, page_scale);
             }
             if clip.opacity != placement.opacity
                 && let Some(effect) = &clip.effect

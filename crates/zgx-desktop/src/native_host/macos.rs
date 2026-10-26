@@ -89,7 +89,9 @@ pub(crate) fn forward_secondary_click(view: &NSView, event: &objc2_app_kit::NSEv
     let Some(router) = router else {
         return;
     };
-    let (x, y) = (point.x as f32, y as f32);
+    // zgx's points are AppKit's over the window's zoom.
+    let zoom = router.zoom.get();
+    let (x, y) = (point.x as f32 / zoom, y as f32 / zoom);
     zgx::native_view::post(move || {
         let Some(scene) = router.scene.upgrade() else {
             return;
@@ -241,7 +243,8 @@ pub(crate) fn zgx_cursor_at(
     })?;
     let scene = router.scene.upgrade()?;
     let scene = scene.try_borrow().ok()?;
-    scene.cursor_at(point.x as f32, y as f32)
+    let zoom = router.zoom.get();
+    scene.cursor_at(point.x as f32 / zoom, y as f32 / zoom)
 }
 
 /// Whether `view` or a view in it has its window's keyboard focus.
@@ -471,6 +474,15 @@ fn in_space(rect: Rect, height: f32, top_down: bool) -> CGRect {
         ))
     }
 }
+/// `rect` in AppKit's points, in zgx's: over the window's zoom.
+fn unzoomed(rect: Rect, zoom: f32) -> Rect {
+    Rect::new(
+        rect.x / zoom,
+        rect.y / zoom,
+        rect.width / zoom,
+        rect.height / zoom,
+    )
+}
 /// A layer frame in its owner's space, back to top-down coordinates.
 fn from_space(frame: CGRect, height: f32, top_down: bool) -> Rect {
     let rect = rect_of(frame);
@@ -686,6 +698,8 @@ struct Shared {
     backdrops: Vec<(Vec<Retained<CutView>>, Retained<BackdropView>)>,
     overlay_view: Option<Retained<OverlayView>>,
     overlay_host: Option<Retained<CALayer>>,
+    /// The window's zoom: reports give zgx's points, AppKit's over it.
+    zoom: f32,
 }
 
 fn ns_window(window: &winit::window::Window) -> Option<Retained<objc2_app_kit::NSWindow>> {
@@ -824,6 +838,7 @@ impl Surfaces {
             parent: Some(parent.clone()),
             overlay_view: Some(overlay_view.clone()),
             overlay_host: Some(overlay_host.clone()),
+            zoom: 1.,
             ..Default::default()
         }));
         Ok(Self {
@@ -1105,6 +1120,7 @@ impl Surfaces {
     pub fn set_zoom(&mut self, zoom: f32) {
         self.zoom = zoom as f64;
         self.router.zoom.set(zoom);
+        self.shared.borrow_mut().zoom = zoom;
     }
     fn clip(&self, node: NodeId, bounds: &NSRect) -> Clip {
         Clip {
@@ -1365,8 +1381,8 @@ impl Drop for Surfaces {
 }
 
 /// Live AppKit state of a window's native views, read back for fixtures and
-/// diagnostics: what is actually where, in window coordinates (y down).
-/// Clones share it; it reads nothing until the window first shows a native view.
+/// diagnostics: what is actually where, in window coordinates (y down) in
+/// zgx's points (AppKit's over the window's zoom). Clones share it; it reads nothing until the window first shows a native view.
 #[derive(Clone, Default)]
 pub struct NativeDiagnostics(Rc<RefCell<Weak<RefCell<Shared>>>>);
 /// A native view as AppKit has it.
@@ -1406,7 +1422,7 @@ pub struct BackdropReport {
     /// The blur's radius, as its filter holds it.
     pub blur: Option<f64>,
 }
-fn masks_of(cuts: &[Retained<CutView>]) -> Vec<(Rect, f64)> {
+fn masks_of(cuts: &[Retained<CutView>], zoom: f32) -> Vec<(Rect, f64)> {
     cuts.iter()
         .filter_map(|cut| {
             let layer = cut.layer()?;
@@ -1419,8 +1435,9 @@ fn masks_of(cuts: &[Retained<CutView>]) -> Vec<(Rect, f64)> {
             let radius = if mask.isKindOfClass(CAShapeLayer::class()) {
                 -1.
             } else {
-                mask.cornerRadius()
+                mask.cornerRadius() / zoom as f64
             };
+            let rect = unzoomed(rect, zoom);
             Some((rect, radius))
         })
         .collect()
@@ -1450,9 +1467,10 @@ impl NativeDiagnostics {
                     hidden: cuts[0].isHidden(),
                     alpha: cuts[0].alphaValue(),
                     frame: content.as_ref().map(|content| {
-                        rect_of(content.convertRect_toView(content.bounds(), Some(parent)))
+                        let frame = content.convertRect_toView(content.bounds(), Some(parent));
+                        unzoomed(rect_of(frame), shared.zoom)
                     }),
-                    masks: masks_of(cuts),
+                    masks: masks_of(cuts, shared.zoom),
                     index: index_in(parent, &cuts[0]),
                 })
                 .collect()
@@ -1480,20 +1498,23 @@ impl NativeDiagnostics {
                             valueForKey: &*NSString::from_str("inputRadius")
                         ];
                         let value: f64 = msg_send![value.as_ref()?, doubleValue];
-                        Some(value)
+                        Some(value / shared.zoom as f64)
                     });
                     BackdropReport {
                         hidden: cuts[0].isHidden(),
-                        frame: rect_of(view.convertRect_toView(view.bounds(), Some(parent))),
+                        frame: unzoomed(
+                            rect_of(view.convertRect_toView(view.bounds(), Some(parent))),
+                            shared.zoom,
+                        ),
                         alpha: cuts[0].alphaValue(),
                         corner_radius: layer.as_ref().map_or(0., |layer| {
                             if layer.mask().is_some() {
                                 -1.
                             } else {
-                                layer.cornerRadius()
+                                layer.cornerRadius() / shared.zoom as f64
                             }
                         }),
-                        masks: masks_of(cuts),
+                        masks: masks_of(cuts, shared.zoom),
                         index: index_in(parent, &cuts[0]),
                         class: layer
                             .map(|layer| layer.class().name().to_string_lossy().into_owned())
@@ -1521,7 +1542,7 @@ impl NativeDiagnostics {
                 top_down(&root),
             );
             let overlay = shared.overlay_view.as_ref()?;
-            Some((rect, index_in(parent, overlay)))
+            Some((unzoomed(rect, shared.zoom), index_in(parent, overlay)))
         })
         .flatten()
     }
@@ -1531,7 +1552,7 @@ impl NativeDiagnostics {
         self.with(|shared| {
             let parent = shared.parent.as_ref().unwrap();
             // hitTest: takes the point in the receiver's superview's space.
-            let point = NSPoint::new(x as f64, y as f64);
+            let point = NSPoint::new((x * shared.zoom) as f64, (y * shared.zoom) as f64);
             // SAFETY: a superview clears its subviews' back pointer as it
             // lets them go, so one still set is alive (main thread).
             let point = match unsafe { parent.superview() } {
@@ -1559,14 +1580,8 @@ impl NativeDiagnostics {
                 let parent = shared.parent.as_ref()?;
                 let window = parent.window()?;
                 let height = parent.frame().size.height;
-                let flipped = NSPoint::new(
-                    x as f64,
-                    if parent.isFlipped() {
-                        y as f64
-                    } else {
-                        height - y as f64
-                    },
-                );
+                let (x, y) = ((x * shared.zoom) as f64, (y * shared.zoom) as f64);
+                let flipped = NSPoint::new(x, if parent.isFlipped() { y } else { height - y });
                 let location = parent.convertPoint_toView(flipped, None);
                 objc2_app_kit::NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                     objc2_app_kit::NSEventType::MouseMoved,
