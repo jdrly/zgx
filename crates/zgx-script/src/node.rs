@@ -69,12 +69,8 @@ pub(crate) struct Node {
     /// Parameters given as theme colours (`"$accent"`): resolved where the
     /// node is styled, and again when the theme changes.
     pub shader_tokens: [Option<zgx::theme::TokenId>; 4],
-    /// `layer_shader = ui.layer_shader(...)`: the subtree composites
-    /// through a WGSL function.
-    pub layer_shader: Option<Arc<zgx::decoration::FillShader>>,
-    /// `layer_params`: the layer shader's sixteen values, as four vec4s
-    /// (boxed: few nodes have a layer shader).
-    pub layer_params: Option<Box<[[f32; 4]; 4]>>,
+    /// `layer_shader` and `layer_params` (boxed: few nodes have either).
+    pub layer: Option<Box<LayerProps>>,
     /// `window_drag = true`: a press on it moves the window.
     pub window_drag: bool,
     /// `selectable = true`: the pointer selects the text in it (`false`
@@ -381,6 +377,15 @@ fn web_options(table: &Table) -> mlua::Result<zgx::web_view::WebViewOptions> {
 #[derive(Clone)]
 pub(crate) struct ShaderUd(pub Arc<zgx::decoration::FillShader>);
 impl UserData for ShaderUd {}
+/// A node's layer shader props.
+#[derive(Clone, Default)]
+pub(crate) struct LayerProps {
+    /// `layer_shader = ui.layer_shader(...)`: the subtree composites
+    /// through a WGSL function.
+    pub shader: Option<Arc<zgx::decoration::FillShader>>,
+    /// `layer_params`: the layer shader's sixteen values, as four vec4s.
+    pub params: Option<[[f32; 4]; 4]>,
+}
 /// `ui.layer_shader(source, opts)`: a compiled layer shader, for
 /// `layer_shader` (see `zgx::scene::LayerShader`).
 pub(crate) struct LayerShaderUd(pub Arc<zgx::decoration::FillShader>);
@@ -488,8 +493,7 @@ impl Node {
             shader: None,
             shader_params: None,
             shader_tokens: [None; 4],
-            layer_shader: None,
-            layer_params: None,
+            layer: None,
             window_drag: false,
             selectable: None,
             selection_colors: None,
@@ -2470,15 +2474,12 @@ fn fill_from(
                         "`layer_shader` takes a ui.layer_shader",
                     ));
                 };
-                node.layer_shader = Some(ud.borrow::<LayerShaderUd>()?.0.clone());
+                node.layer.get_or_insert_default().shader =
+                    Some(ud.borrow::<LayerShaderUd>()?.0.clone());
             }
             "layer_params" => {
-                node.layer_params = Some(Box::new(shader_params(
-                    lua,
-                    &value,
-                    "layer_params",
-                    None,
-                )?));
+                node.layer.get_or_insert_default().params =
+                    Some(shader_params(lua, &value, "layer_params", None)?);
             }
             "mask" => {
                 let (bitmap, t) = match &value {
