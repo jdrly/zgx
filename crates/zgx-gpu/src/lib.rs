@@ -8920,6 +8920,20 @@ fn rounded_damage(rect: Rect, viewport: Rect, scale: f32) -> Option<Rect> {
 /// between pieces lie on whole device pixels, where rounding cannot move a
 /// pixel centre across them.
 fn push_panel(quads: &mut Vec<Quad>, quad: Quad, scale: f32, split: bool) {
+    // What can't split, known before its bands are worked out: the
+    // interior lies inside the box, so a box under `PANEL_INTERIOR` has
+    // none large enough.
+    if !split
+        || quad.color[3] < 1.
+        || quad.options[..3] != [0.; 3]
+        || quad.shape[2] > 0.
+        || quad.shape[3] <= 0.5
+        || quad.rect != quad.fade
+        || quad.rect[2] * quad.rect[3] < PANEL_INTERIOR
+    {
+        quads.push(quad);
+        return;
+    }
     let radius = if quad.options[3] > 0.5 {
         quad.border.iter().copied().fold(0., f32::max)
     } else {
@@ -8938,16 +8952,7 @@ fn push_panel(quads: &mut Vec<Quad>, quad: Quad, scale: f32, split: bool) {
         ((bottom - band) * scale).floor() / scale,
     );
     let (inner_width, inner_height) = (inner_right - left, inner_bottom - top);
-    if !split
-        || quad.color[3] < 1.
-        || quad.options[..3] != [0.; 3]
-        || quad.shape[2] > 0.
-        || quad.shape[3] <= 0.5
-        || quad.rect != quad.fade
-        || inner_width <= 0.
-        || inner_height <= 0.
-        || inner_width * inner_height < PANEL_INTERIOR
-    {
+    if inner_width <= 0. || inner_height <= 0. || inner_width * inner_height < PANEL_INTERIOR {
         quads.push(quad);
         return;
     }
