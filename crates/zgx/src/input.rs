@@ -2287,11 +2287,14 @@ impl InputDispatcher {
                         self.focus(scene, focus);
                     }
                 }
+                // Tab and Shift-Tab, and Control with them (AppKit's and
+                // GTK's way out of a text view that takes Tab); Option- and
+                // Command-Tab are the system's, or a field's literal tab.
                 InputEvent::KeyDown {
                     key: Key::Tab,
                     modifiers,
                     ..
-                } => {
+                } if !modifiers.alt && !modifiers.meta => {
                     let next = self.next_focus(&scene.borrow(), modifiers.shift);
                     self.focus(scene, next);
                     prevented = true;
@@ -2744,6 +2747,50 @@ mod tests {
         scene.borrow_mut().remove(b);
         d.dispatch(&scene, tab);
         assert_eq!(d.focused(), None);
+    }
+    #[test]
+    fn tab_moves_focus_with_shift_or_control_but_not_option_or_command() {
+        let (scene, a, b) = setup();
+        let d = InputDispatcher::new();
+        let opts = NodeInput {
+            focusable: true,
+            ..Default::default()
+        };
+        let _a = d.register(a, opts, |_| {});
+        let _b = d.register(b, opts, |_| {});
+        let tab = |modifiers| InputEvent::KeyDown {
+            key: Key::Tab,
+            modifiers,
+            repeat: false,
+        };
+        d.focus(&scene, Some(a));
+        let alt = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        let meta = Modifiers {
+            meta: true,
+            ..Default::default()
+        };
+        for held in [alt, meta] {
+            let result = d.dispatch(&scene, tab(held));
+            assert_eq!(d.focused(), Some(a), "{held:?}");
+            assert!(!result.default_prevented, "{held:?} goes on unhandled");
+        }
+        // Control-Tab: AppKit's and GTK's way out of a text view.
+        let control = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        d.dispatch(&scene, tab(control));
+        assert_eq!(d.focused(), Some(b));
+        let back = Modifiers {
+            shift: true,
+            control: true,
+            ..Default::default()
+        };
+        d.dispatch(&scene, tab(back));
+        assert_eq!(d.focused(), Some(a));
     }
     #[test]
     fn disabling_ancestor_cancels_unfocused_press_before_reenable() {

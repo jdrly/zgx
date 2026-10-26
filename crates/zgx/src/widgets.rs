@@ -4966,8 +4966,10 @@ impl Ui {
                                     changed = e.insert("\n");
                                 }
                             }
+                            // Control-Tab leaves it, as AppKit's text views.
                             Key::Tab
                                 if !command
+                                    && !modifiers.control
                                     && !modifiers.alt
                                     && tab_indent.code().is_some_and(|c| c.indent.borrow().is_some()) =>
                             {
