@@ -1121,6 +1121,13 @@ const PAINTED: u8 = 8;
 /// Its children changed: one was added or removed, or their order changed
 /// (`children_changed`). Damage is the children's own.
 const CHILDREN: u8 = 16;
+/// Its paint changed in colour alone (`paints_only`): its geometry, text and
+/// resources are as they were.
+const PAINT_ONLY: u8 = 32;
+/// Its paint changed otherwise too, this frame: not `PAINT_ONLY`.
+const PAINT_MIXED: u8 = 64;
+/// A setter changed the node itself, rather than layout moving it alone.
+const CHANGED: u8 = 128;
 /// Repaints a scene holds for a renderer before giving up on its patching
 /// (`Scene::repaints`): past them, it would draw the frame whole anyway.
 const REPAINTS_KEPT: usize = 1 << 14;
@@ -1139,6 +1146,58 @@ pub mod repaint {
     /// Every node a flush added or removed lies under a node repainted
     /// with this.
     pub const CHILDREN: u8 = super::CHILDREN;
+    /// Its paint changed and nothing else did: colours alone (a fill, a
+    /// border, a text's colour), its box, text, kind and resources as they
+    /// were, nothing moved, composited or laid out anew. Its items can be
+    /// made again in place.
+    pub const PAINT_ONLY: u8 = 32;
+    /// Layout moved or resized it and nothing else changed: its kind, style,
+    /// paint and effects are as they were. Its items can be made again from
+    /// its new box (their geometry from it, the rest unchanged).
+    pub const BOX_ONLY: u8 = 64;
+}
+/// The `repaint` flags a flush records for a node from its dirty bits.
+fn repaint_flags(dirty: u8) -> u8 {
+    let shown = dirty & (PAINT | PAINTED | COMPOSITE | CHILDREN);
+    let paint_only = dirty & (PAINT | PAINT_ONLY) == PAINT | PAINT_ONLY
+        && dirty & (PAINT_MIXED | PAINTED | COMPOSITE | CHILDREN | LAYOUT) == 0;
+    let box_only = dirty & PAINTED != 0 && dirty & (CHANGED | PAINT | COMPOSITE | CHILDREN) == 0;
+    shown
+        | if paint_only { repaint::PAINT_ONLY } else { 0 }
+        | if box_only { repaint::BOX_ONLY } else { 0 }
+}
+/// Whether `new` differs from `old` in colour alone (`PAINT_ONLY`): a rect's
+/// colour, a text's colour, a box's fill or border colour (with no
+/// decoration, whose rasters are kept apart).
+fn paints_only(old: &NodeKind, new: &NodeKind) -> bool {
+    let colours = |a: &QuadStyle, b: &QuadStyle| {
+        a.decoration.is_none()
+            && QuadStyle {
+                fill: b.fill,
+                border_color: b.border_color,
+                ..a.clone()
+            } == *b
+    };
+    match (old, new) {
+        (NodeKind::Rect(_), NodeKind::Rect(_)) => true,
+        (
+            NodeKind::Text {
+                text: a,
+                font_size: x,
+                ..
+            },
+            NodeKind::Text {
+                text: b,
+                font_size: y,
+                ..
+            },
+        ) => a == b && x == y,
+        (NodeKind::Quad(a), NodeKind::Quad(b)) => colours(a, b),
+        (NodeKind::Panel { layout: l, quad: a }, NodeKind::Panel { layout: m, quad: b }) => {
+            l == m && colours(a, b)
+        }
+        _ => false,
+    }
 }
 struct Node {
     cursor: Option<crate::cursor::Cursor>,
@@ -1150,6 +1209,9 @@ struct Node {
     bounds: Rect,
     transform: Transform,
     effects: Effects,
+    /// What changed since the last flush: `LAYOUT`, `PAINT`, `COMPOSITE`,
+    /// `PAINTED`, `CHILDREN`, `PAINT_ONLY`, `PAINT_MIXED`, `CHANGED`. All
+    /// eight bits are taken: another needs a wider type.
     dirty: u8,
     queued: bool,
     /// The measurement `arrange` places children from: the most recent one used.
@@ -3464,8 +3526,9 @@ impl Scene {
         {
             self.geometry_revision = self.geometry_revision.wrapping_add(1);
         }
+        let colour = paints_only(&self.node(id).kind, &kind);
         self.node_mut(id).kind = kind;
-        self.invalidate(id, PAINT);
+        self.invalidate(id, if colour { PAINT | PAINT_ONLY } else { PAINT });
         if !layout_unchanged {
             self.invalidate_layout(id);
         }
@@ -3761,9 +3824,10 @@ impl Scene {
         old.width_percent = style.width_percent;
         old.height_percent = style.height_percent;
         old.margin = style.margin;
+        // Only its box changed: laid out again, it is `repaint::BOX_ONLY`.
         match reads {
-            true => self.invalidate_layout_with(id, true),
-            false => self.invalidate_layout(id),
+            true => self.invalidate_layout_with(id, true, false),
+            false => self.invalidate_layout_with(id, false, false),
         }
         // A contents parent lays out as its last child.
         if self.contents_count > 0
@@ -4060,14 +4124,18 @@ impl Scene {
             }
         }
     }
+    // Inlined: each caller's `flags` is a constant, so the bits that demote a
+    // repaint (`PAINT_MIXED`, `CHANGED`) are worked out as it compiles.
+    #[inline(always)]
     fn invalidate(&mut self, id: NodeId, flags: u8) {
-        self.invalidate_with(id, flags, false);
+        self.invalidate_with(id, flags, false, true);
     }
     /// `invalidate`, keeping (`keep_reads`) what a node's layout reads
     /// (`read_bits`) and its text sizes where a change leaves them. Inlined:
     /// each caller's `keep_reads` is a constant, `invalidate`'s false.
+    /// `own`: the node itself changed, not one it lays out (`CHANGED`).
     #[inline(always)]
-    fn invalidate_with(&mut self, id: NodeId, flags: u8, keep_reads: bool) {
+    fn invalidate_with(&mut self, id: NodeId, flags: u8, keep_reads: bool, own: bool) {
         if self.isolation_count + self.promoted_count > 0 {
             let mut current = Some(id);
             while let Some(ancestor) = current {
@@ -4090,6 +4158,12 @@ impl Scene {
         }
         let node = self.node_mut(id);
         node.dirty |= flags;
+        if flags & (PAINT | PAINT_ONLY) == PAINT {
+            node.dirty |= PAINT_MIXED;
+        }
+        if own && flags != PAINTED {
+            node.dirty |= CHANGED;
+        }
         if flags & LAYOUT != 0 && !keep_reads {
             node.text_size.set(TextSizes::default());
             node.reads.set(0);
@@ -4103,16 +4177,18 @@ impl Scene {
     /// stops at a layout boundary: its size cannot depend on its content, so
     /// its parent keeps its layout and only the boundary's subtree is redone.
     fn invalidate_layout(&mut self, id: NodeId) {
-        self.invalidate_layout_with(id, false);
+        self.invalidate_layout_with(id, false, true);
     }
     /// `invalidate_layout`, keeping (`keep_reads`) what the nodes it marks
     /// read (see `invalidate_with`).
+    /// `own`: something besides its box changed (`CHANGED`): `set_box` alone
+    /// leaves the node a `repaint::BOX_ONLY` candidate.
     #[inline(always)]
-    fn invalidate_layout_with(&mut self, id: NodeId, keep_reads: bool) {
-        self.invalidate_with(id, LAYOUT, keep_reads);
+    fn invalidate_layout_with(&mut self, id: NodeId, keep_reads: bool, own: bool) {
+        self.invalidate_with(id, LAYOUT, keep_reads, own);
         let mut child = id;
         while let Some(parent) = self.node(child).parent {
-            self.invalidate_with(parent, LAYOUT, keep_reads);
+            self.invalidate_with(parent, LAYOUT, keep_reads, false);
             if self.is_layout_boundary(parent) {
                 // Siblings changing in turn (a card's bars) name it once.
                 if self.layout_roots.last() != Some(&parent) {
@@ -4136,8 +4212,9 @@ impl Scene {
     }
     /// Mark every ancestor up to the root, ignoring boundaries.
     fn invalidate_layout_to_root(&mut self, mut id: NodeId) {
+        let mut own = true;
         loop {
-            self.invalidate(id, LAYOUT);
+            self.invalidate_with(id, LAYOUT, false, std::mem::take(&mut own));
             match self.node(id).parent {
                 Some(parent) => id = parent,
                 None => break,
@@ -6235,7 +6312,7 @@ impl Scene {
                 report.paint_nodes += 1;
             }
             if keep && flags & (PAINT | PAINTED | COMPOSITE | CHILDREN) != 0 {
-                self.repaints.push((*id, flags));
+                self.repaints.push((*id, repaint_flags(flags)));
             }
             if flags & PAINT != 0 {
                 self.damage_node(*id);
@@ -9327,6 +9404,77 @@ mod set_box_tests {
             style.width = None;
             style.width_percent = Some(50.);
         });
+    }
+    #[test]
+    fn a_flush_names_paint_alone_and_box_alone_and_demotes_any_other_change() {
+        let sized = |height: f32| Style {
+            width: Some(40.),
+            height: Some(height),
+            ..Default::default()
+        };
+        let text = |value: &str, color: Color| NodeKind::Text {
+            text: value.into(),
+            color,
+            font_size: 16.,
+        };
+        let (red, blue, green) = (
+            Color(255, 0, 0, 255),
+            Color(0, 0, 255, 255),
+            Color(0, 255, 0, 255),
+        );
+        let mut scene = Scene::new(400., 300.);
+        let root = scene.root();
+        let column = scene.append(root, NodeKind::Container(Layout::Column), Style::default());
+        // Above `grows`, the first two keep their places as it grows.
+        let [recolours, retexts, grows, follows, both] =
+            [(); 5].map(|_| scene.append(column, NodeKind::Rect(red), sized(20.)));
+        scene.set_kind(retexts, text("one", red));
+        scene.flush();
+        let _ = scene.repaints();
+        let flags = |scene: &Scene, id| {
+            scene
+                .repaints()
+                .1
+                .iter()
+                .find(|(entry, _)| *entry == id)
+                .map_or(0, |(_, flags)| *flags)
+        };
+        // Colour alone, twice: paint only.
+        scene.set_kind(recolours, NodeKind::Rect(blue));
+        scene.set_kind(recolours, NodeKind::Rect(green));
+        // Colour and text in one frame: a plain repaint.
+        scene.set_kind(retexts, text("one", blue));
+        scene.set_kind(retexts, text("two", blue));
+        // `grows` grows by its box alone (`set_box`): it and the leaves it
+        // moves are box only, unless something else changed about them too.
+        let mut kept = None;
+        scene.set_box(grows, &sized(30.), &mut kept);
+        scene.set_kind(both, NodeKind::Rect(blue));
+        scene.flush();
+        let paint = |f: u8| f & repaint::PAINT_ONLY != 0;
+        let moved = |f: u8| f & repaint::BOX_ONLY != 0;
+        let [g, f, r, t, b] =
+            [grows, follows, recolours, retexts, both].map(|id| flags(&scene, id));
+        assert!(paint(r) && !moved(r), "{r:#b}");
+        assert!(!paint(t) && t & repaint::PAINT != 0, "{t:#b}");
+        assert!(moved(g) && !paint(g), "{g:#b}");
+        assert!(moved(f) && !paint(f), "{f:#b}");
+        // Moved and recoloured: neither.
+        assert!(b & repaint::MOVED != 0 && !moved(b) && !paint(b), "{b:#b}");
+        // Another style change than its box while it moves, one that lays it
+        // out again and repaints nothing itself (as a visibility change does):
+        // not box only.
+        let _ = scene.repaints();
+        scene.set_style(
+            grows,
+            Style {
+                relative: true,
+                ..sized(40.)
+            },
+        );
+        scene.flush();
+        let g = flags(&scene, grows);
+        assert!(!moved(g), "{g:#b}");
     }
     #[test]
     fn set_box_with_any_other_change_restyles_in_full() {
