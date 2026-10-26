@@ -17,7 +17,11 @@ the script benches take for budgets long enough for cachegrind. Linux
 instructions would swamp zgx's, so heavy, lab and animate run with
 RENDER=0 (update, layout and damage, text measured as a renderer would).
 The app scenes count their canvases' CPU work too (`HeadlessCanvases`):
-found as shapes the GPU draws, or rasterized where they cannot be.
+found as shapes the GPU draws, or rasterized where they cannot be. Each
+run has one environment, addresses not randomized, and a clock and hash
+seeds fixed (`same_run.c`, preloaded): run again, a binary counts the
+same instructions, where the clock alone moved mount and app-mail by
+tenths of a percent.
 
 With ZGX_GATE_BIN_CACHE set, a side's binaries found there, stamped with
 its commit and compiler, are taken rather than built, and the head's are
@@ -93,6 +97,11 @@ SCENES = [
     ('app-code-search', 'zgx-script', 'list_state_bench', {'APP': 'code', 'LINES': '5000', 'REPS': '2',
                                                             'ONLY': 'a new letter'}),
 ]
+
+# What a scene still moves by with no code changed (`same_run.c` fixes the
+# rest): app-chat's test waits for its fake server's timer thread, a
+# handoff between threads that real time decides.
+SPREAD = {'app-chat': 0.2}
 
 
 def package_in(checkout, package):
@@ -190,6 +199,27 @@ class Infra(Exception):
     """The gate could not measure: not a result about the change."""
 
 
+# The sides' app scripts, copied once a run (see `scripts_of`), and the
+# preloaded library, built once (`same_run`).
+COPIED = set()
+
+
+def scripts_of(checkout):
+    """`checkout`'s app scripts, copied to a path as long as the other
+    side's (WORK/scripts-base and WORK/scripts-head): a script's path is
+    read as it loads (resolved, compared, its modules found), and from the
+    base's worktree and the head's workspace, paths of different lengths,
+    the same work counted differently, with the allocator and Luau's
+    collector moving with it (#588: app-mail +0.2% with no code changed)."""
+    side = 'head' if pathlib.Path(checkout).resolve() == ROOT.resolve() else 'base'
+    to = WORK / f'scripts-{side}'
+    if to not in COPIED:
+        shutil.rmtree(to, ignore_errors=True)
+        shutil.copytree(checkout / 'crates' / package_in(checkout, 'zgx-script') / 'examples', to)
+        COPIED.add(to)
+    return to
+
+
 def count(binary, env, checkout=None):
     """The run's instructions. A run that fails is the gate's failure, not
     the change's: under cachegrind a script's time budget (`ZGX_GATE`
@@ -200,15 +230,35 @@ def count(binary, env, checkout=None):
     # head's (a script using what the base lacks would fail there).
     scripts = {}
     if checkout is not None:
-        scripts['ZGX_EXAMPLES'] = str(checkout / 'crates' / package_in(checkout, 'zgx-script') / 'examples')
+        scripts['ZGX_EXAMPLES'] = str(scripts_of(checkout))
+    # One environment, addresses not randomized, the clock and seeds fixed
+    # (`same_run`): run again, the same binary counts the same.
+    fixed = {k: os.environ[k] for k in ('PATH', 'HOME', 'ZGX_REAL_CLOCK') if k in os.environ}
+    fixed.update(LD_PRELOAD=str(same_run()), ZGX_SAME_RUN_REPORT='1')
+    command = ['valgrind', '--tool=cachegrind', '--cache-sim=no', '--cachegrind-out-file=/dev/null', str(binary)]
     result = subprocess.run(
-        ['valgrind', '--tool=cachegrind', '--cache-sim=no', '--cachegrind-out-file=/dev/null', str(binary)],
-        env=dict(os.environ, **renamed_env({'ZGX_GATE': '1', **scripts, **env})), capture_output=True, text=True)
+        ['setarch', '-R', *command] if shutil.which('setarch') else command,
+        env={**fixed, **renamed_env({'ZGX_GATE': '1', **scripts, **env})}, capture_output=True, text=True)
     found = re.search(r'I\s+refs:\s+([\d,]+)', result.stderr)
     if result.returncode or not found:
         why = 'a script hit its time budget' if 'time budget' in result.stdout + result.stderr else 'it failed'
         raise Infra(f'{binary.name}: {why} under cachegrind\n{result.stdout[-1500:]}{result.stderr[-3000:]}')
+    if 'same_run: ' not in result.stderr:
+        raise Infra(f'{binary.name}: ran without same_run.so preloaded\n{result.stderr[-3000:]}')
     return int(found.group(1).replace(',', ''))
+
+
+def same_run():
+    """`same_run.c` built for preloading, once a run: it fixes what made
+    one binary count differently from run to run (Luau's collector and
+    script calls pacing themselves by the clock, std's hash seeds)."""
+    built = WORK / 'same_run.so'
+    if built not in COPIED:
+        WORK.mkdir(parents=True, exist_ok=True)
+        source = pathlib.Path(__file__).with_name('same_run.c')
+        subprocess.run(['cc', '-O2', '-shared', '-fPIC', '-o', str(built), str(source)], check=True)
+        COPIED.add(built)
+    return built
 
 
 def main():
@@ -272,7 +322,8 @@ def main():
         if before is None:
             table.append(f'| {name} | (new) | {after / 1e6:,.1f} M | |')
         else:
-            table.append(f'| {name} | {before / 1e6:,.1f} M | {after / 1e6:,.1f} M | {delta:+.2f}%{flag} |')
+            spread = f' (±{SPREAD[name]:g}% with no change)' if name in SPREAD else ''
+            table.append(f'| {name} | {before / 1e6:,.1f} M | {after / 1e6:,.1f} M | {delta:+.2f}%{flag}{spread} |')
     if args.markdown:
         args.markdown.write_text('\n'.join(table) + '\n')
     if failed:
