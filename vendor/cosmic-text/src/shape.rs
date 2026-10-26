@@ -115,6 +115,11 @@ pub struct ShapeBuffer {
     /// compare them again. 0 outside `ShapeLine::build`.
     #[cfg(feature = "shape-run-cache")]
     run_key_line: usize,
+    /// zgx patch: that list's spans that differ from its defaults, with
+    /// their attributes' ids (`ShapeRunCache::intern`), worked out once a
+    /// line rather than for every word.
+    #[cfg(feature = "shape-run-cache")]
+    line_spans: Vec<(Range<usize>, u32)>,
 
     /// zgx patch: a visual line's ranges in display order (`reorder`).
     order: Vec<Range<usize>>,
@@ -510,39 +515,59 @@ fn shape_run_cached(
         Some(mut key) => {
             key.text.clear();
             key.text.push_str(&line[run_range.clone()]);
-            // Checked once a line: its attribute list is the same for every word.
-            let list = core::ptr::from_ref(attrs_list) as usize;
-            if font_system.shape_buffer.run_key_line != list {
-                if *key.default_attrs != *defaults {
-                    key.set_defaults(defaults.clone(), &mut font_system.shape_run_cache);
-                }
-                font_system.shape_buffer.run_key_line = list;
-            }
             key.attrs_spans.clear();
             key
         }
-        None => ShapeRunKey::new(
-            line[run_range.clone()].to_string(),
-            defaults.clone(),
-            &mut font_system.shape_run_cache,
-        ),
+        None => {
+            let key = ShapeRunKey::new(
+                line[run_range.clone()].to_string(),
+                defaults.clone(),
+                &mut font_system.shape_run_cache,
+            );
+            // Its defaults and spans found afresh below.
+            font_system.shape_buffer.run_key_line = 0;
+            key
+        }
     };
+    // Checked once a line: its attribute list is the same for every word.
+    // Its spans that differ from its defaults, by id, with it.
+    let list = core::ptr::from_ref(attrs_list) as usize;
+    // A key from a cache since replaced holds an id from its table.
+    if key.generation != font_system.shape_run_cache.generation {
+        key.set_defaults(defaults.clone(), &mut font_system.shape_run_cache);
+        font_system.shape_buffer.run_key_line = 0;
+    }
+    if font_system.shape_buffer.run_key_line != list {
+        if *key.default_attrs != *defaults {
+            key.set_defaults(defaults.clone(), &mut font_system.shape_run_cache);
+        }
+        font_system.shape_buffer.run_key_line = list;
+        let line_spans = &mut font_system.shape_buffer.line_spans;
+        line_spans.clear();
+        for (attrs_range, attrs) in attrs_list.spans.iter() {
+            if attrs != &*key.default_attrs {
+                line_spans.push((
+                    attrs_range.clone(),
+                    font_system.shape_run_cache.intern(attrs),
+                ));
+            }
+        }
+    }
     key.rtl = span_rtl;
-    // zgx patch: most text has no spans: no range query to find none.
-    let spans = (!attrs_list.spans.is_empty())
-        .then(|| attrs_list.spans.overlapping(&run_range))
-        .into_iter()
-        .flatten();
-    for (attrs_range, attrs) in spans {
-        if attrs == &*key.default_attrs {
-            // Skip if attrs matches default attrs
-            continue;
+    // As the attribute list's spans overlapping the run, in order, those
+    // the defaults cover left out.
+    let line_spans = &font_system.shape_buffer.line_spans;
+    // In order and apart: the first that can overlap the run is the first
+    // to end past its start.
+    let first = line_spans.partition_point(|(attrs_range, _)| attrs_range.end <= start_run);
+    for (attrs_range, id) in &line_spans[first..] {
+        if attrs_range.start >= end_run {
+            break;
         }
         let start = max(attrs_range.start, start_run).saturating_sub(start_run);
         let end = min(attrs_range.end, end_run).saturating_sub(start_run);
         if end > start {
-            let range = start..end;
-            key.attrs_spans.push((range, attrs.clone()));
+            key.attrs_spans.push((start..end, *id));
         }
     }
     if let Some(cache_glyphs) = font_system.shape_run_cache.get(&key) {
