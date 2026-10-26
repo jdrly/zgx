@@ -3917,7 +3917,8 @@ impl GpuRenderer {
         if fits {
             for (&(start, len, _, first, end), &place) in ranges.iter().zip(&places) {
                 let item = &mut kept.items[place];
-                kept.upload.wrote(item.start, item.start + len.max(item.len));
+                kept.upload
+                    .wrote(item.start, item.start + len.max(item.len));
                 let (at, made) = (item.start as usize, len as usize);
                 kept.quads[at..at + made]
                     .copy_from_slice(&self.frame_quads[start as usize..(start + len) as usize]);
@@ -3994,7 +3995,11 @@ impl GpuRenderer {
         self.kept_upload = Some((std::mem::take(&mut kept.upload), len * size_of::<Quad>()));
         let drawn =
             self.render_flat::<FRAME>(scene, Vec::new(), damage, Some(regions.to_vec()), false);
-        kept.upload = self.kept_upload.take().map(|(upload, _)| upload).unwrap_or_default();
+        kept.upload = self
+            .kept_upload
+            .take()
+            .map(|(upload, _)| upload)
+            .unwrap_or_default();
         std::mem::swap(&mut self.frame_quads, &mut kept.quads);
         kept.quads.truncate(len);
         if lent {

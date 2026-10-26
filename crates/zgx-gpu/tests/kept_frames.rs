@@ -757,21 +757,18 @@ fn columns(live: Signal<u32>) -> View {
                 .absolute()
                 .mt(4. + 12.5 * row as f32)
                 .size(SIZE.0, 12.)
+                .child(div().absolute().size(150., 11.).reactive_style(move || {
+                    let shade = ((live.get() * 31 + row * 7) % 200) as u8;
+                    Styles::new().bg(Color(40, shade, 120, 255))
+                }))
                 .child(
-                    div()
-                        .absolute()
-                        .size(150., 11.)
-                        .reactive_style(move || {
-                            let shade = ((live.get() * 31 + row * 7) % 200) as u8;
-                            Styles::new().bg(Color(40, shade, 120, 255))
-                        }),
-                )
-                .child(
-                    text(format!("an unchanging label in the right-hand column, row {row:02}"))
-                        .text_size(10.)
-                        .absolute()
-                        .ml(170.)
-                        .size(300., 12.),
+                    text(format!(
+                        "an unchanging label in the right-hand column, row {row:02}"
+                    ))
+                    .text_size(10.)
+                    .absolute()
+                    .ml(170.)
+                    .size(300., 12.),
                 )
         }))
 }

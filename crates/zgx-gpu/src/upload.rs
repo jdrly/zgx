@@ -128,7 +128,11 @@ impl KeptQuads {
             return;
         }
         let mut spare = match self.changes.len() == CHANGES {
-            true => self.changes.pop_front().map(|(_, wrote)| wrote).unwrap_or_default(),
+            true => self
+                .changes
+                .pop_front()
+                .map(|(_, wrote)| wrote)
+                .unwrap_or_default(),
             false => Vec::new(),
         };
         spare.clear();
@@ -154,14 +158,22 @@ impl KeptQuads {
     /// (no older than the patch before the first it remembers).
     fn since(&self, version: u64) -> Option<impl Iterator<Item = (u32, u32)> + '_> {
         // (The open patch's writes are remembered too.)
-        let first = self.changes.front().map_or(self.version, |(first, _)| *first);
+        let first = self
+            .changes
+            .front()
+            .map_or(self.version, |(first, _)| *first);
         let known = first.saturating_sub(1);
         (known..=self.version).contains(&version).then(|| {
             self.changes
                 .iter()
                 .filter(move |(at, _)| *at > version)
                 .flat_map(|(_, wrote)| wrote.iter().copied())
-                .chain(self.writing.iter().copied().filter(move |_| self.version > version))
+                .chain(
+                    self.writing
+                        .iter()
+                        .copied()
+                        .filter(move |_| self.version > version),
+                )
         })
     }
 }
