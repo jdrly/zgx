@@ -7761,6 +7761,24 @@ impl GpuRenderer {
     pub fn debug_metal_frames(&self) -> u64 {
         self.metal_frames
     }
+    /// Frames drawn through a stencil of their damage: none, as frames no
+    /// longer draw so (kept for 0.1.0's callers).
+    #[deprecated(
+        since = "0.1.1",
+        note = "frames no longer draw through a stencil: always 0"
+    )]
+    #[doc(hidden)]
+    pub fn debug_stamped_frames(&self) -> u64 {
+        0
+    }
+    /// Test hook kept for 0.1.0's callers: frames no longer draw through a
+    /// stencil, so it does nothing.
+    #[deprecated(
+        since = "0.1.1",
+        note = "frames no longer draw through a stencil: does nothing"
+    )]
+    #[doc(hidden)]
+    pub fn debug_stencil(&mut self, _stencil: bool) {}
     /// Test hook: a renderer presenting through surfaces of its own, as a
     /// window's does, into `host` (a layer of the caller's), without a
     /// window: `width` by `height` pixels.

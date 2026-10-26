@@ -11,6 +11,7 @@ use super::*;
 use crate::actions::Action;
 /// Which point a drag between nodes is at (see [`DragEvent`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DragPhase {
     /// It began; sent to the source.
     Start,

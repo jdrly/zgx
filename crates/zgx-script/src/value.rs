@@ -16,6 +16,7 @@ use zgx::reactive::{Runtime, Signal};
 /// A script value. State holds these, so equal writes are suppressed like any
 /// other signal.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Value {
     /// `nil`.
     #[default]

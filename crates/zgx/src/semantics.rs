@@ -48,10 +48,6 @@ pub enum Role {
     /// Text read and selected as a document: a selectable region
     /// (`View::selectable`), as a browser's page is.
     Document,
-    /// One self-contained piece of a feed or a transcript
-    /// (`role="article"`): a message, a post, a comment. Screen readers
-    /// move between them.
-    Article,
     /// A section's title (`h1`…`h6`): screen readers move between them,
     /// and announce its `level`.
     Heading,
@@ -104,6 +100,10 @@ pub enum Role {
     ColumnHeader,
     /// A message that matters at once (`role="alert"`, assertively live).
     Alert,
+    /// One self-contained piece of a feed or a transcript
+    /// (`role="article"`): a message, a post, a comment. Screen readers
+    /// move between them.
+    Article,
 }
 /// How a change to a node's text is announced (ARIA's `aria-live`): only
 /// once the reader is idle, or at once, interrupting it.
