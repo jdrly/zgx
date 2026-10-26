@@ -738,3 +738,83 @@ fn a_box_layout_moved_alone_is_moved_and_one_also_restyled_is_made_again() {
     }
     assert!(patched >= 16, "{patched} frames patched");
 }
+
+/// Rows of two cells, painted in turn: on the left a box recoloured each
+/// frame (the damage, over a tenth of the window: drawn from the kept
+/// frame), on the right a long label that never changes. A batch of the
+/// left boxes from the kept frame, which holds every draw, must not span
+/// the labels between them: the GPU would set each of their glyphs up only
+/// to scissor it away.
+fn columns(live: Signal<u32>) -> View {
+    div()
+        .size(SIZE.0, SIZE.1)
+        .bg(Color(14, 18, 24, 255))
+        .text_color(Color(229, 237, 247, 255))
+        .font_family("Geist")
+        .children((0..20u32).map(move |row| {
+            let live = live.clone();
+            div()
+                .absolute()
+                .mt(4. + 12.5 * row as f32)
+                .size(SIZE.0, 12.)
+                .child(
+                    div()
+                        .absolute()
+                        .size(150., 11.)
+                        .reactive_style(move || {
+                            let shade = ((live.get() * 31 + row * 7) % 200) as u8;
+                            Styles::new().bg(Color(40, shade, 120, 255))
+                        }),
+                )
+                .child(
+                    text(format!("an unchanging label in the right-hand column, row {row:02}"))
+                        .text_size(10.)
+                        .absolute()
+                        .ml(170.)
+                        .size(300., 12.),
+                )
+        }))
+}
+
+#[test]
+fn a_frame_drawn_from_the_kept_window_submits_what_its_damage_reaches() {
+    let window = |live: u32| {
+        let mut gpu = GpuRenderer::new((SIZE.0 * 2.) as u32, (SIZE.1 * 2.) as u32).unwrap();
+        gpu.set_scale_factor(2.);
+        FontData::new(GEIST.to_vec())
+            .unwrap()
+            .install(&mut gpu.text_system().borrow_mut());
+        let mut ui = Ui::new(SIZE.0, SIZE.1);
+        gpu.install_text(&mut ui.scene.borrow_mut());
+        let state = ui.signal(live);
+        ui.mount(columns(state.clone()));
+        (ui, gpu, state)
+    };
+    let draw = |ui: &mut Ui, gpu: &mut GpuRenderer| {
+        ui.prepare_frame();
+        let report = ui.scene.borrow_mut().flush();
+        gpu.render(&ui.scene.borrow(), &report.damage).unwrap()
+    };
+    let (mut ui, mut gpu, live) = window(1);
+    // Drawn whole: every label's glyphs.
+    let whole = draw(&mut ui, &mut gpu).instances;
+    let mut patched = 0;
+    for value in 2..12 {
+        live.set(value);
+        let stats = draw(&mut ui, &mut gpu);
+        patched += usize::from(stats.patched_items > 0);
+        let (mut fresh, mut fresh_gpu, _) = window(value);
+        draw(&mut fresh, &mut fresh_gpu);
+        assert!(
+            gpu.readback().unwrap() == fresh_gpu.readback().unwrap(),
+            "frame {value} differs from the columns drawn afresh"
+        );
+        // The boxes (20) and the background, not the labels between them.
+        assert!(
+            stats.instances < whole / 4,
+            "frame {value} submits {} instances for its damage ({whole} whole)",
+            stats.instances
+        );
+    }
+    assert!(patched >= 8, "{patched} frames patched");
+}
