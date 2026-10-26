@@ -19,7 +19,9 @@
 //! CoreMedia thread wakes about 55 times a second while it lives, and its
 //! queue holds a third surface.
 use crate::{FORMAT, GpuError};
+use objc2::runtime::ProtocolObject;
 use objc2::{Encoding, Message, RefEncode, msg_send, rc::Retained, runtime::AnyObject};
+use objc2_core_foundation::CGSize;
 use objc2_core_foundation::{
     CFDictionary, CFNull, CFNumber, CFRetained, CFString, CFType, kCFNull,
 };
@@ -28,11 +30,14 @@ use objc2_io_surface::{
     IOSurfaceRef, kIOSurfaceBytesPerElement, kIOSurfaceColorSpace, kIOSurfaceHeight,
     kIOSurfacePixelFormat, kIOSurfaceWidth,
 };
+use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLDrawable, MTLTexture};
 use objc2_metal::{
     MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureType,
     MTLTextureUsage,
 };
-use objc2_quartz_core::{CAAutoresizingMask, CALayer, CATransaction};
+use objc2_quartz_core::{
+    CAAutoresizingMask, CALayer, CAMetalDrawable, CAMetalLayer, CATransaction,
+};
 use std::{cell::Cell, ffi::c_void, ptr::null, rc::Rc};
 
 /// A surface the renderer draws into and a layer shows.
@@ -49,6 +54,9 @@ pub(crate) struct Buffer {
     pub metal: crate::metal_frame::Texture,
     /// Reading it to bring another surface up to date (copy_offset.wgsl).
     pub copy_source: std::cell::OnceCell<wgpu::BindGroup>,
+    /// A `CAMetalLayer` drawable's (`Drawables`): presented by Metal, never a
+    /// tile; the layer's pool reuses it.
+    pub drawable: bool,
 }
 impl Buffer {
     /// The surface as a sample buffer, made on first use.
@@ -111,6 +119,25 @@ impl Buffer {
             .newTextureWithDescriptor_iosurface_plane(&descriptor, &surface, 0)
             .ok_or_else(|| GpuError("Metal texture over an IOSurface failed".into()))?;
         drop(hal);
+        Ok(Self::wrap(device, surface, metal, width, height, false))
+    }
+    /// A drawable's texture (and the surface under it) as a buffer.
+    pub fn from_drawable(
+        device: &wgpu::Device,
+        surface: CFRetained<IOSurfaceRef>,
+        metal: crate::metal_frame::Texture,
+    ) -> Self {
+        let (width, height) = (metal.width() as u32, metal.height() as u32);
+        Self::wrap(device, surface, metal, width, height, true)
+    }
+    fn wrap(
+        device: &wgpu::Device,
+        surface: CFRetained<IOSurfaceRef>,
+        metal: crate::metal_frame::Texture,
+        width: u32,
+        height: u32,
+        drawable: bool,
+    ) -> Self {
         // SAFETY: Metal made this texture on this device with this format and
         // size, one mip level and layer; it retains the IOSurface backing it.
         let raw = unsafe {
@@ -154,14 +181,15 @@ impl Buffer {
             )
         };
         let view = texture.create_view(&Default::default());
-        Ok(Self {
+        Self {
             surface,
             sample: std::cell::OnceCell::new(),
             texture,
             view,
             metal,
             copy_source: Default::default(),
-        })
+            drawable,
+        }
     }
 }
 
@@ -368,6 +396,21 @@ pub(crate) struct Layer {
     video: Option<Video>,
     /// What the layers were last given, so a frame sets only what changed.
     opaque: Cell<bool>,
+    /// Full-rate frames presented as `CAMetalLayer` drawables
+    /// (`ZGX_PRESENT_DRAWABLE`), above the plain layer.
+    drawables: Option<Drawables>,
+}
+/// A `CAMetalLayer` whose drawables are the surfaces full-rate frames draw
+/// into, presented by Metal, which hands each to the window server for the
+/// refresh after its work completes: the system schedules them, as GPUI's.
+/// Each drawable's surface keeps what it held, so a frame repaints what
+/// changed since that drawable was last presented (`Buffer::drawable`).
+struct Drawables {
+    layer: Retained<CAMetalLayer>,
+    /// The drawable the frame being drawn presents.
+    pending: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+    /// Whether the layer shows (its frames, over the hidden tiles).
+    shown: bool,
 }
 /// Hides the plain layer's tiles once the video layer above it shows a
 /// frame: until then they show the frame before; after, under a window's
@@ -708,6 +751,97 @@ impl Layer {
             video: None,
             tiles: Vec::new(),
             opaque: Cell::new(false),
+            drawables: None,
+        }
+    }
+    /// The next drawable for a full-rate frame of `width` by `height`
+    /// pixels: its texture and the surface under it (the layer made, above
+    /// the plain one, on first use). `None` if Metal gives none.
+    pub fn next_drawable(
+        &mut self,
+        device: &ProtocolObject<dyn objc2_metal::MTLDevice>,
+        width: u32,
+        height: u32,
+    ) -> Option<(crate::metal_frame::Texture, CFRetained<IOSurfaceRef>)> {
+        let opaque = self.opaque.get();
+        let drawables = self.drawables.get_or_insert_with(|| {
+            let layer = CAMetalLayer::new();
+            layer.setDevice(Some(device));
+            layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            // Read as the shown frame to bring other surfaces up to date.
+            layer.setFramebufferOnly(false);
+            let count = std::env::var("ZGX_DRAWABLES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2usize);
+            // 2 or 3, as CAMetalLayer accepts.
+            layer.setMaximumDrawableCount(count.clamp(2, 3));
+            // sRGB, as the tiles' surfaces are tagged.
+            // SAFETY: CoreGraphics' constant CFString, read only.
+            if let Some(space) = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })) {
+                layer.setColorspace(Some(&space));
+            }
+            fill(&layer, &self.host, opaque);
+            layer.setHidden(true);
+            transaction(|| self.host.addSublayer(&layer));
+            crate::present_log::log(|| format!("drawables-start count={count}"));
+            Drawables {
+                layer,
+                pending: None,
+                shown: false,
+            }
+        });
+        let size = CGSize::new(width as f64, height as f64);
+        if drawables.layer.drawableSize() != size {
+            drawables.layer.setDrawableSize(size);
+        }
+        if drawables.layer.isOpaque() != opaque {
+            transaction(|| drawables.layer.setOpaque(opaque));
+        }
+        let drawable = drawables.layer.nextDrawable()?;
+        let texture = drawable.texture();
+        let surface = texture.iosurface()?;
+        drawables.pending = Some(drawable);
+        Some((texture, surface.into()))
+    }
+    /// Present the frame drawn into the pending drawable, after the work
+    /// already on `queue`; the drawable layer shows over the hidden tiles.
+    pub fn present_drawable(&mut self, queue: &ProtocolObject<dyn MTLCommandQueue>) {
+        let Some(drawables) = &mut self.drawables else {
+            return;
+        };
+        let Some(drawable) = drawables.pending.take() else {
+            return;
+        };
+        if let Some(buffer) = queue.commandBuffer() {
+            buffer.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&*drawable));
+            buffer.commit();
+        }
+        if !drawables.shown {
+            drawables.shown = true;
+            let layer = drawables.layer.clone();
+            transaction(|| {
+                layer.setHidden(false);
+                hide_tiles(&self.plain, None);
+            });
+            self.plain_shows.set(false);
+        }
+    }
+    /// Hide the drawable layer (the plain layer shows frames again), in the
+    /// caller's transaction.
+    fn hide_drawables(&mut self) {
+        if let Some(drawables) = &mut self.drawables
+            && drawables.shown
+        {
+            drawables.shown = false;
+            drawables.layer.setHidden(true);
+        }
+    }
+    /// Drop the drawable layer and its pool (at rest, showing a tile).
+    pub fn release_drawables(&mut self) {
+        if let Some(drawables) = self.drawables.take() {
+            transaction(|| drawables.layer.removeFromSuperlayer());
+            crate::present_log::log(|| "drawables-drop".into());
         }
     }
     /// Shows `buffer`'s tile on the plain layer, made (its contents set) the
@@ -750,6 +884,7 @@ impl Layer {
             }
         }
         hide_tiles(&self.plain, Some(tile));
+        self.hide_drawables();
     }
     /// Drops the tiles of surfaces other than `surfaces` (the renderer's, as
     /// it keeps fewer or makes new ones): a tile holds its surface.
@@ -887,6 +1022,9 @@ impl Drop for Layer {
                 video.layer.removeFromSuperlayer();
             }
             self.plain.removeFromSuperlayer();
+            if let Some(drawables) = &self.drawables {
+                drawables.layer.removeFromSuperlayer();
+            }
         });
     }
 }

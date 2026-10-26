@@ -1563,9 +1563,62 @@ struct LayerPresent {
     /// Native views share the window (`present_with_native_views`): frames
     /// show on the plain layer, in the transaction that moves them.
     with_natives: bool,
+    /// Full-rate frames draw into drawables (`PRESENT_DRAWABLE`, or a test's
+    /// `debug_present_drawable`).
+    drawables: Option<bool>,
 }
 #[cfg(target_os = "macos")]
 impl LayerPresent {
+    /// Whether the next frame draws into a drawable: full rate, and nothing
+    /// asking for the plain layer (as `present_layer` decides it).
+    fn drawable_frame(&self) -> bool {
+        self.drawables.unwrap_or(*PRESENT_DRAWABLE)
+            && self.full_rate
+            && !self.plain_only
+            && !self.with_natives
+            && self
+                .resized_at
+                .is_none_or(|at| at.elapsed() >= RESIZE_SETTLE)
+            && self
+                .plain_until
+                .is_none_or(|until| std::time::Instant::now() >= until)
+    }
+    /// Keep the buffers `keep` says, the shown one's index following.
+    fn retain_buffers(&mut self, keep: impl Fn(usize, &layer_present::Buffer) -> bool) {
+        let mut index = 0;
+        let mut shown = self.shown;
+        let mut kept = 0;
+        self.buffers.retain(|(buffer, _)| {
+            let here = index;
+            index += 1;
+            let keep = Some(here) == self.shown || keep(here, buffer);
+            if keep {
+                if Some(here) == self.shown {
+                    shown = Some(kept);
+                }
+                kept += 1;
+            }
+            keep
+        });
+        self.shown = shown;
+    }
+    /// Attach the layer frames show through, if not yet: `host`'s, or the
+    /// window surface's.
+    fn attach(&mut self, surface: Option<&wgpu::Surface<'static>>) -> Result<(), GpuError> {
+        if self.layer.is_none()
+            && let Some(host) = &self.host
+        {
+            self.layer = Some(layer_present::Layer::attach(host));
+        }
+        if self.layer.is_none() {
+            let surface = surface.ok_or_else(|| GpuError("a window surface".into()))?;
+            // SAFETY: Only the surface's layer is used; nothing destroys it.
+            let hal = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }
+                .ok_or_else(|| GpuError("not a Metal surface".into()))?;
+            self.layer = Some(layer_present::Layer::attach(&hal.render_layer().lock()));
+        }
+        Ok(())
+    }
     /// For `ZGX_PRESENT_LOG`: which plane this presents.
     fn plane(&self) -> &'static str {
         if self.plain_only { "overlay" } else { "base" }
@@ -1620,6 +1673,13 @@ static VIDEO_AT_FULL_RATE: std::sync::LazyLock<bool> =
 #[cfg(target_os = "macos")]
 static WARM_AFTER_IDLE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_GPU_WARM").is_none_or(|v| v != "0"));
+/// `ZGX_PRESENT_DRAWABLE`: full-rate frames draw into `CAMetalLayer`
+/// drawables, which Metal presents (`layer_present::Layer::next_drawable`),
+/// instead of surfaces of the renderer's own shown as tiles. PROTOTYPE for
+/// the M1 Max's pacing (2026-10-26).
+#[cfg(target_os = "macos")]
+static PRESENT_DRAWABLE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_PRESENT_DRAWABLE").is_some_and(|v| v != "0"));
 /// How long the video layer outlasts full-rate frames (`LayerPresent::video_until`).
 #[cfg(target_os = "macos")]
 const VIDEO_LINGER: std::time::Duration = std::time::Duration::from_secs(1);
@@ -7804,82 +7864,130 @@ impl GpuRenderer {
             present.shown = None;
             present.history.clear();
         }
-        // Certainly free: not the latest, and no use beyond the layer's own
-        // record of it (one on screen or queued has more). The most recent of
-        // them holds the frame nearest this one.
-        let idle = |present: &LayerPresent| -> Vec<usize> {
-            let mut idle: Vec<usize> = (0..present.buffers.len())
-                .filter(|&i| {
-                    Some(i) != present.shown && present.buffers[i].0.surface.use_count() <= 1
-                })
-                .collect();
-            idle.sort_by_key(|&i| std::cmp::Reverse(present.buffers[i].1));
-            idle
-        };
-        let budget = if present.full_rate { LAYER_BUFFERS } else { 2 };
-        let mut free = idle(present);
-        // Slower again: the third surface goes once free.
-        if present.buffers.len() > budget
-            && let Some(&spare) = free.last()
-        {
-            present.buffers.remove(spare);
-            if let Some(shown) = &mut present.shown
-                && *shown > spare
-            {
-                *shown -= 1;
-            }
-            free = idle(present);
-        }
-        // None: ask the layer which it no longer shows nor queues (it holds a
-        // surface a while after showing the next; that one is free).
-        let pick = |present: &LayerPresent| {
-            let busy = present.busy();
-            (0..present.buffers.len())
-                .filter(|&i| Some(i) != present.shown && !busy[i])
-                .max_by_key(|&i| present.buffers[i].1)
-        };
-        let mut index = free.first().copied().or_else(|| pick(present));
-        if index.is_none() && present.buffers.len() < budget {
-            present.buffers.push((
-                layer_present::Buffer::new(&self.device, width, height)?,
-                None,
-            ));
-            index = Some(present.buffers.len() - 1);
-            present_log::log(|| {
-                format!(
-                    "new-surface count={} budget={budget}",
-                    present.buffers.len()
-                )
+        // At full rate through drawables, the next drawable's surface is the
+        // target; the renderer's own surfaces go but the one shown (it brings
+        // the drawable up to date), and out of full rate, the drawables do.
+        let drawable = if present.drawable_frame() {
+            present.attach(self.surface.as_ref())?;
+            present.retain_buffers(|_, buffer| buffer.drawable);
+            // SAFETY: The raw device is only retained; the guard is dropped
+            // before wgpu is called again.
+            let device = unsafe { self.device.as_hal::<wgpu::hal::api::Metal>() }
+                .map(|hal| hal.raw_device().clone());
+            let next = device.and_then(|device| {
+                present
+                    .layer
+                    .as_mut()
+                    .expect("attached above")
+                    .next_drawable(&device, width, height)
             });
-        }
-        // Still none: the layer moves on by its next refresh.
-        let started = std::time::Instant::now();
-        let mut asked = started;
-        while index.is_none() && started.elapsed() < std::time::Duration::from_millis(20) {
-            std::thread::sleep(std::time::Duration::from_micros(100));
-            index = idle(present).first().copied();
-            if index.is_none() && asked.elapsed() >= std::time::Duration::from_millis(2) {
-                asked = std::time::Instant::now();
-                index = pick(present);
+            next.map(|(texture, surface)| {
+                let id = surface.id();
+                match present
+                    .buffers
+                    .iter()
+                    .position(|(buffer, _)| buffer.drawable && buffer.surface.id() == id)
+                {
+                    Some(index) => index,
+                    None => {
+                        present.buffers.push((
+                            layer_present::Buffer::from_drawable(&self.device, surface, texture),
+                            None,
+                        ));
+                        present_log::log(|| format!("new-drawable surface={id}"));
+                        present.buffers.len() - 1
+                    }
+                }
+            })
+        } else {
+            if present.buffers.iter().any(|(buffer, _)| buffer.drawable) {
+                present.retain_buffers(|_, buffer| !buffer.drawable);
             }
-        }
-        let waited = started.elapsed();
-        let forced = index.is_none();
-        let index = index.unwrap_or_else(|| {
-            (0..present.buffers.len())
-                .find(|&i| Some(i) != present.shown)
-                .expect("more than one surface")
-        });
-        if forced || waited.as_micros() > 500 {
-            present_log::log(|| {
-                format!(
-                    "{} acquire index={index} waited_us={} forced_busy={forced} buffers={}",
-                    present.plane(),
-                    waited.as_micros(),
-                    present.buffers.len()
-                )
-            });
-        }
+            None
+        };
+        let index = match drawable {
+            Some(index) => index,
+            None => {
+                // Certainly free: not the latest, and no use beyond the layer's own
+                // record of it (one on screen or queued has more). The most recent of
+                // them holds the frame nearest this one.
+                let idle = |present: &LayerPresent| -> Vec<usize> {
+                    let mut idle: Vec<usize> = (0..present.buffers.len())
+                        .filter(|&i| {
+                            Some(i) != present.shown
+                                && present.buffers[i].0.surface.use_count() <= 1
+                        })
+                        .collect();
+                    idle.sort_by_key(|&i| std::cmp::Reverse(present.buffers[i].1));
+                    idle
+                };
+                let budget = if present.full_rate { LAYER_BUFFERS } else { 2 };
+                let mut free = idle(present);
+                // Slower again: the third surface goes once free.
+                if present.buffers.len() > budget
+                    && let Some(&spare) = free.last()
+                {
+                    present.buffers.remove(spare);
+                    if let Some(shown) = &mut present.shown
+                        && *shown > spare
+                    {
+                        *shown -= 1;
+                    }
+                    free = idle(present);
+                }
+                // None: ask the layer which it no longer shows nor queues (it holds a
+                // surface a while after showing the next; that one is free).
+                let pick = |present: &LayerPresent| {
+                    let busy = present.busy();
+                    (0..present.buffers.len())
+                        .filter(|&i| Some(i) != present.shown && !busy[i])
+                        .max_by_key(|&i| present.buffers[i].1)
+                };
+                let mut index = free.first().copied().or_else(|| pick(present));
+                if index.is_none() && present.buffers.len() < budget {
+                    present.buffers.push((
+                        layer_present::Buffer::new(&self.device, width, height)?,
+                        None,
+                    ));
+                    index = Some(present.buffers.len() - 1);
+                    present_log::log(|| {
+                        format!(
+                            "new-surface count={} budget={budget}",
+                            present.buffers.len()
+                        )
+                    });
+                }
+                // Still none: the layer moves on by its next refresh.
+                let started = std::time::Instant::now();
+                let mut asked = started;
+                while index.is_none() && started.elapsed() < std::time::Duration::from_millis(20) {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                    index = idle(present).first().copied();
+                    if index.is_none() && asked.elapsed() >= std::time::Duration::from_millis(2) {
+                        asked = std::time::Instant::now();
+                        index = pick(present);
+                    }
+                }
+                let waited = started.elapsed();
+                let forced = index.is_none();
+                let index = index.unwrap_or_else(|| {
+                    (0..present.buffers.len())
+                        .find(|&i| Some(i) != present.shown)
+                        .expect("more than one surface")
+                });
+                if forced || waited.as_micros() > 500 {
+                    present_log::log(|| {
+                        format!(
+                            "{} acquire index={index} waited_us={} forced_busy={forced} buffers={}",
+                            present.plane(),
+                            waited.as_micros(),
+                            present.buffers.len()
+                        )
+                    });
+                }
+                index
+            }
+        };
         let held = present.buffers[index].1;
         let latest = present.shown.and_then(|shown| present.buffers[shown].1);
         present.catch_up = match (whole, latest) {
@@ -7920,17 +8028,9 @@ impl GpuRenderer {
         before_present: impl FnOnce(),
     ) -> Result<PresentationStatus, GpuError> {
         let mut present = self.layer_present.take().expect("layer presenting");
-        if present.layer.is_none()
-            && let Some(host) = &present.host
-        {
-            present.layer = Some(layer_present::Layer::attach(host));
-        }
-        if present.layer.is_none() {
-            let surface = self.surface.as_ref().expect("a window surface");
-            // SAFETY: Only the surface's layer is used; nothing destroys it.
-            let hal = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }
-                .ok_or_else(|| GpuError("not a Metal surface".into()))?;
-            present.layer = Some(layer_present::Layer::attach(&hal.render_layer().lock()));
+        if let Err(error) = present.attach(self.surface.as_ref()) {
+            self.layer_present = Some(present);
+            return Err(error);
         }
         let Some(index) = present.current.take() else {
             // Nothing drawn since: the shown frame stands.
@@ -7997,7 +8097,16 @@ impl GpuRenderer {
         });
         let layer = present.layer.as_mut().expect("attached above");
         let buffer = &present.buffers[index].0;
-        if plain {
+        if buffer.drawable {
+            // SAFETY: The raw queue is only retained; the guard is dropped at once.
+            let queue = unsafe { self.queue.as_hal::<wgpu::hal::api::Metal>() }.map(|hal| {
+                use objc2::Message;
+                hal.as_raw().retain()
+            });
+            if let Some(queue) = queue {
+                layer.present_drawable(&queue);
+            }
+        } else if plain {
             layer.show_plain(buffer, opaque);
         } else {
             layer.show(buffer, opaque, present.full_rate);
@@ -8229,6 +8338,10 @@ impl GpuRenderer {
             if let Some(layer) = &mut present.layer {
                 layer.rest(&present.buffers[0].0);
                 layer.keep(std::iter::once(present.buffers[0].0.surface.id()));
+                // At rest on a tile, the drawables' pool goes too.
+                if !present.buffers[0].0.drawable {
+                    layer.release_drawables();
+                }
             }
         }
         if let Some(mapped) = &mut self.mapped {
@@ -8334,6 +8447,17 @@ impl GpuRenderer {
     /// Frames drawn in one pass with their presentation.
     pub fn debug_single_pass_frames(&self) -> u64 {
         self.single_pass_frames
+    }
+    /// Test hook: full-rate frames draw into `CAMetalLayer` drawables, or
+    /// not (`ZGX_PRESENT_DRAWABLE`); a `debug_for_layer` renderer then
+    /// presents as a window's base plane does, not an overlay's.
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    pub fn debug_present_drawable(&mut self, drawables: bool) {
+        if let Some(present) = &mut self.layer_present {
+            present.drawables = Some(drawables);
+            present.plain_only = false;
+        }
     }
     /// Frames encoded with Metal directly rather than through wgpu (macOS).
     pub fn debug_metal_frames(&self) -> u64 {

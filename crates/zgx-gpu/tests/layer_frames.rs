@@ -311,6 +311,82 @@ fn full_rate_frames_show_as_tiles_without_a_video_layer() {
     assert_eq!(tiles.len(), 1, "at rest: one tile ({tiles:?})");
 }
 
+/// The host's sublayers' class names (the plain layer, a drawable layer).
+#[cfg(target_os = "macos")]
+fn layer_classes(host: &objc2_quartz_core::CALayer) -> Vec<String> {
+    // SAFETY: the host's live sublayer array, read on the main thread.
+    unsafe { host.sublayers() }
+        .map(|subs| {
+            subs.iter()
+                .map(|sub| sub.class().name().to_str().unwrap_or("?").to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Full-rate frames drawn into `CAMetalLayer` drawables show what drawing
+/// the scene whole shows, each drawable brought up to date from the frame
+/// before around what changed; out of full rate frames are tiles again, and
+/// at rest on a tile the drawables go.
+#[cfg(target_os = "macos")]
+fn full_rate_frames_through_drawables_match_drawing_whole() {
+    let mut window = Window::new(1);
+    window.gpu.debug_present_drawable(true);
+    window.show();
+    // Frames show on the plain layer while a resize settles (500 ms).
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    window.gpu.set_full_rate(true);
+    for live in 2..14 {
+        window.live.set(live);
+        assert!(
+            window.show() == Window::new(live).show(),
+            "drawable frame {live}: the frame shown differs from the scene drawn whole"
+        );
+    }
+    assert!(
+        layer_classes(&window.host)
+            .iter()
+            .any(|class| class.contains("CAMetalLayer")),
+        "no drawable layer at full rate ({:?})",
+        layer_classes(&window.host)
+    );
+    // The renderer's own surfaces went (the drawables hold the frames), and
+    // their tiles with them.
+    // SAFETY: the layers' live sublayer arrays, read on the main thread.
+    let shown_tiles = unsafe { window.host.sublayers() }
+        .into_iter()
+        .flat_map(|subs| subs.to_vec())
+        .filter_map(|sub| unsafe { sub.sublayers() })
+        .flat_map(|tiles| tiles.to_vec())
+        .filter(|tile| !tile.isHidden())
+        .count();
+    assert_eq!(shown_tiles, 0, "a tile shows under the drawables");
+    window.gpu.set_full_rate(false);
+    for live in 14..17 {
+        window.live.set(live);
+        assert!(
+            window.show() == Window::new(live).show(),
+            "tile frame {live} after drawables differs from the scene drawn whole"
+        );
+    }
+    assert_eq!(
+        tiles(&window.host)
+            .iter()
+            .filter(|(_, hidden)| !hidden)
+            .count(),
+        1,
+        "one tile shows again"
+    );
+    window.gpu.trim();
+    assert!(
+        layer_classes(&window.host)
+            .iter()
+            .all(|class| !class.contains("CAMetalLayer")),
+        "the drawables outlast rest ({:?})",
+        layer_classes(&window.host)
+    );
+}
+
 /// Input after a window idled (`trim`) wakes the GPU once (`warm_up`): not
 /// before it idles, not for later input, and again after the next idle; the
 /// frames drawn around it show as before.
@@ -351,5 +427,7 @@ fn main() {
         println!("layer_frames: full-rate frames show as tiles without a video layer");
         input_after_idle_wakes_the_gpu_once();
         println!("layer_frames: input after idle wakes the GPU once");
+        full_rate_frames_through_drawables_match_drawing_whole();
+        println!("layer_frames: full-rate frames through drawables match drawing whole");
     }
 }
