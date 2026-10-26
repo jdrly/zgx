@@ -1,0 +1,48 @@
+{
+  "fill" : {
+    "automatic-gradient" : "display-p3:0.17000,0.18500,0.21500,1.00000"
+  },
+  "groups" : [
+    {
+      "name" : "prompt",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      },
+      "layers" : [
+        {
+          "image-name" : "chevron.svg",
+          "name" : "chevron"
+        }
+      ]
+    },
+    {
+      "name" : "cursor",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.4
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      },
+      "layers" : [
+        {
+          "image-name" : "cursor.svg",
+          "name" : "cursor"
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

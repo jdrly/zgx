@@ -14,9 +14,15 @@ app="$dest/zTerm.app"
 staging=$(mktemp -d)/zTerm.app
 mkdir -p "$staging/Contents/MacOS" "$staging/Contents/Resources"
 cp target/dist/examples/terminal "$staging/Contents/MacOS/zterm"
-if [ -f scripts/zterm.icns ]; then
-  cp scripts/zterm.icns "$staging/Contents/Resources/zterm.icns"
-fi
+# The icon: Icon Composer's document (scripts/zterm/AppIcon.icon), which
+# macOS 26 and later draw as Liquid Glass (Assets.car), with the .icns actool
+# makes from it for earlier systems.
+icon=$(mktemp -d)
+xcrun actool "$root/scripts/zterm/AppIcon.icon" --compile "$icon" --platform macosx \
+  --minimum-deployment-target 13.0 --app-icon AppIcon \
+  --output-partial-info-plist "$icon/partial.plist" >/dev/null
+cp "$icon/Assets.car" "$icon/AppIcon.icns" "$staging/Contents/Resources/"
+rm -rf "$icon"
 
 # Ghostty's resources, where it looks for them beside its executable: its
 # terminfo (TERM=xterm-ghostty, rather than xterm-256color without it) and
@@ -57,7 +63,8 @@ cat > "$staging/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>zTerm</string>
   <key>CFBundleIdentifier</key><string>sh.zeron.zterm</string>
   <key>CFBundleExecutable</key><string>zterm</string>
-  <key>CFBundleIconFile</key><string>zterm</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
