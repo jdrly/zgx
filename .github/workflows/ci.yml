@@ -253,6 +253,24 @@ jobs:
           if [ "${{ github.event_name }}" != pull_request ]; then status=0; fi
           cat perf.md >> "$GITHUB_STEP_SUMMARY" || true
           echo "status=$status" >> "$GITHUB_ENV"
+      # Temporary (#588's x86 growth): callgrind of app-mail and mount on
+      # both sides' gate binaries, per function. Not for merging.
+      - name: x86 probe
+        if: always()
+        run: |
+          mkdir -p probe
+          for side in base head; do
+            ex=$([ $side = base ] && echo /tmp/zgx-perf/gate-base/crates/zgx-script/examples || echo $PWD/crates/zgx-script/examples)
+            ZGX_GATE=1 ZGX_EXAMPLES=$ex APP=mail REPS=2 valgrind --tool=callgrind --callgrind-out-file=probe/mail.$side.out /tmp/zgx-perf/gate-bin-$side/list_state_bench >/dev/null 2>&1 || true
+            ZGX_GATE=1 ZGX_EXAMPLES=$ex valgrind --tool=callgrind --callgrind-out-file=probe/mount.$side.out /tmp/zgx-perf/gate-bin-$side/mount_bench >/dev/null 2>&1 || true
+            for scene in mail mount; do callgrind_annotate --auto=no --threshold=100 probe/$scene.$side.out > probe/$scene.$side.txt || true; done
+          done
+          ls -la probe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-probe
+          path: probe/*.txt
       - name: Comment
         if: github.event_name == 'pull_request' && hashFiles('perf.md') != ''
         continue-on-error: true
