@@ -461,8 +461,9 @@ impl Raster {
             let [tl, tr, br, bl] = round.radii;
             // A feathered clip fades a band all round, its corners in it:
             // four strips that don't overlap (each pixel saved once).
-            let band = round.feather.max(tl).max(tr).max(br).max(bl);
-            let areas = if round.feather > 0. {
+            let feather = round.feather.points();
+            let band = feather.max(tl).max(tr).max(br).max(bl);
+            let areas = if feather > 0. {
                 let (w, h) = (band.min(r.width / 2.), band.min(r.height / 2.));
                 [
                     Rect::new(r.x, r.y, r.width, h),
@@ -1838,9 +1839,10 @@ fn rounded_coverage(round: &zgx::scene::RoundRect, x: f32, y: f32) -> f32 {
     };
     let (dx, dy) = (qx.abs() - half_w + radius, qy.abs() - half_h + radius);
     let outside = (dx.max(0.).powi(2) + dy.max(0.).powi(2)).sqrt() + dx.max(dy).min(0.) - radius;
-    if round.feather > 0. {
+    let feather = round.feather.points();
+    if feather > 0. {
         // Faded in over `feather` from the edge, as the GPU's `rounded`.
-        let t = (-outside / round.feather).clamp(0., 1.);
+        let t = (-outside / feather).clamp(0., 1.);
         return t * t * (3. - 2. * t);
     }
     (0.5 - outside).clamp(0., 1.)

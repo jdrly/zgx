@@ -227,7 +227,8 @@ impl Region {
             ),
             None => ([0., 0., -1., -1.], [0.; 4]),
         };
-        let feather = |clip: Option<zgx::scene::RoundRect>| clip.map_or(0., |clip| clip.feather);
+        let feather =
+            |clip: Option<zgx::scene::RoundRect>| clip.map_or(0., |clip| clip.feather.points());
         let ((round0, radii0), (round1, radii1)) =
             (round(item.rounded()[0]), round(item.rounded()[1]));
         let (fade_box, fade) = item.mask().map_or(([0.; 4], [0.; 4]), |(rect, bands)| {
@@ -278,6 +279,10 @@ enum Shading {
     /// A shader fill (`FillShader`, by id): its pipeline, `shade` for
     /// whatever else the draw holds.
     Fill(u64),
+    /// An image drawn with an effect (`ImageEffect`): image_effects.wgsl's
+    /// pipeline, compiled when one first draws, `shade` for whatever else
+    /// the draw holds.
+    ImageEffect,
     /// A canvas's polyline strokes (polyline.wgsl): their own pipeline,
     /// reading their points, never joined with another shading's quads.
     Polyline,
@@ -300,9 +305,7 @@ fn shading(quad: &Quad, scale: f32) -> Shading {
     // bit for bit, except for the coverage of a translucent square panel (an
     // extra divide and multiply): those stay full, so either shader draws the
     // same bytes.
-    // An image effect (a texture lane past 2) is the full shader's alone.
     let plain = quad.options[0] == 0.
-        && quad.options[1] <= 2.
         && quad.options[2] < 0.5
         && quad.shape[2] <= 0.
         && (quad.shape[3] <= 0.5 || (square && quad.color[3] >= 1.))
@@ -347,7 +350,7 @@ impl QuadPipelines {
     /// The pipeline drawing quads of `shading`.
     fn get(&self, shading: Shading) -> &wgpu::RenderPipeline {
         let (cell, basic, blend) = match shading {
-            Shading::Full | Shading::Fill(_) => (&self.full, false, true),
+            Shading::Full | Shading::Fill(_) | Shading::ImageEffect => (&self.full, false, true),
             Shading::Basic => (&self.basic, true, true),
             Shading::Opaque => (&self.basic_clear, true, false),
             Shading::Polyline => return &self.polylines().pipeline,
@@ -454,7 +457,7 @@ fn push_draw(
     let split = split
         && draw.blur.is_none()
         && draw.layer.is_none()
-        && !matches!(draw.shading, Shading::Fill(_));
+        && !matches!(draw.shading, Shading::Fill(_) | Shading::ImageEffect);
     if !(split || polylines) || draw.end <= draw.start {
         draws.push(draw);
         return;
@@ -1476,7 +1479,7 @@ struct Picks<'p> {
 impl<'p> Picks<'p> {
     fn get(&self, shading: Shading) -> &'p wgpu::RenderPipeline {
         match shading {
-            Shading::Full | Shading::Fill(_) => self.full,
+            Shading::Full | Shading::Fill(_) | Shading::ImageEffect => self.full,
             Shading::Basic => self.basic,
             Shading::Opaque => self.opaque,
             Shading::Polyline => self.polyline.expect("made for a frame with polylines"),
@@ -1511,13 +1514,13 @@ const PROMOTED_PIXELS: f32 = 16_384.;
 const PROMOTED_FULL_PIXELS: f32 = 1024.;
 /// The shading drawing both `a` and `b`, if one can: the full shader draws
 /// every basic quad, and blending every opaque one, to the same bytes (see
-/// `shading`). Shader fills keep their own pipeline.
+/// `shading`). Shader fills and image effects keep their own pipelines.
 fn merged_shading(a: Shading, b: Shading) -> Option<Shading> {
     let cost = |shading| match shading {
         Shading::Opaque => Some(0),
         Shading::Basic => Some(1),
         Shading::Full => Some(2),
-        Shading::Fill(_) | Shading::Polyline => None,
+        Shading::Fill(_) | Shading::ImageEffect | Shading::Polyline => None,
     };
     Some(if cost(a)? >= cost(b)? { a } else { b })
 }
@@ -2185,6 +2188,9 @@ pub struct GpuRenderer {
     /// Shader fills' pipelines by shader id (`None`: it failed to compile),
     /// and the shaders, for frames drawn with Metal directly.
     fill_pipelines: FxHashMap<u64, Option<wgpu::RenderPipeline>>,
+    /// The image effects' pipeline (image_effects.wgsl), made when an image
+    /// first draws with one.
+    image_effect_pipeline: std::cell::OnceCell<wgpu::RenderPipeline>,
     fill_shaders: FxHashMap<u64, Arc<zgx::decoration::FillShader>>,
     /// The presentation plane drawn around native views (planes.rs).
     plane: Option<planes::PlaneState>,
@@ -2605,6 +2611,7 @@ impl GpuRenderer {
             effect_pipelines: None,
             effect_jobs: Vec::new(),
             fill_pipelines: FxHashMap::default(),
+            image_effect_pipeline: Default::default(),
             fill_shaders: FxHashMap::default(),
             plane: None,
         })
@@ -3312,12 +3319,31 @@ impl GpuRenderer {
             self.viewport_values = [width, height, self.scale, 0.];
         }
     }
-    /// The pipeline drawing `shading` if a shader fill's, once compiled.
+    /// The pipeline drawing `shading` if a shader fill's or the image
+    /// effects', once compiled.
     fn fill_pipeline(&self, shading: Shading) -> Option<&wgpu::RenderPipeline> {
         match shading {
             Shading::Fill(id) => self.fill_pipelines.get(&id)?.as_ref(),
+            Shading::ImageEffect => self.image_effect_pipeline.get(),
             _ => None,
         }
+    }
+    /// Compile the image effects' pipeline if not yet.
+    fn prepare_image_effects(&self) {
+        self.image_effect_pipeline.get_or_init(|| {
+            let module = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("image effects"),
+                    source: wgpu::ShaderSource::Wgsl(image_effect_source().into()),
+                });
+            fill_pipeline(
+                &self.device,
+                &module,
+                &self.context.inner.quad_layout,
+                "zgx_image_effect",
+            )
+        });
     }
     /// Compile `shader`'s pipeline if new; whether it can draw.
     fn prepare_fill(&mut self, shader: &Arc<zgx::decoration::FillShader>) -> bool {
@@ -3332,7 +3358,12 @@ impl GpuRenderer {
                     label: Some("shader fill"),
                     source: wgpu::ShaderSource::Wgsl(source.into()),
                 });
-            fill_pipeline(&self.device, &module, &self.context.inner.quad_layout)
+            fill_pipeline(
+                &self.device,
+                &module,
+                &self.context.inner.quad_layout,
+                "zgx_fill",
+            )
         });
         self.fill_shaders.insert(shader.id(), shader.clone());
         self.fill_pipelines.insert(shader.id(), pipeline);
@@ -4486,50 +4517,42 @@ impl GpuRenderer {
                     }
                     let transform = image.paint_transform(bounds);
                     let transformed = image.transform() != zgx::affine::Affine::IDENTITY;
-                    // Images have no procedural border/shape. Reuse those
-                    // attribute lanes rather than growing every glyph instance.
-                    // An effect says its size in the texture lane
-                    // (premultiplied, `2 + size`), characters theirs in
-                    // `options.w` (-1) and their reveal (their node's shader
-                    // parameters) in the colour, white for any image, and
-                    // `border.zw`: no lane more for any quad.
-                    let characters =
-                        matches!(image.effect(), zgx::image::ImageEffect::Characters(_));
-                    let reveal = if characters {
-                        scene.shader_uniforms(item.id).params
+                    // An effect: its own quad, drawn with its own pipeline.
+                    if !matches!(image.effect(), zgx::image::ImageEffect::Plain) {
+                        let reveal = scene.shader_uniforms(item.id).params;
+                        let (opacity, edge) = (item.effects.opacity, item.effects.edge_fade);
+                        quads.push(image_effect_quad(
+                            image, transform, opacity, edge, fade, reveal,
+                        ));
+                        self.prepare_image_effects();
+                        fill_shading = Some(Shading::ImageEffect);
                     } else {
-                        [[0.; 4]; 4]
-                    };
-                    let [front, band, ragged, _] = reveal[0];
-                    let [dx, dy, _, _] = reveal[1];
-                    quads.push(Quad {
-                        rect: fade,
-                        uv: [0., 0., 1., 1.],
-                        color: if characters {
-                            [front, band, ragged, item.effects.opacity]
-                        } else {
-                            [1., 1., 1., item.effects.opacity]
-                        },
-                        fade,
-                        options: [
-                            item.effects.edge_fade,
-                            2. + image.effect().size(),
-                            if transformed { 1. } else { 0. },
-                            // Negative: the lane's positive values are
-                            // per-corner radii (a background image's).
-                            if characters { -1. } else { 0. },
-                        ],
-                        shape: if transformed {
-                            [transform.a, transform.c, transform.b, transform.d]
-                        } else {
-                            [0.; 4]
-                        },
-                        border: match transformed {
-                            true => [transform.tx, transform.ty, dx, dy],
-                            false => [0., 0., dx, dy],
-                        },
-                        mask: NO_MASK,
-                    });
+                        // Images have no procedural border/shape. Reuse those
+                        // attribute lanes rather than growing every glyph instance.
+                        quads.push(Quad {
+                            rect: fade,
+                            uv: [0., 0., 1., 1.],
+                            color: [1., 1., 1., item.effects.opacity],
+                            fade,
+                            options: [
+                                item.effects.edge_fade,
+                                2.,
+                                if transformed { 1. } else { 0. },
+                                0.,
+                            ],
+                            shape: if transformed {
+                                [transform.a, transform.c, transform.b, transform.d]
+                            } else {
+                                [0.; 4]
+                            },
+                            border: if transformed {
+                                [transform.tx, transform.ty, 0., 0.]
+                            } else {
+                                [0.; 4]
+                            },
+                            mask: NO_MASK,
+                        });
+                    }
                 }
                 kind @ (NodeKind::Text { .. } | NodeKind::RichText { .. }) => {
                     let rich = match kind {
@@ -5191,6 +5214,11 @@ impl GpuRenderer {
                         .as_ref()
                         .is_some_and(|frame| frame.fills(shader))
                 }),
+                Shading::ImageEffect => self
+                    .metal_frame
+                    .get_or_init(|| metal_frame::MetalFrame::new(&self.device, &self.queue).ok())
+                    .as_ref()
+                    .is_some_and(|frame| frame.image_effects()),
                 _ => true,
             })
             && effect_jobs.iter().all(|job| {
@@ -5358,11 +5386,12 @@ impl GpuRenderer {
         } else {
             vec![0; regions.len()]
         };
-        // Shader fills have no pipelines writing two targets at once.
+        // Shader fills and image effects have no pipelines writing two
+        // targets at once.
         let defer = !self.in_layer
             && !draws
                 .iter()
-                .any(|draw| matches!(draw.shading, Shading::Fill(_)))
+                .any(|draw| matches!(draw.shading, Shading::Fill(_) | Shading::ImageEffect))
             && (!self.present_unpremultiplies || self.background.3 == 255)
             && self.single_pass_format.is_some()
             && !self.copy_present
@@ -8783,12 +8812,14 @@ fn quad_pipeline(
         cache: None,
     })
 }
-/// A shader fill's pipeline: quads blended over the target, `module`'s
-/// `zgx_fill` shading them (see `fill_source`).
+/// A shader fill's pipeline, or the image effects': quads blended over the
+/// target, `module`'s `entry` shading them (`zgx_fill`, see `fill_source`;
+/// `zgx_image_effect`, see `image_effect_source`).
 fn fill_pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,
     layout: &wgpu::PipelineLayout,
+    entry: &str,
 ) -> wgpu::RenderPipeline {
     let all = wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x4,2=>Float32x4,3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Float32x4,7=>Float32x4];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -8809,7 +8840,7 @@ fn fill_pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module,
-            entry_point: Some("zgx_fill"),
+            entry_point: Some(entry),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: FORMAT,
@@ -8820,6 +8851,58 @@ fn fill_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+/// An image's quad drawn with its effect (image_effects.wgsl): the image's
+/// lanes, its effect's size in the texture lane (premultiplied, `2 + size`),
+/// characters theirs in `options.w` (-1: its positive values are per-corner
+/// radii) and their reveal (their node's shader parameters) in the colour,
+/// white for any image, and `border.zw`: no lane more for any quad.
+#[cold]
+#[inline(never)]
+fn image_effect_quad(
+    image: &zgx::image::ImageData,
+    transform: zgx::affine::Affine,
+    opacity: f32,
+    edge_fade: f32,
+    fade: [f32; 4],
+    reveal: [[f32; 4]; 4],
+) -> Quad {
+    let transformed = image.transform() != zgx::affine::Affine::IDENTITY;
+    let characters = matches!(image.effect(), zgx::image::ImageEffect::Characters(_));
+    let ([front, band, ragged, _], [dx, dy, _, _]) = match characters {
+        true => (reveal[0], reveal[1]),
+        false => ([1.; 4], [0.; 4]),
+    };
+    Quad {
+        rect: fade,
+        uv: [0., 0., 1., 1.],
+        color: [front, band, ragged, opacity],
+        fade,
+        options: [
+            edge_fade,
+            2. + image.effect().size(),
+            if transformed { 1. } else { 0. },
+            if characters { -1. } else { 0. },
+        ],
+        shape: match transformed {
+            true => [transform.a, transform.c, transform.b, transform.d],
+            false => [0.; 4],
+        },
+        border: match transformed {
+            true => [transform.tx, transform.ty, dx, dy],
+            false => [0., 0., dx, dy],
+        },
+        mask: NO_MASK,
+    }
+}
+/// The image effects' module: the quad shader (draw.wgsl), whose vertex
+/// stage, clip regions and shading they share, and image_effects.wgsl.
+pub(crate) fn image_effect_source() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("draw.wgsl"),
+        include_str!("image_effects.wgsl")
+    )
 }
 /// The polyline strokes' module: the quad shader (draw.wgsl), whose vertex
 /// stage and clip regions they share, and polyline.wgsl.

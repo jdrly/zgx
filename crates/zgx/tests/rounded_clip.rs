@@ -44,7 +44,7 @@ fn rounded_overflow_clips_reach_descendants_innermost_first() {
     let card = RoundRect {
         rect: zgx::scene::Rect::new(0., 0., 200., 100.),
         radii: [16.; 4],
-        feather: 0.,
+        feather: zgx::scene::Feather::NONE,
     };
     // The caption is inside the card alone.
     assert_eq!(items_rounded(&ui, "caption", &view), [Some(card), None]);
@@ -53,7 +53,7 @@ fn rounded_overflow_clips_reach_descendants_innermost_first() {
     let thumb = RoundRect {
         rect: zgx::scene::Rect::new(0., 0., 60., 40.),
         radii: [20., 0., 6., 0.],
-        feather: 0.,
+        feather: zgx::scene::Feather::NONE,
     };
     assert_eq!(
         items_rounded(&ui, "photo", &view),
@@ -443,7 +443,7 @@ fn a_feathered_clip_reaches_descendants_and_rounds_its_inset_box() {
             Some(RoundRect {
                 rect: zgx::scene::Rect::new(60., 30., 80., 40.),
                 radii: [20.; 4],
-                feather: 24.,
+                feather: zgx::scene::Feather::new(24.),
             }),
             None
         ]

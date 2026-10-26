@@ -53,6 +53,9 @@ pub(crate) struct MetalFrame {
     effects: std::cell::OnceCell<Option<Effects>>,
     /// Shader fills' pipelines by shader id (`None`: it did not compile).
     fills: std::cell::RefCell<std::collections::HashMap<u64, Option<Pipeline>>>,
+    /// The image effects' pipeline (image_effects.wgsl), with the first
+    /// image drawn with one (`None`: it did not compile).
+    image_effects: std::cell::OnceCell<Option<Pipeline>>,
     /// Polyline strokes' library and pipelines, compiled with the first
     /// (None: not here).
     polyline: std::cell::OnceCell<Option<Polylines>>,
@@ -143,6 +146,7 @@ impl MetalFrame {
             blur: std::cell::OnceCell::new(),
             effects: std::cell::OnceCell::new(),
             fills: Default::default(),
+            image_effects: std::cell::OnceCell::new(),
             polyline: std::cell::OnceCell::new(),
         })
     }
@@ -191,6 +195,26 @@ impl MetalFrame {
         let ready = pipeline.is_some();
         self.fills.borrow_mut().insert(shader.id(), pipeline);
         ready
+    }
+
+    /// Whether images can be drawn with effects here: their pipeline,
+    /// compiled now from the same module as wgpu's
+    /// (`crate::image_effect_source`) if new.
+    pub(crate) fn image_effects(&self) -> bool {
+        self.image_effects
+            .get_or_init(|| {
+                Library::new(&self.device, &crate::image_effect_source(), Kind::Quads)
+                    .ok()?
+                    .pipeline(
+                        &self.device,
+                        "vs",
+                        "zgx_image_effect",
+                        MTLPixelFormat::BGRA8Unorm,
+                        Blend::Over,
+                    )
+                    .ok()
+            })
+            .is_some()
     }
 
     /// Whether layer effects can be drawn here: their pipelines, compiled
@@ -352,6 +376,12 @@ impl MetalFrame {
                 .fills
                 .borrow()
                 .get(&id)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| self.full.clone()),
+            Shading::ImageEffect => self
+                .image_effects
+                .get()
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| self.full.clone()),
@@ -621,7 +651,9 @@ impl Frame {
         instances: std::ops::Range<u32>,
     ) {
         let bound = match (shading, clear) {
-            (Shading::Full | Shading::Fill(_) | Shading::Polyline, true) => Bound::FullClear,
+            (Shading::Full | Shading::Fill(_) | Shading::ImageEffect | Shading::Polyline, true) => {
+                Bound::FullClear
+            }
             (Shading::Basic | Shading::Opaque, true) => Bound::Quads(Shading::Opaque),
             (shading, false) => Bound::Quads(shading),
         };

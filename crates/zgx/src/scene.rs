@@ -1765,8 +1765,35 @@ pub struct RoundRect {
     /// Its corner radii.
     pub radii: [f32; 4],
     /// How far inside its edge what it clips fades out from (see
-    /// `Decoration::clip_feather`); 0 cuts, antialiased over a pixel.
-    pub feather: f32,
+    /// `Decoration::clip_feather`); none cuts, antialiased over a pixel.
+    pub feather: Feather,
+}
+/// A rounded clip's feather, in points: stored as its bits plus one, never
+/// zero, so an `Option<RoundRect>` takes no more room for it (the option
+/// uses the zero) and paint items, carrying two, copy no more than without.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Feather(std::num::NonZeroU32);
+impl Feather {
+    /// None: cut at the edge.
+    pub const NONE: Self = Self(std::num::NonZeroU32::MIN);
+    /// `points` of feather; none unless positive and finite.
+    pub fn new(points: f32) -> Self {
+        if points > 0. && points.is_finite() {
+            // Positive and finite: its bits are below `u32::MAX`.
+            Self(std::num::NonZeroU32::MIN.saturating_add(points.to_bits()))
+        } else {
+            Self::NONE
+        }
+    }
+    /// In points; 0 for none.
+    pub fn points(self) -> f32 {
+        f32::from_bits(self.0.get() - 1)
+    }
+}
+impl Default for Feather {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 /// The rounded clips around a paint item, innermost first: those of its
 /// nearest ancestors that clip (`overflow: hidden`) with rounded corners
@@ -7138,15 +7165,11 @@ fn rounded_clip(inherited: RoundedClip, node: &Node, bounds: Rect) -> RoundedCli
     if clip_axes(&node.style) != (true, true) {
         return inherited;
     }
-    let corners = quad
-        .decoration
-        .as_ref()
-        .and_then(|detail| detail.corners)
-        .unwrap_or(crate::decoration::Corners::all(quad.radius));
-    let feather = quad
-        .decoration
-        .as_ref()
-        .map_or(0., |detail| detail.clip_feather);
+    let (corners, feather) = match quad.decoration.as_deref() {
+        Some(detail) => (detail.corners, detail.clip_feather),
+        None => (None, 0.),
+    };
+    let corners = corners.unwrap_or(crate::decoration::Corners::all(quad.radius));
     let most = bounds.width.min(bounds.height).max(0.) / 2.;
     let radius = |value: f32| {
         if value.is_finite() {
@@ -7190,7 +7213,7 @@ fn rounded_clip(inherited: RoundedClip, node: &Node, bounds: Rect) -> RoundedCli
         Some(RoundRect {
             rect,
             radii,
-            feather,
+            feather: Feather::new(feather),
         }),
         inherited[0],
     ]
@@ -10232,6 +10255,18 @@ mod local_transform_tests {
         scene.set_filter_blur(child, 5.);
         scene.flush();
         assert_eq!(scene.layer_bounds(parent), Rect::new(-15., -15., 55., 55.));
+    }
+    #[test]
+    fn a_feather_costs_a_paint_items_rounded_clips_no_room() {
+        // A box and its radii, the option's tag in the feather's zero.
+        assert_eq!(std::mem::size_of::<Option<RoundRect>>(), 36);
+        assert_eq!(std::mem::size_of::<RoundedClip>(), 72);
+        for points in [0., 0.5, 24., 1e30] {
+            assert_eq!(Feather::new(points).points(), points);
+        }
+        for none in [-1., f32::NAN, f32::INFINITY] {
+            assert_eq!(Feather::new(none), Feather::NONE);
+        }
     }
     #[test]
     fn clip_insets_clip_items_follow_size_and_composite_alone() {
