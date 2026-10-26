@@ -411,6 +411,10 @@ struct Drawables {
     pending: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
     /// Whether the layer shows (its frames, over the hidden tiles).
     shown: bool,
+    /// Drawables present in the caller's Core Animation transaction, once
+    /// their work is scheduled (`ZGX_DRAWABLE_TXN`, PROTOTYPE), rather than
+    /// by Metal when it completes.
+    transactional: bool,
 }
 /// Hides the plain layer's tiles once the video layer above it shows a
 /// frame: until then they show the frame before; after, under a window's
@@ -770,6 +774,8 @@ impl Layer {
             layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
             // Read as the shown frame to bring other surfaces up to date.
             layer.setFramebufferOnly(false);
+            let transactional = std::env::var_os("ZGX_DRAWABLE_TXN").is_some_and(|v| v != "0");
+            layer.setPresentsWithTransaction(transactional);
             let count = std::env::var("ZGX_DRAWABLES")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -789,6 +795,7 @@ impl Layer {
                 layer,
                 pending: None,
                 shown: false,
+                transactional,
             }
         });
         let size = CGSize::new(width as f64, height as f64);
@@ -807,7 +814,18 @@ impl Layer {
     /// The pending drawable, for the frame's own command buffer to present
     /// (`metal_frame::Frame::commit_presenting`).
     pub fn take_drawable(&mut self) -> Option<Retained<ProtocolObject<dyn CAMetalDrawable>>> {
-        self.drawables.as_mut()?.pending.take()
+        self.drawables
+            .as_mut()
+            .filter(|drawables| !drawables.transactional)?
+            .pending
+            .take()
+    }
+    /// Whether drawables present in a transaction (`present_drawable` then
+    /// presents them, once their work is scheduled).
+    pub fn drawables_transactional(&self) -> bool {
+        self.drawables
+            .as_ref()
+            .is_some_and(|drawables| drawables.transactional)
     }
     /// Present the frame drawn into the pending drawable, if its command
     /// buffer did not (a frame wgpu encoded), after the work already on
@@ -816,11 +834,13 @@ impl Layer {
         let Some(drawables) = &mut self.drawables else {
             return;
         };
-        if let Some(drawable) = drawables.pending.take()
-            && let Some(buffer) = queue.and_then(|queue| queue.commandBuffer())
-        {
-            buffer.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&*drawable));
-            buffer.commit();
+        if let Some(drawable) = drawables.pending.take() {
+            if drawables.transactional {
+                transaction(|| drawable.present());
+            } else if let Some(buffer) = queue.and_then(|queue| queue.commandBuffer()) {
+                buffer.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&*drawable));
+                buffer.commit();
+            }
         }
         if !drawables.shown {
             drawables.shown = true;

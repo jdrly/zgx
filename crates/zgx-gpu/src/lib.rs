@@ -8064,6 +8064,17 @@ impl GpuRenderer {
         };
         // A drawable's frame encoded directly presented as it committed.
         let presented = present.buffers[index].0.drawable && self.metal_inflight.borrow().is_some();
+        // In a transaction, a drawable presents once its work is scheduled.
+        if presented
+            && present
+                .layer
+                .as_ref()
+                .is_some_and(|layer| layer.drawables_transactional())
+            && let Some(buffer) = self.metal_inflight.borrow().as_ref()
+        {
+            use objc2_metal::MTLCommandBuffer;
+            buffer.waitUntilScheduled();
+        }
         // The window server reads the surface from its next composite: the
         // frame must be complete by then.
         // (A drawable's direct frame is not waited for: it presents itself.)
