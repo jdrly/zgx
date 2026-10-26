@@ -324,6 +324,7 @@ Measured again in October 2026 (dist builds, instructions retired, the lab windo
   - Linking WebKit, AVFoundation and CoreMedia: about 2 M at launch.
   - The accessibility adapter: 2–5 M.
 - **What does:** the gap with GPUI's direct Metal is mostly wgpu's adapter and device setup.
+- **The menu bar:** AppKit's first `setMainMenu` is about 46 M on the main thread, and building the menus' items about 27 M more. winit's default menu bar paid the first at launch, only to be replaced. Now zgx makes its menu bar once the first frame shows (at once with no window about to show one), and winit makes none. The first present went from about 742 M to 657 M instructions (median of 6 launches), and from about 89 to 80 ms.
 
 ## On Windows
 

@@ -798,15 +798,16 @@ impl Application {
             None
         };
         #[cfg(target_os = "macos")]
-        let native_menu = {
+        {
             let wake = proxy.clone();
             muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
                 let _ = wake.send_event(Event::NativeMenuAction(crate::MenuAction(event.id.0)));
             }));
             // With none of the app's own, still the application and Window
-            // menus every Mac app has.
-            Some(crate::app_menu::NativeMenu::new(&self.menus)?)
-        };
+            // menus every Mac app has: checked now, made once the first frame
+            // shows (`WindowManager::install_menu_bar`).
+            crate::app_menu::validate(&self.menus)?;
+        }
         let factory = WindowFactory {
             fonts: Rc::new(self.fonts),
             #[cfg(target_os = "linux")]
@@ -855,7 +856,9 @@ impl Application {
             application_event: self.application_event,
             quit_on_last_window_close: self.quit_on_last_window_close,
             #[cfg(target_os = "macos")]
-            native_menu,
+            native_menu: None,
+            #[cfg(target_os = "macos")]
+            menu_bar_due: Some(std::time::Instant::now() + MENU_BAR_LATEST),
             hosts: HashMap::from([(token, root)]),
             panics: Vec::new(),
             native: HashMap::new(),
@@ -4364,6 +4367,10 @@ struct WindowManager {
     quit_on_last_window_close: bool,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::app_menu::NativeMenu>,
+    /// The menu bar is still to be made, by then at the latest
+    /// (`install_menu_bar`).
+    #[cfg(target_os = "macos")]
+    menu_bar_due: Option<std::time::Instant>,
     hosts: HashMap<u64, Host>,
     /// When the last contained panics were (`contain`): many close together
     /// end the app.
@@ -4829,6 +4836,33 @@ impl Drop for WindowManager {
     }
 }
 impl WindowManager {
+    /// The menu bar is about 70 M instructions of AppKit's (its first
+    /// `setMainMenu` above all, then the menus' items): made once the first
+    /// frame shows rather than on the way to it, at once with no window
+    /// about to show one, and after `MENU_BAR_LATEST` in any case.
+    #[cfg(target_os = "macos")]
+    fn install_menu_bar(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(latest) = self.menu_bar_due else {
+            return;
+        };
+        if !FIRST_PRESENT.is_completed()
+            && std::time::Instant::now() < latest
+            && self
+                .hosts
+                .values()
+                .any(|host| host.window.is_some() && host.state.visible && !host.state.minimized)
+        {
+            return;
+        }
+        self.menu_bar_due = None;
+        match crate::app_menu::NativeMenu::new(&self.factory.menus()) {
+            Ok(menu) => {
+                menu.install();
+                self.native_menu = Some(menu);
+            }
+            Err(error) => self.fail(event_loop, error),
+        }
+    }
     fn resumed_turn(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(target_os = "macos")]
         if let Some(events) = &self._native_events {
@@ -5017,8 +5051,9 @@ impl WindowManager {
             }
             Event::MenusChanged => {
                 let menus = self.factory.menus();
+                // A menu bar still to be made is made from them then.
                 #[cfg(target_os = "macos")]
-                {
+                if self.menu_bar_due.is_none() {
                     let replacement = match crate::app_menu::NativeMenu::new(&menus) {
                         Ok(menu) => menu,
                         Err(error) => {
@@ -5204,6 +5239,20 @@ impl WindowManager {
         let Some(token) = self.native.get(&id).copied() else {
             return;
         };
+        // A key pressed before the menu bar is made: AppKit offers every key
+        // to the menu bar before the window, so the menu bar is made now and
+        // offered it, and its shortcuts (⌘Q, the app's own) hold from the
+        // first key.
+        #[cfg(target_os = "macos")]
+        if self.menu_bar_due.is_some()
+            && matches!(&event, WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed())
+        {
+            self.menu_bar_due = Some(std::time::Instant::now());
+            self.install_menu_bar(event_loop);
+            if crate::app_menu::offer_current_key() {
+                return;
+            }
+        }
         if matches!(event, WindowEvent::CloseRequested) {
             self.request_close(token);
             return;
@@ -5282,6 +5331,8 @@ impl WindowManager {
             self.fail(event_loop, e);
             return;
         }
+        #[cfg(target_os = "macos")]
+        self.install_menu_bar(event_loop);
         // macOS's Reduce motion, Increase contrast or Reduce transparency
         // changed: every window's themes follow at once.
         if crate::system_colors::display_options_changed() {
@@ -5371,6 +5422,13 @@ impl WindowManager {
             })
             .flatten()
             .chain(self.timers.deadline())
+            .chain({
+                #[cfg(target_os = "macos")]
+                let menu_bar = self.menu_bar_due;
+                #[cfg(not(target_os = "macos"))]
+                let menu_bar = None;
+                menu_bar
+            })
             .min();
         event_loop.set_control_flow(if ready {
             ControlFlow::Poll
@@ -5896,6 +5954,10 @@ fn is_key_window(window: &winit::window::Window) -> bool {
 
 static FIRST_RENDER: std::sync::Once = std::sync::Once::new();
 static FIRST_PRESENT: std::sync::Once = std::sync::Once::new();
+/// How long after the event loop starts the menu bar is made whether or not
+/// a first frame showed (`WindowManager::install_menu_bar`).
+#[cfg(target_os = "macos")]
+const MENU_BAR_LATEST: std::time::Duration = std::time::Duration::from_secs(1);
 /// A `zgx::profile::mark` the first time only (the process's first frame).
 fn first_mark(once: &std::sync::Once, what: &str) {
     once.call_once(|| zgx::profile::mark(what));
@@ -6302,6 +6364,8 @@ mod tests {
             quit_on_last_window_close: true,
             #[cfg(target_os = "macos")]
             native_menu: None,
+            #[cfg(target_os = "macos")]
+            menu_bar_due: None,
             hosts: HashMap::new(),
             panics: Vec::new(),
             native: HashMap::new(),

@@ -869,7 +869,9 @@ All 175 archived source inputs and the tested native binary hashes are verified.
 `scripts/macos_accessibility_probe.py` opens the component catalog and the
 dashboard example on a real macOS desktop and reads their windows through
 the AX API, as VoiceOver does (attributes only: no input is sent). It checks
-that data grids and the date picker's month give their rows (VoiceOver's
+that the menu bar, made once the first frame shows, has the application and
+Window menus and lists the open window (AppKit lists only windows that
+change after the Window menu is set: zgx lists those open before), that data grids and the date picker's month give their rows (VoiceOver's
 table navigation; AccessKit gave a grid none, fixed in
 `vendor/accesskit_macos`), that the tree, segmented control, stepper,
 slider, tabs and select have their roles and names, that charts drawn on

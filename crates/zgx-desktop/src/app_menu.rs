@@ -637,6 +637,7 @@ impl NativeMenu {
             window.set_as_windows_menu_for_nsapp();
         }
         services_menu_for_nsapp();
+        list_open_windows();
         edit_keys::watch(&self.standard);
     }
 }
@@ -678,6 +679,22 @@ fn services_menu_for_nsapp() {
     });
     item.setSubmenu(Some(&services));
 }
+/// AppKit lists a window in the Window menu as the window changes, so one
+/// open before the menu was set (the menu bar comes after the first frame,
+/// or was replaced) is missing from it: each window it would list changes
+/// out of the list and back.
+#[cfg(target_os = "macos")]
+fn list_open_windows() {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    for window in objc2_app_kit::NSApplication::sharedApplication(mtm).windows() {
+        if !window.isExcludedFromWindowsMenu() {
+            window.setExcludedFromWindowsMenu(true);
+            window.setExcludedFromWindowsMenu(false);
+        }
+    }
+}
 #[cfg(target_os = "macos")]
 fn menu_bar_services_item() -> Option<objc2::rc::Retained<objc2_app_kit::NSMenuItem>> {
     let mtm = objc2::MainThreadMarker::new()?;
@@ -686,6 +703,53 @@ fn menu_bar_services_item() -> Option<objc2::rc::Retained<objc2_app_kit::NSMenuI
         .itemAtIndex(0)?
         .submenu()?
         .itemAtIndex(0)
+}
+/// Offer the key AppKit is dispatching to the menu bar, as AppKit offers
+/// every key before the window has it: whether an item took it.
+#[cfg(target_os = "macos")]
+pub(crate) fn offer_current_key() -> bool {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .currentEvent()
+        .is_some_and(|event| offer_key(&event))
+}
+#[cfg(target_os = "macos")]
+fn offer_key(event: &objc2_app_kit::NSEvent) -> bool {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    event.r#type() == objc2_app_kit::NSEventType::KeyDown
+        && objc2_app_kit::NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .is_some_and(|menu| menu.performKeyEquivalent(event))
+}
+/// Test hook: ⌘`key` pressed before the menu bar is made, as the host
+/// handles one (`WindowManager::window_event_turn`): `menus` are made the
+/// menu bar then and offered the key. Whether an item took it.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn debug_key_before_menu_bar(menus: &[AppMenu], key: &str) -> Result<bool, AppMenuError> {
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
+    let menu = NativeMenu::new(menus)?;
+    menu.install();
+    let characters = NSString::from_str(key);
+    let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        NSEventType::KeyDown,
+        NSPoint::new(0., 0.),
+        NSEventModifierFlags::Command,
+        0.,
+        0,
+        None,
+        &characters,
+        &characters,
+        false,
+        0,
+    )
+    .ok_or_else(|| AppMenuError("no key event".into()))?;
+    Ok(offer_key(&event))
 }
 /// Test hook: install `menus` as the application's menu bar, and whether
 /// AppKit then fills the Services submenu shown in it. Main thread only.

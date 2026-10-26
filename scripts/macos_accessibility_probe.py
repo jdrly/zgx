@@ -6,8 +6,9 @@
 Builds zgx-run, opens the component catalog and the dashboard example, and
 reads each window's accessibility tree through the AX API
 (scripts/macos_ax_tree.swift): attributes only, no input sent, so it is safe
-on a desktop in use. Checks that grids give VoiceOver their rows (its table
-navigation), that charts drawn on canvases are images named by what they
+on a desktop in use. Checks that the menu bar (made after the first
+frame) has its standard menus and lists the open window, that grids give
+VoiceOver their rows (its table navigation), that charts drawn on canvases are images named by what they
 show, that a group of chips is a radio group saying which is chosen, and
 that a list's options are named, selectable and pressable, and that an
 invalid form field says so and why (scripts/macos_ax_form). Needs this
@@ -94,6 +95,14 @@ def main():
     for role, name in [('AXRadioGroup', 'Range'), ('AXIncrementor', 'Copies'), ('AXSlider', 'Volume'),
                        ('AXTabGroup', 'Documents'), ('AXPopUpButton', 'Fruit')]:
         check(bool(named(catalog, role, name)), f'{name}: a {role}')
+    # The menu bar, made once the first frame shows: the application menu's
+    # standard items, and the window (open before it) in the Window menu.
+    bar = [n for n in walk(catalog) if n.get('role') == 'AXMenuBar']
+    items = [n.get('title') for n in walk(bar[0]) if n.get('role') == 'AXMenuItem'] if bar else []
+    check('Services' in items and 'Minimize' in items and any(i and i.startswith('Quit') for i in items),
+          f'the menu bar has the application and Window menus ({len(items)} items)')
+    windows = [n.get('title') for n in catalog.get('children', []) if n.get('role') == 'AXWindow']
+    check(bool(windows) and windows[0] in items, f'the Window menu lists the window ({windows[:1]})')
 
     dashboard = read_tree(reader, EXAMPLES / 'dashboard', lambda t: named(t, 'AXList', 'Instruments'))
     check(bool(named(dashboard, 'AXImage', 'Price, last ')), "the price chart is an image named by what it shows")
