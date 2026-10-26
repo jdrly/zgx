@@ -573,7 +573,10 @@ impl NativeMenu {
         let application = muda::Submenu::new("Application", true);
         application
             .append_items(&[
-                &muda::PredefinedMenuItem::services(None),
+                // AppKit fills the menu it was told is the Services menu
+                // (`install`). muda's own item tells it of a copy made
+                // here, not the menu bar's, which then stays empty.
+                &muda::Submenu::new("Services", true),
                 &muda::PredefinedMenuItem::separator(),
                 &muda::PredefinedMenuItem::hide(None),
                 &muda::PredefinedMenuItem::hide_others(None),
@@ -633,8 +636,69 @@ impl NativeMenu {
         if let Some(window) = &self.window {
             window.set_as_windows_menu_for_nsapp();
         }
+        services_menu_for_nsapp();
         edit_keys::watch(&self.standard);
     }
+}
+/// Make the menu bar's Services submenu (the application menu's first item,
+/// `NativeMenu::new`) the one AppKit fills with the system's services.
+/// AppKit keeps the first menu it is given, so a menu bar made later (the
+/// app's menus changed) takes that one over from the last.
+#[cfg(target_os = "macos")]
+fn services_menu_for_nsapp() {
+    use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
+    use std::cell::RefCell;
+    thread_local! {
+        /// The item showing AppKit's Services menu: a menu is in one menu
+        /// at a time.
+        static SHOWN_IN: RefCell<Option<objc2::rc::Retained<NSMenuItem>>> = const { RefCell::new(None) };
+    }
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(item) = menu_bar_services_item() else {
+        return;
+    };
+    let services = match app.servicesMenu() {
+        Some(services) => services,
+        None => {
+            let services = NSMenu::new(mtm);
+            services.setTitle(&item.title());
+            app.setServicesMenu(Some(&services));
+            services
+        }
+    };
+    SHOWN_IN.with_borrow_mut(|shown| {
+        if let Some(last) = shown.replace(item.clone())
+            && last != item
+        {
+            last.setSubmenu(None);
+        }
+    });
+    item.setSubmenu(Some(&services));
+}
+#[cfg(target_os = "macos")]
+fn menu_bar_services_item() -> Option<objc2::rc::Retained<objc2_app_kit::NSMenuItem>> {
+    let mtm = objc2::MainThreadMarker::new()?;
+    objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .mainMenu()?
+        .itemAtIndex(0)?
+        .submenu()?
+        .itemAtIndex(0)
+}
+/// Test hook: install `menus` as the application's menu bar, and whether
+/// AppKit then fills the Services submenu shown in it. Main thread only.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn debug_menu_bar_services_filled(menus: &[AppMenu]) -> Result<bool, AppMenuError> {
+    let menu = NativeMenu::new(menus)?;
+    menu.install();
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return Ok(false);
+    };
+    let filled = objc2_app_kit::NSApplication::sharedApplication(mtm).servicesMenu();
+    Ok(filled.is_some() && filled == menu_bar_services_item().and_then(|item| item.submenu()))
 }
 /// The standard edit items' shortcuts while zgx's own view has the keyboard.
 /// AppKit offers a ⌘ key to the menu bar before the view, and the item for it

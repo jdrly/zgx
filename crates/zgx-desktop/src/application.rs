@@ -771,7 +771,13 @@ impl Application {
         // display).
         #[cfg(target_os = "macos")]
         let early_gpu = zgx_gpu::GpuContext::prepare_in_background();
-        let event_loop = EventLoop::<Event>::with_user_event().build()?;
+        let mut event_loop = EventLoop::<Event>::with_user_event();
+        // zgx installs a menu bar of its own (`app_menu`) as it resumes:
+        // winit's would be made at launch only to be replaced, and would
+        // take AppKit's Services menu meanwhile.
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(&mut event_loop, false);
+        let event_loop = event_loop.build()?;
         zgx::profile::mark("event loop");
         let proxy = event_loop.create_proxy();
         let native_events = if let Some(id) = &self.application_id {
