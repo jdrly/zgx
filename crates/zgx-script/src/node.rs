@@ -72,8 +72,9 @@ pub(crate) struct Node {
     /// `layer_shader = ui.layer_shader(...)`: the subtree composites
     /// through a WGSL function.
     pub layer_shader: Option<Arc<zgx::decoration::FillShader>>,
-    /// `layer_params`: the layer shader's sixteen values, as four vec4s.
-    pub layer_params: Option<[[f32; 4]; 4]>,
+    /// `layer_params`: the layer shader's sixteen values, as four vec4s
+    /// (boxed: few nodes have a layer shader).
+    pub layer_params: Option<Box<[[f32; 4]; 4]>>,
     /// `window_drag = true`: a press on it moves the window.
     pub window_drag: bool,
     /// `selectable = true`: the pointer selects the text in it (`false`
@@ -2472,7 +2473,12 @@ fn fill_from(
                 node.layer_shader = Some(ud.borrow::<LayerShaderUd>()?.0.clone());
             }
             "layer_params" => {
-                node.layer_params = Some(shader_params(lua, &value, "layer_params", None)?);
+                node.layer_params = Some(Box::new(shader_params(
+                    lua,
+                    &value,
+                    "layer_params",
+                    None,
+                )?));
             }
             "mask" => {
                 let (bitmap, t) = match &value {
