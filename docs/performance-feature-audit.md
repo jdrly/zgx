@@ -172,6 +172,33 @@ more than making them again from their cached shapes. With it, heavy
 
 Anything else draws whole: a layer, an effect, a shader fill or polyline.
 
+Drawing from the kept frame, the frame's list holds every draw in the
+window, where a frame drawn as usual holds only what its damage reaches.
+A batch for a damage region spans every instance between the draws it
+takes: draws outside the region and texts' spare room, which the GPU sets
+up only to scissor away. Splicing put heavy `both` on that path (#615): it
+submitted 41% more instances for the same damage, and its GPU time on an
+RTX 4090 rose from 249 to 297 µs a frame. Three changes bound it again:
+
+- A batch from the kept frame ends before 32 such instances
+  (`SKIPPED_SPLIT`), at one or two draw calls a frame more.
+- Spare room goes only to texts a kept frame patched, a quarter of their
+  glyphs (at least 2). On that GPU the empty quads cost more than the
+  instance count suggests. A text outgrowing its room moves its quads to
+  the kept frame's end, and its draws keep their places in paint order.
+  A batch spans or merges quads only in the paint-ordered prefix
+  (`Kept::ordered`).
+- The kept frame's quads stay in the vertex buffer they were last written
+  to (`upload::KeptQuads`, `MappedRing::write_kept`). A buffer still
+  holding them takes only the runs written since. Each slot records which
+  kept frame it holds and as of which patch, so a slot made again never
+  matches. Writes are logged only while the kept frame's length holds
+  steady between frames drawn from it.
+
+Heavy `both` submits 2,961 instances (3,172 before #615) and its GPU time
+is back to 249 µs. Heavy `stream` submits 2,557 (5,334), at 198 µs (264).
+Render instructions fell 2.6–3% on both, and 5% on lab `stream`.
+
 ## Accepted costs
 
 - **A moved or resized leaf's damage as one area** (fe7a9886, October 2026)
