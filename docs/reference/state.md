@@ -118,7 +118,7 @@ ui.task(function()                               -- steps in order
 end)
 ```
 
-`ui.task` returns its handle: `task:cancel()` stops it at the await it is at, never to go on (`task.cancelled` says so). What it awaited still settles, unheard: the host's work is not stopped, its answer only dropped. Cancel what a closed view started, as React's effects abort a fetch in their cleanup: `ui.on_cleanup(function() task:cancel() end)`. A resource cancels a load it begins again, and its owner going cancels its load; a form cancels its submit with `form.cancel()` and as it goes.
+`ui.task` returns its handle: `task:cancel()` stops it at the await it is at, never to go on (`task.cancelled` says so). A fetch it awaited (and nothing else hears) stops: the host's transport sees its `Body` close and its future is dropped. An action it awaited goes on, its answer unheard. Cancel what a closed view started, as React's effects abort a fetch in their cleanup: `ui.on_cleanup(function() task:cancel() end)`. A resource cancels a load it begins again, and its owner going cancels its load; a form cancels its submit with `form.cancel()` and as it goes.
 
 `ui.try(f, ...)` is `pcall` with its error typed: `f(...)`'s value and nil, or nil and what it raised as text a person reads (an error object's message, without its traceback), where Luau types `pcall`'s error as `f`'s result. Awaits inside `f` work in a task as through `pcall`:
 
@@ -173,6 +173,35 @@ return ui.switch(person.status, {
 ### The network
 
 `ui.fetch(url, { method, headers, body })` makes an HTTP request through the host's transport, `ScriptHost::fetcher(|request| async { … })`: the app owns the HTTP stack, redirects, headers and credentials (a token minted per request), and zgx adds no HTTP dependency. The promise settles with `{ status, ok, headers, body, json }`: `ok` for a 2xx status, header names in lower case, `json` the decoded body when the response says it is JSON; a transport error rejects it. A table `body` is sent as JSON with its content type. Without a fetcher, `ui.fetch` is an error.
+
+A response can be read as it arrives (a model's reply, a log): `on_chunk = function(text)` gets the body's text piece by piece, in whole characters, and `on_event = function(e)` each server-sent event (`text/event-stream`) as it ends, `e.event` (`"message"` unless named), `e.data` (its `data:` lines joined by line breaks) and `e.id`. The promise settles once the body has ended, with the status and headers, and with an empty `body` unless the request failed (then the body's start, an error's JSON). `p:cancel()` stops a fetch at once (the promise rejects with `"cancelled"`, reported nowhere), as does cancelling the task that awaits it; a reload stops the rest of a stream. The host streams with `ScriptHost::streaming_fetcher(|request, body| async { … })`, writing each piece to `body` as it comes and answering with the status once it ends; a plain `fetcher`'s body arrives as one piece.
+
+```lua
+local reply = ui.state("reply", "")
+local running = nil
+local function ask(question: string)
+    reply:set("")
+    running = ui.task(function()
+        local response = ui.fetch("https://api.example/chat", {
+            method = "POST",
+            body = { question = question, stream = true },
+            on_event = function(e: ServerEvent)
+                if e.data ~= "[DONE]" then
+                    reply:set(reply:peek() .. e.data)
+                end
+            end,
+        }):await()
+        if not response.ok then
+            reply:set(`Failed: {response.status}`)
+        end
+    end)
+end
+return ui.column {
+    ui.button { "Ask", on_click = function() ask("Why is the sky blue?") end },
+    ui.button { "Stop", on_click = function() if running then running:cancel() end end },
+    ui.text { "{reply}", wrap = true },
+}
+```
 
 `ui.image { src = "https://…" }` and `ui.svg { src = "https://…" }` load through the same fetcher: one request per URL however many nodes show it, decoded off the main thread, cached for the host's life; a node shows nothing until its source arrives, and only the nodes showing it redraw.
 

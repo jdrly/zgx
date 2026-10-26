@@ -66,7 +66,7 @@ mod variants;
 mod windows;
 
 pub use bundle::{Bundle, BundleFile, build};
-pub use calls::{Request, Response};
+pub use calls::{Body, Request, Response};
 pub use command::Command;
 pub use design::DesignLint;
 pub use persist::app_data_dir;
@@ -1182,8 +1182,24 @@ impl ScriptHost {
         F: Fn(Request) -> Fut + 'static,
         Fut: std::future::Future<Output = Result<Response, String>> + 'static,
     {
-        *self.0.fetcher.borrow_mut() = Some(Rc::new(move |request| -> calls::Fetch {
+        *self.0.fetcher.borrow_mut() = Some(Rc::new(move |request, _| -> calls::Fetch {
             Box::pin(fetch(request))
+        }));
+    }
+    /// A transport that streams: `fetch` writes the response's body to
+    /// its `Body` as it arrives (a model's reply, server-sent events), and
+    /// answers with the status and headers once it ends. A script's
+    /// `on_chunk` and `on_event` hear each piece as it is written; a script
+    /// reading the body whole gets it all. Once `Body::is_open` is false the
+    /// script has cancelled (or reloaded): the future is dropped at its next
+    /// await, and the transport may stop at once. It replaces `fetcher`.
+    pub fn streaming_fetcher<F, Fut>(&self, fetch: F)
+    where
+        F: Fn(Request, Body) -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<Response, String>> + 'static,
+    {
+        *self.0.fetcher.borrow_mut() = Some(Rc::new(move |request, body| -> calls::Fetch {
+            Box::pin(fetch(request, body))
         }));
     }
     /// Let plugin `plugin` (its file name, `stats.luau`, or `plugin`'s

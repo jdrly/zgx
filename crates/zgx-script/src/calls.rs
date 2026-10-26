@@ -49,10 +49,76 @@ pub struct Response {
     /// Its body.
     pub body: Vec<u8>,
 }
+/// Where a streaming fetcher (`ScriptHost::streaming_fetcher`) writes a
+/// response's body as it arrives, before it answers with the status and
+/// headers: a script's `on_chunk` and `on_event` hear each piece as it is
+/// written. Clones write to the same response. It lives on the main thread:
+/// a transport reading on another sends its pieces here.
+#[derive(Clone)]
+pub struct Body(Rc<BodyInner>);
+/// What hears each piece of a body: the script's handlers.
+type Sink = Box<dyn FnMut(&[u8])>;
+struct BodyInner {
+    /// What hears each piece. None: kept whole.
+    sink: RefCell<Option<Sink>>,
+    kept: RefCell<Vec<u8>>,
+    open: Cell<bool>,
+}
+impl Body {
+    fn new(sink: Option<Sink>) -> Self {
+        Self(Rc::new(BodyInner {
+            sink: RefCell::new(sink),
+            kept: RefCell::default(),
+            open: Cell::new(true),
+        }))
+    }
+    /// A body kept whole, for the response's `body`.
+    pub(crate) fn kept() -> Self {
+        Self::new(None)
+    }
+    /// Write the next piece of the body. Nothing hears it once the request
+    /// is cancelled (`is_open` is false).
+    pub fn write(&self, bytes: &[u8]) {
+        if !self.is_open() || bytes.is_empty() {
+            return;
+        }
+        // Out while it runs: a handler cancelling the request closes it.
+        let taken = self.0.sink.borrow_mut().take();
+        match taken {
+            Some(mut sink) => {
+                sink(bytes);
+                if self.is_open() {
+                    *self.0.sink.borrow_mut() = Some(sink);
+                }
+            }
+            None => self.0.kept.borrow_mut().extend_from_slice(bytes),
+        }
+    }
+    /// Whether the script still listens: false once it cancelled the
+    /// request (`p:cancel()`, or the task awaiting it cancelled) or
+    /// reloaded. A transport stops reading then.
+    pub fn is_open(&self) -> bool {
+        self.0.open.get()
+    }
+    fn close(&self) {
+        self.0.open.set(false);
+        self.0.sink.borrow_mut().take();
+    }
+    /// What was written, kept whole, then `rest` (what the answer held).
+    pub(crate) fn whole(&self, rest: Vec<u8>) -> Vec<u8> {
+        let mut kept = std::mem::take(&mut *self.0.kept.borrow_mut());
+        if kept.is_empty() {
+            return rest;
+        }
+        kept.extend_from_slice(&rest);
+        kept
+    }
+}
+
 pub(crate) type Fetch = Pin<Box<dyn Future<Output = Result<Response, String>>>>;
 /// The host's transport (`ScriptHost::fetcher`): it owns the HTTP stack,
 /// headers and credentials.
-pub(crate) type Fetcher = Rc<dyn Fn(Request) -> Fetch>;
+pub(crate) type Fetcher = Rc<dyn Fn(Request, Body) -> Fetch>;
 pub(crate) type SharedFetcher = Rc<RefCell<Option<Fetcher>>>;
 pub(crate) type AsyncAction = Rc<dyn Fn(Value) -> Call>;
 /// The host's async actions, by name.
@@ -84,10 +150,16 @@ enum Waiter {
 #[derive(Default)]
 pub(crate) struct TaskState {
     cancelled: Cell<bool>,
+    /// The promise it waits for: cancelled, a fetch nothing else hears
+    /// stops.
+    awaiting: RefCell<Option<Weak<Promise>>>,
 }
 impl TaskState {
     pub(crate) fn cancel(&self) {
         self.cancelled.set(true);
+        if let Some(promise) = self.awaiting.take().and_then(|p| p.upgrade()) {
+            promise.abort_unheard();
+        }
     }
 }
 /// `ui.task`'s handle: `cancel()`, and whether it has been (`cancelled`).
@@ -113,6 +185,8 @@ pub(crate) struct Promise {
     handled: Cell<bool>,
     /// The script that called, told of a rejection nothing handles.
     caller: Weak<Vm>,
+    /// Stops the host's work, where it can stop (a fetch).
+    abort: RefCell<Option<Box<dyn FnOnce()>>>,
 }
 
 #[derive(Clone)]
@@ -120,6 +194,11 @@ pub(crate) struct PromiseUd(pub(crate) Rc<Promise>);
 
 impl Promise {
     fn settle(self: &Rc<Self>, result: Result<Value, String>) {
+        // Cancelled first, a late answer changes nothing.
+        if self.state.with_untracked(|s| *s != Settled::Pending) {
+            return;
+        }
+        self.abort.borrow_mut().take();
         let settled = match result {
             Ok(value) => Settled::Value(value),
             Err(error) => Settled::Error(error),
@@ -138,6 +217,27 @@ impl Promise {
         }
         for waiter in waiters {
             hear(waiter, &settled);
+        }
+    }
+}
+
+impl Promise {
+    /// Stop the host's work, if it can stop.
+    fn abort(&self) {
+        let abort = self.abort.borrow_mut().take();
+        if let Some(abort) = abort {
+            abort();
+        }
+    }
+    /// A task awaiting it was cancelled: stop the host's work if nothing
+    /// else hears the answer (no `after`, no task still running).
+    fn abort_unheard(&self) {
+        let heard = self.waiters.borrow().iter().any(|waiter| match waiter {
+            Waiter::After { .. } => true,
+            Waiter::Task { task, .. } => !task.cancelled.get(),
+        });
+        if !heard {
+            self.abort();
         }
     }
 }
@@ -208,6 +308,7 @@ fn drive(vm: &Rc<Vm>, thread: Thread, args: impl IntoLuaMulti, task: &Rc<TaskSta
         promise.handled.set(true);
         match promise.state.with_untracked(Clone::clone) {
             Settled::Pending => {
+                *task.awaiting.borrow_mut() = Some(Rc::downgrade(&promise));
                 promise.waiters.borrow_mut().push(Waiter::Task {
                     vm: Rc::downgrade(vm),
                     thread,
@@ -263,6 +364,16 @@ impl UserData for PromiseUd {
                 Ok(())
             },
         );
+        // Rejects it with "cancelled" (reported nowhere), stopping the
+        // host's work where it can stop: a fetch. An action's goes on, its
+        // answer unheard.
+        methods.add_method("cancel", |lua, p, ()| {
+            p.0.handled.set(true);
+            p.0.abort();
+            let runtime = env(lua)?.runtime.clone();
+            batch(&runtime, || p.0.settle(Err("cancelled".into())));
+            Ok(())
+        });
         // `await` is Luau (it yields its coroutine): found through `__index`.
         methods.add_meta_function(MetaMethod::Index, |lua, (_, key): (mlua::Value, String)| {
             if key == "await" {
@@ -326,6 +437,7 @@ pub(crate) fn pending(lua: &Lua, name: String) -> mlua::Result<Rc<Promise>> {
         waiters: RefCell::default(),
         handled: Cell::new(false),
         caller: env.vm.clone(),
+        abort: RefCell::default(),
     }))
 }
 /// Settle `promise` with what `future` gives, on the window's tasks.
@@ -424,6 +536,220 @@ fn response_value(response: Response) -> Value {
     Value::Map(fields.into())
 }
 
+/// A request's way to stop: its future, ended as cancelled once `stop`
+/// is called (dropping the host's work).
+#[derive(Default)]
+struct Stop {
+    stopped: Cell<bool>,
+    waker: RefCell<Option<std::task::Waker>>,
+}
+impl Stop {
+    fn stop(&self) {
+        self.stopped.set(true);
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+    async fn or_stopped<T>(
+        self: Rc<Self>,
+        future: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let mut future = std::pin::pin!(future);
+        std::future::poll_fn(move |cx| {
+            if self.stopped.get() {
+                return std::task::Poll::Ready(Err("cancelled".into()));
+            }
+            *self.waker.borrow_mut() = Some(cx.waker().clone());
+            future.as_mut().poll(cx)
+        })
+        .await
+    }
+}
+
+/// The most of a streamed body kept to tell a failure (an error's JSON)
+/// once the status says the request failed.
+const FAILURE_KEPT: usize = 64 * 1024;
+
+/// A streamed response's handlers (`on_chunk`, `on_event`), fed the body
+/// as the host writes it: text in whole characters, and server-sent events
+/// (`text/event-stream`) as each ends.
+struct Listener {
+    on_chunk: Option<Function>,
+    on_event: Option<Function>,
+    vm: Weak<Vm>,
+    runtime: Runtime,
+    promise: Weak<Promise>,
+    /// A character split between pieces, waiting for its end.
+    partial: Vec<u8>,
+    events: Events,
+    /// The start of the body, kept until the status is known.
+    failure: Vec<u8>,
+}
+impl Listener {
+    fn of(
+        lua: &Lua,
+        opts: &Table,
+        promise: &Rc<Promise>,
+    ) -> mlua::Result<Option<Rc<RefCell<Self>>>> {
+        let on_chunk: Option<Function> = opts.get("on_chunk")?;
+        let on_event: Option<Function> = opts.get("on_event")?;
+        if on_chunk.is_none() && on_event.is_none() {
+            return Ok(None);
+        }
+        let env = env(lua)?;
+        Ok(Some(Rc::new(RefCell::new(Self {
+            on_chunk,
+            on_event,
+            vm: env.vm.clone(),
+            runtime: env.runtime.clone(),
+            promise: Rc::downgrade(promise),
+            partial: Vec::new(),
+            events: Events::default(),
+            failure: Vec::new(),
+        }))))
+    }
+    fn hear(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if self.failure.len() < FAILURE_KEPT {
+            let room = FAILURE_KEPT - self.failure.len();
+            self.failure
+                .extend_from_slice(&bytes[..bytes.len().min(room)]);
+        }
+        self.partial.extend_from_slice(bytes);
+        // Up to a character still to come; bytes that are no UTF-8 at all
+        // become U+FFFD.
+        let whole = match std::str::from_utf8(&self.partial) {
+            Err(e) if e.error_len().is_none() => e.valid_up_to(),
+            _ => self.partial.len(),
+        };
+        let text = String::from_utf8_lossy(&self.partial[..whole]).into_owned();
+        self.partial.drain(..whole);
+        self.tell(&text);
+    }
+    /// The body has ended: what is left of a character, as U+FFFD. An event
+    /// with no blank line after it is dropped, as browsers drop it.
+    fn end(&mut self) {
+        if !self.partial.is_empty() {
+            let text = String::from_utf8_lossy(&std::mem::take(&mut self.partial)).into_owned();
+            self.tell(&text);
+        }
+    }
+    fn tell(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let Some(vm) = self.vm.upgrade() else {
+            // The script reloaded: nothing hears the rest.
+            if let Some(promise) = self.promise.upgrade() {
+                promise.abort();
+            }
+            return;
+        };
+        let events = match self.on_event {
+            Some(_) => self.events.feed(text),
+            None => Vec::new(),
+        };
+        batch(&self.runtime, || {
+            if let Some(f) = &self.on_chunk
+                && let Err(error) = vm.call::<()>(f, text)
+            {
+                vm.report(error);
+            }
+            if let Some(f) = &self.on_event {
+                for event in events {
+                    if let Err(error) = vm.call::<()>(f, event) {
+                        vm.report(error);
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Server-sent events read from a stream's text, as the HTML standard
+/// reads `text/event-stream`: `field: value` lines, an event ending at a
+/// blank line, `data` lines joined by line breaks.
+#[derive(Default)]
+struct Events {
+    line: String,
+    event: String,
+    data: String,
+    id: Option<String>,
+    has_data: bool,
+    /// The last piece ended in a carriage return: a line feed starting the
+    /// next ends no second line.
+    after_cr: bool,
+}
+impl Events {
+    fn feed(&mut self, text: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        let mut text = text;
+        if self.after_cr {
+            text = text.strip_prefix('\n').unwrap_or(text);
+            self.after_cr = false;
+        }
+        while let Some(end) = text.find(['\r', '\n']) {
+            self.line.push_str(&text[..end]);
+            let line = std::mem::take(&mut self.line);
+            if let Some(event) = self.field(&line) {
+                out.push(event);
+            }
+            let crlf = text[end..].starts_with("\r\n");
+            if text[end..].starts_with('\r') && end + 1 == text.len() {
+                self.after_cr = true;
+            }
+            text = &text[end + if crlf { 2 } else { 1 }..];
+        }
+        self.line.push_str(text);
+        out
+    }
+    /// One line: a field, a comment, or (blank) the event's end.
+    fn field(&mut self, line: &str) -> Option<Value> {
+        if line.is_empty() {
+            if !self.has_data {
+                self.event.clear();
+                return None;
+            }
+            let event = match self.event.is_empty() {
+                true => "message".to_string(),
+                false => std::mem::take(&mut self.event),
+            };
+            let mut fields = vec![
+                ("event", Value::Str(event.as_str().into())),
+                (
+                    "data",
+                    Value::Str(std::mem::take(&mut self.data).as_str().into()),
+                ),
+            ];
+            if let Some(id) = &self.id {
+                fields.push(("id", Value::Str(id.as_str().into())));
+            }
+            self.has_data = false;
+            return Some(Value::record(fields));
+        }
+        let (name, value) = match line.split_once(':') {
+            Some(("", _)) => return None,
+            Some((name, value)) => (name, value.strip_prefix(' ').unwrap_or(value)),
+            None => (line, ""),
+        };
+        match name {
+            "event" => self.event = value.to_string(),
+            "data" => {
+                if self.has_data {
+                    self.data.push('\n');
+                }
+                self.data.push_str(value);
+                self.has_data = true;
+            }
+            "id" if !value.contains('\0') => self.id = Some(value.to_string()),
+            _ => {}
+        }
+        None
+    }
+}
+
 /// Installs `ui.call`, `ui.task` and `ui.fetch` (`fetcher`, unless the
 /// script may not reach the network: a plugin the host did not grant it).
 pub(crate) fn install(
@@ -474,14 +800,47 @@ pub(crate) fn install(
                     "ui.fetch: the host has no fetcher (`ScriptHost::fetcher`)",
                 ));
             };
-            let request = request(lua, url.clone(), opts)?;
             let promise = pending(lua, format!("fetch {url}"))?;
-            let future = fetch(request);
-            settle_with(
-                lua,
-                &promise,
-                async move { future.await.map(response_value) },
-            )?;
+            let listener = match &opts {
+                Some(opts) => Listener::of(lua, opts, &promise)?,
+                None => None,
+            };
+            let request = request(lua, url.clone(), opts)?;
+            let body = match &listener {
+                Some(listener) => {
+                    let listener = listener.clone();
+                    Body::new(Some(Box::new(move |bytes: &[u8]| {
+                        listener.borrow_mut().hear(bytes)
+                    })))
+                }
+                None => Body::kept(),
+            };
+            let future = fetch(request, body.clone());
+            let stop = Rc::new(Stop::default());
+            *promise.abort.borrow_mut() = Some(Box::new({
+                let (stop, body) = (stop.clone(), body.clone());
+                move || {
+                    body.close();
+                    stop.stop();
+                }
+            }));
+            settle_with(lua, &promise, async move {
+                let mut response = stop.or_stopped(future).await?;
+                response.body = match listener {
+                    // Heard in pieces: the body only to tell a failure.
+                    Some(listener) => {
+                        let mut listener = listener.borrow_mut();
+                        listener.hear(&response.body);
+                        listener.end();
+                        match (200..300).contains(&response.status) {
+                            true => Vec::new(),
+                            false => std::mem::take(&mut listener.failure),
+                        }
+                    }
+                    None => body.whole(response.body),
+                };
+                Ok(response_value(response))
+            })?;
             Ok(PromiseUd(promise))
         })?,
     )?;

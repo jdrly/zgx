@@ -2688,12 +2688,16 @@ fn remote_status(vm: &Rc<Vm>, low: &Lowering, src: &str, svg: bool) -> u8 {
         )));
         return ready.get();
     };
-    let future = fetch(crate::calls::Request {
-        url: src.to_owned(),
-        method: "GET".into(),
-        headers: Vec::new(),
-        body: None,
-    });
+    let body = crate::calls::Body::kept();
+    let future = fetch(
+        crate::calls::Request {
+            url: src.to_owned(),
+            method: "GET".into(),
+            headers: Vec::new(),
+            body: None,
+        },
+        body.clone(),
+    );
     let (assets, vm, src, runtime) = (
         low.assets.clone(),
         Rc::downgrade(vm),
@@ -2703,7 +2707,7 @@ fn remote_status(vm: &Rc<Vm>, low: &Lowering, src: &str, svg: bool) -> u8 {
     let arriving = ready.clone();
     timers.spawn(async move {
         let bytes = match future.await {
-            Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+            Ok(response) if (200..300).contains(&response.status) => Ok(body.whole(response.body)),
             Ok(response) => Err(format!("HTTP {}", response.status)),
             Err(error) => Err(error),
         };

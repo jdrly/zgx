@@ -500,7 +500,15 @@ export type FetchOptions = {
 	headers: { [string]: string }?,
 	-- Text, or data sent as JSON (with its content type).
 	body: unknown?,
+	-- The body's text as it arrives (a reply streaming), in whole
+	-- characters; the response's `body` is then empty unless it failed.
+	on_chunk: ((text: string) -> ())?,
+	-- Each server-sent event (`text/event-stream`) as it ends: `event`
+	-- ("message" unless named), `data` (its lines joined), `id`.
+	on_event: ((event: ServerEvent) -> ())?,
 }
+-- One server-sent event (`ui.fetch`'s `on_event`).
+export type ServerEvent = { event: string, data: string, id: string? }
 -- What `ui.fetch` settles with (a promise's `value`).
 export type Response = {
 	status: number,
@@ -542,6 +550,9 @@ export type Promise<T = unknown> = {
 	-- Inside `ui.task`: wait for it, and return its value (or raise its
 	-- error, the host's message as it wrote it).
 	await: (self: Promise<T>) -> T,
+	-- Reject it with "cancelled" (reported nowhere), stopping a fetch's
+	-- request; an action's work goes on, its answer unheard.
+	cancel: (self: Promise<T>) -> (),
 }
 
 -- `ui.form`'s spec: each field's first value, its checks (a message, or
