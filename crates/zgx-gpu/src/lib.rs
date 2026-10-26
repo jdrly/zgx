@@ -3984,6 +3984,7 @@ impl GpuRenderer {
         self.draw_made = true;
         // Its quads lead the frame's: a vertex buffer still holding them
         // takes only what was written since.
+        kept.upload.drawn(len * size_of::<Quad>());
         self.kept_upload = Some((std::mem::take(&mut kept.upload), len * size_of::<Quad>()));
         let drawn =
             self.render_flat::<FRAME>(scene, Vec::new(), damage, Some(regions.to_vec()), false);

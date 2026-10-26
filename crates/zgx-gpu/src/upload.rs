@@ -81,12 +81,36 @@ pub(crate) struct KeptQuads {
     changes: std::collections::VecDeque<(u64, Vec<(u32, u32)>)>,
     /// And this one's (version `version`).
     writing: Vec<(u32, u32)>,
+    /// Whether writes are remembered: not while its length changes from
+    /// one frame drawn from it to the next (a splice mounting rows), when
+    /// every buffer takes it whole anyway (`drawn`).
+    tracking: bool,
+    /// Its bytes when last drawn from.
+    drawn_bytes: usize,
 }
 impl KeptQuads {
     pub(crate) fn new() -> Self {
         Self {
             generation: GENERATIONS.fetch_add(1, Ordering::Relaxed),
+            tracking: true,
             ..Default::default()
+        }
+    }
+    /// A frame draws from it, `bytes` of its quads: writes stop being
+    /// remembered when that differs from the last, and are remembered again,
+    /// as a new kept frame no buffer holds, once it doesn't.
+    pub(crate) fn drawn(&mut self, bytes: usize) {
+        let steady = bytes == self.drawn_bytes;
+        self.drawn_bytes = bytes;
+        match (self.tracking, steady) {
+            (true, false) => self.tracking = false,
+            (false, true) => {
+                *self = Self {
+                    drawn_bytes: bytes,
+                    ..Self::new()
+                }
+            }
+            _ => {}
         }
     }
     /// A patch begins: what it writes counts as one version.
@@ -106,6 +130,9 @@ impl KeptQuads {
     /// they meet: neighbouring items' writes copy at once).
     #[inline]
     pub(crate) fn wrote(&mut self, start: u32, end: u32) {
+        if !self.tracking {
+            return;
+        }
         match self.writing.last_mut() {
             Some(last) if last.1 == start => last.1 = end,
             _ => self.writing.push((start, end)),
@@ -114,7 +141,9 @@ impl KeptQuads {
     /// The runs of quads written after `version`, if it is one it knows
     /// (no older than the patch before the first it remembers).
     fn since(&self, version: u64) -> Option<impl Iterator<Item = (u32, u32)> + '_> {
-        let known = self.changes.front().map_or(self.version, |(first, _)| first - 1);
+        // (The open patch's writes are remembered too.)
+        let first = self.changes.front().map_or(self.version, |(first, _)| *first);
+        let known = first.saturating_sub(1);
         (known..=self.version).contains(&version).then(|| {
             self.changes
                 .iter()
@@ -225,6 +254,7 @@ impl MappedRing {
                     && slot.mapped.load(Ordering::Acquire)
                     && slot.holds.is_some_and(|(generation, version, bytes)| {
                         kept.generation != 0
+                            && kept.tracking
                             && generation == kept.generation
                             && kept.since(version).is_some()
                             && bytes == kept_bytes
@@ -235,7 +265,7 @@ impl MappedRing {
         let (Some(index), Some(quads)) = (holding, parts.first()) else {
             let written = self.write_parts(parts);
             let slot = &mut self.slots[self.last];
-            if kept.generation != 0 && slot.in_place().is_some() {
+            if kept.generation != 0 && kept.tracking && slot.in_place().is_some() {
                 slot.holds = Some((kept.generation, kept.version, kept_bytes));
             }
             return written;
