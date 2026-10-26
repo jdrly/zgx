@@ -804,16 +804,21 @@ impl Layer {
         drawables.pending = Some(drawable);
         Some((texture, surface.into()))
     }
-    /// Present the frame drawn into the pending drawable, after the work
-    /// already on `queue`; the drawable layer shows over the hidden tiles.
-    pub fn present_drawable(&mut self, queue: &ProtocolObject<dyn MTLCommandQueue>) {
+    /// The pending drawable, for the frame's own command buffer to present
+    /// (`metal_frame::Frame::commit_presenting`).
+    pub fn take_drawable(&mut self) -> Option<Retained<ProtocolObject<dyn CAMetalDrawable>>> {
+        self.drawables.as_mut()?.pending.take()
+    }
+    /// Present the frame drawn into the pending drawable, if its command
+    /// buffer did not (a frame wgpu encoded), after the work already on
+    /// `queue`; the drawable layer shows over the hidden tiles.
+    pub fn present_drawable(&mut self, queue: Option<&ProtocolObject<dyn MTLCommandQueue>>) {
         let Some(drawables) = &mut self.drawables else {
             return;
         };
-        let Some(drawable) = drawables.pending.take() else {
-            return;
-        };
-        if let Some(buffer) = queue.commandBuffer() {
+        if let Some(drawable) = drawables.pending.take()
+            && let Some(buffer) = queue.and_then(|queue| queue.commandBuffer())
+        {
             buffer.presentDrawable(ProtocolObject::<dyn MTLDrawable>::from_ref(&*drawable));
             buffer.commit();
         }

@@ -1573,7 +1573,7 @@ impl LayerPresent {
     /// asking for the plain layer (as `present_layer` decides it).
     fn drawable_frame(&self) -> bool {
         self.drawables.unwrap_or(*PRESENT_DRAWABLE)
-            && self.full_rate
+            && (self.full_rate || *PRESENT_DRAWABLE_ALL)
             && !self.plain_only
             && !self.with_natives
             && self
@@ -1680,6 +1680,12 @@ static WARM_AFTER_IDLE: std::sync::LazyLock<bool> =
 #[cfg(target_os = "macos")]
 static PRESENT_DRAWABLE: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_PRESENT_DRAWABLE").is_some_and(|v| v != "0"));
+/// `ZGX_PRESENT_DRAWABLE=all`: every frame, not only full-rate ones (a 60 Hz
+/// stream on a 120 Hz display), draws into a drawable. PROTOTYPE.
+#[cfg(target_os = "macos")]
+static PRESENT_DRAWABLE_ALL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    zgx::env::var_os("ZGX_PRESENT_DRAWABLE").is_some_and(|v| v == "all")
+});
 /// How long the video layer outlasts full-rate frames (`LayerPresent::video_until`).
 #[cfg(target_os = "macos")]
 const VIDEO_LINGER: std::time::Duration = std::time::Duration::from_secs(1);
@@ -6289,6 +6295,10 @@ impl GpuRenderer {
         mut stats: GpuStats,
     ) -> GpuStats {
         let _span = zgx::profile::span(zgx::profile::Phase::Encode);
+        // A drawable frame is not waited for as it presents (Metal presents
+        // it); its ring buffers are free once it completes, normally long
+        // before the next frame starts.
+        self.finish_direct();
         let vertices = {
             use objc2::Message;
             let mapped = self
@@ -6454,7 +6464,22 @@ impl GpuRenderer {
                 from = end;
             }
             let _span = zgx::profile::span(zgx::profile::Phase::Submit);
-            pass.commit()
+            // Into a drawable: presented by this command buffer, once done.
+            let drawable = self
+                .layer_present
+                .as_mut()
+                .filter(|present| {
+                    present
+                        .current
+                        .is_some_and(|index| present.buffers[index].0.drawable)
+                })
+                .and_then(|present| present.layer.as_mut())
+                .and_then(|layer| layer.take_drawable());
+            pass.commit_presenting(
+                drawable
+                    .as_deref()
+                    .map(objc2::runtime::ProtocolObject::<dyn objc2_metal::MTLDrawable>::from_ref),
+            )
         };
         *self.metal_inflight.get_mut() = Some(committed);
         self.metal_frames += 1;
@@ -8037,9 +8062,12 @@ impl GpuRenderer {
             self.layer_present = Some(present);
             return Ok(PresentationStatus::Presented);
         };
+        // A drawable's frame encoded directly presented as it committed.
+        let presented = present.buffers[index].0.drawable && self.metal_inflight.borrow().is_some();
         // The window server reads the surface from its next composite: the
         // frame must be complete by then.
-        if self.finish_direct() {
+        // (A drawable's direct frame is not waited for: it presents itself.)
+        if presented || self.finish_direct() {
             // wgpu still frees what was dropped once its own work is done.
             if present.frame.is_multiple_of(64) {
                 let _ = self.device.poll(wgpu::PollType::Poll);
@@ -8103,9 +8131,7 @@ impl GpuRenderer {
                 use objc2::Message;
                 hal.as_raw().retain()
             });
-            if let Some(queue) = queue {
-                layer.present_drawable(&queue);
-            }
+            layer.present_drawable(queue.as_deref());
         } else if plain {
             layer.show_plain(buffer, opaque);
         } else {
@@ -8157,6 +8183,10 @@ impl GpuRenderer {
         let (buffer, _) = present.buffers.get(present.shown?)?;
         Some(ShownFrame {
             surface: buffer.surface.clone(),
+            pending: buffer
+                .drawable
+                .then(|| self.metal_inflight.borrow().clone())
+                .flatten(),
         })
     }
     /// How long the GPU took to run the frame last presented, when it was
@@ -8649,6 +8679,9 @@ impl GpuRenderer {
 #[cfg(target_os = "macos")]
 pub struct ShownFrame {
     surface: objc2_core_foundation::CFRetained<objc2_io_surface::IOSurfaceRef>,
+    /// The frame's work, if it may still run: a drawable's frame is not
+    /// waited for as it presents (`render_direct`), so reading waits.
+    pending: Option<metal_frame::CommandBuffer>,
 }
 #[cfg(target_os = "macos")]
 impl ShownFrame {
@@ -8656,12 +8689,16 @@ impl ShownFrame {
     /// to it) as premultiplied BGRA rows, with its size; `None` for a region
     /// outside it.
     pub fn read(&self, x: u32, y: u32, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)> {
+        if let Some(pending) = &self.pending {
+            use objc2_metal::MTLCommandBuffer;
+            pending.waitUntilCompleted();
+        }
         let surface = objc2_core_foundation::CFRetained::as_ptr(&self.surface)
             .as_ptr()
             .cast::<std::ffi::c_void>()
             .cast_const();
-        // SAFETY: a live surface (held), BGRA. It was shown, so the GPU
-        // finished drawing it.
+        // SAFETY: a live surface (held), BGRA. It was shown, and its frame's
+        // work is complete (waited for above, or before it was shown).
         unsafe {
             iosurface::with_pixels(surface, |bytes, full_w, full_h, stride| {
                 let (x, y) = (x as usize, y as usize);

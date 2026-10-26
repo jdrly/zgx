@@ -1828,6 +1828,8 @@ impl Host {
         }
     }
     fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
+        #[cfg(target_os = "macos")]
+        let frame_started = std::time::Instant::now();
         self.sync_ime_cancellation();
         let Some(window) = self.window.clone() else {
             self.context.ui.cancel_interactions();
@@ -2015,8 +2017,9 @@ impl Host {
                             (before, l.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3))
                     {
                         eprintln!(
-                            "HANDOVER {} before_us={} after_us={} waited_us={} period_us={} paced={} refresh={} grid={}",
+                            "HANDOVER {} work_us={} before_us={} after_us={} waited_us={} period_us={} paced={} refresh={} grid={}",
                             zgx_gpu::present_log::now_ns(),
+                            frame_started.elapsed().as_micros(),
                             period.saturating_sub(p0).as_micros(),
                             period.saturating_sub(p1).as_micros(),
                             waited.as_micros(),
