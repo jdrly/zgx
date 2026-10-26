@@ -1942,10 +1942,8 @@ impl Host {
                     }
                     #[cfg(target_os = "macos")]
                     if let Some(link) = link
-                        && let Some((phase, period)) = link.refresh_phase(
-                            std::time::Instant::now(),
-                            crate::frame_source::VSYNC_RESYNC * 3,
-                        )
+                        && let Some((phase, period)) =
+                            link.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3)
                         && let Some(wait) = align_wait(period.saturating_sub(phase), period)
                     {
                         // One wakeup, not `sleep_until`'s two: running late
@@ -4075,7 +4073,7 @@ impl Host {
             .display_link
             .as_ref()
             .filter(|_| steady && !self.link_paced)
-            .and_then(|link| link.refresh_phase(now, crate::frame_source::VSYNC_RESYNC * 3));
+            .and_then(|link| link.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3));
         let Some((phase, period)) = refresh else {
             self.latch = Latch::default();
             return None;

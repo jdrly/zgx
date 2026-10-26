@@ -233,15 +233,20 @@ mod display_link {
         max_rate: AtomicU64,
         deliver: Box<dyn Fn(Frame) + Send + Sync>,
     }
+    /// The refresh a display's link last reported starting (host time), and
+    /// the display's refresh period (ns): its refresh grid, which windows on
+    /// it read without the registry's lock (`DisplayLink::refresh_phase`).
+    #[derive(Default)]
+    struct Grid {
+        refreshed: AtomicU64,
+        period: AtomicU64,
+    }
     struct Entry {
         /// Immortal: see the module comment.
         link: usize,
         running: bool,
         subscribers: Vec<Arc<Subscriber>>,
-        /// The refresh the link last reported starting (host time), and the
-        /// display's refresh period (ns): its refresh grid.
-        refreshed: AtomicU64,
-        period: AtomicU64,
+        grid: Arc<Grid>,
         /// The latest spacings between consecutive output times (ns), a ring
         /// `refresh_period` reads, and where the next goes.
         spacings: [AtomicU64; super::PERIOD_SAMPLES],
@@ -284,7 +289,10 @@ mod display_link {
         // The output time: exactly on the display's refresh grid (the
         // callback's `now`, when it runs, wanders by up to 2 ms). Its spacing
         // from the last is the display's period, whatever mode it reports.
-        let previous = entry.refreshed.swap(output.host_time, Ordering::AcqRel);
+        let previous = entry
+            .grid
+            .refreshed
+            .swap(output.host_time, Ordering::AcqRel);
         if previous != 0 && output.host_time > previous {
             let at = entry.spaced.fetch_add(1, Ordering::Relaxed) as usize % super::PERIOD_SAMPLES;
             let spacing =
@@ -310,6 +318,7 @@ mod display_link {
         };
         let refresh = 1. / interval.as_secs_f64();
         entry
+            .grid
             .period
             .store(interval.as_nanos() as u64, Ordering::Release);
         for subscriber in &entry.subscribers {
@@ -386,8 +395,7 @@ mod display_link {
             link: link as usize,
             running: false,
             subscribers: Vec::new(),
-            refreshed: AtomicU64::new(0),
-            period: AtomicU64::new(0),
+            grid: Arc::default(),
             spacings: Default::default(),
             spaced: AtomicU64::new(0),
         });
@@ -399,6 +407,8 @@ mod display_link {
         view: Retained<AnyObject>,
         display: u32,
         subscriber: Arc<Subscriber>,
+        /// `display`'s.
+        grid: Arc<Grid>,
         /// When the window's display was last checked (an AppKit round trip).
         checked: Instant,
     }
@@ -423,7 +433,7 @@ mod display_link {
             if !ensure_link(display) {
                 return None;
             }
-            let subscriber = {
+            let (subscriber, grid) = {
                 let mut guard = registry();
                 let registry = guard.as_mut()?;
                 registry.next_id += 1;
@@ -434,17 +444,15 @@ mod display_link {
                     max_rate: AtomicU64::new(0),
                     deliver: Box::new(deliver),
                 });
-                registry
-                    .displays
-                    .get_mut(&display)?
-                    .subscribers
-                    .push(subscriber.clone());
-                subscriber
+                let entry = registry.displays.get_mut(&display)?;
+                entry.subscribers.push(subscriber.clone());
+                (subscriber, entry.grid.clone())
             };
             Some(Self {
                 view,
                 display,
                 subscriber,
+                grid,
                 checked: Instant::now(),
             })
         }
@@ -463,23 +471,15 @@ mod display_link {
                 reconcile(self.display);
             }
         }
-        /// How far into a refresh of the window's display `at` falls, and the
+        /// How far into a refresh of the window's display now is, and the
         /// refresh period, on the display's refresh grid as the link last
         /// reported it (within `fresh`): refreshes start when the previous
-        /// one shows.
-        pub(crate) fn refresh_phase(
-            &self,
-            at: Instant,
-            fresh: Duration,
-        ) -> Option<(Duration, Duration)> {
-            let (refreshed, period) = {
-                let guard = registry();
-                let entry = guard.as_ref()?.displays.get(&self.display)?;
-                (
-                    entry.refreshed.load(Ordering::Acquire),
-                    entry.period.load(Ordering::Acquire),
-                )
-            };
+        /// one shows. Read every frame, without a lock or a second clock: a
+        /// period read beside a refresh reported after it is off only while
+        /// the display changes mode.
+        pub(crate) fn refresh_phase(&self, fresh: Duration) -> Option<(Duration, Duration)> {
+            let refreshed = self.grid.refreshed.load(Ordering::Acquire);
+            let period = self.grid.period.load(Ordering::Acquire);
             if refreshed == 0 || period == 0 {
                 return None;
             }
@@ -487,8 +487,7 @@ mod display_link {
             let host_now = unsafe { mach_absolute_time() };
             // The output time is a refresh or two ahead; the grid continues
             // back from it.
-            let since = nanos(host_now as i128 - refreshed as i128)
-                + at.saturating_duration_since(Instant::now()).as_nanos() as i128;
+            let since = nanos(host_now as i128 - refreshed as i128);
             if since > fresh.as_nanos() as i128 {
                 return None;
             }
@@ -526,6 +525,7 @@ mod display_link {
                 }
                 if let Some(entry) = registry.displays.get_mut(&display) {
                     entry.subscribers.push(self.subscriber.clone());
+                    self.grid = entry.grid.clone();
                 }
             }
             self.display = display;
