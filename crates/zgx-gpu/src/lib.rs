@@ -3510,16 +3510,23 @@ impl GpuRenderer {
         // (a box painting over what it holds has a border pass after it).
         let mut items = Vec::new();
         let mut places = Vec::new();
-        // Plain boxes, made here into their places (`patch_box`).
-        let mut boxes: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+        // Plain boxes, made into their places as they are found
+        // (`patch_box`), as `render_flat` makes them: whether all fit.
+        let (mut boxes, mut boxes_fit) = (0, true);
+        let (mut box_quads, mut box_draws) = (
+            std::mem::take(&mut self.box_quads),
+            std::mem::take(&mut self.box_draws),
+        );
         for &(id, flags) in repaints {
             if flags & zgx::scene::repaint::COMPOSITE != 0
                 || !scene.contains(id)
                 || !scene.children(id).is_empty()
             {
+                (self.box_quads, self.box_draws) = (box_quads, box_draws);
                 return Ok(self.recycle_kept(*kept));
             }
             let Some(&first) = kept.by_node.get(&id) else {
+                (self.box_quads, self.box_draws) = (box_quads, box_draws);
                 return Ok(self.recycle_kept(*kept));
             };
             let over = matches!(scene.kind(id),
@@ -3532,14 +3539,25 @@ impl GpuRenderer {
                 .count()
                 != count
             {
+                (self.box_quads, self.box_draws) = (box_quads, box_draws);
                 return Ok(self.recycle_kept(*kept));
             }
             for place in first..first + count {
                 let Some(item) = scene.item_in(id, &kept.items[place].inherited) else {
+                    (self.box_quads, self.box_draws) = (box_quads, box_draws);
                     return Ok(self.recycle_kept(*kept));
                 };
                 if plain_box(&item) {
-                    boxes.push((item, place));
+                    boxes += 1;
+                    boxes_fit = boxes_fit
+                        && self.patch_box(
+                            &mut kept,
+                            place,
+                            &item,
+                            viewport,
+                            &mut box_quads,
+                            &mut box_draws,
+                        );
                 } else {
                     items.push(item);
                     places.push(place);
@@ -3595,20 +3613,10 @@ impl GpuRenderer {
             stats.patched_items = places.len();
         }
         self.item_ranges = ranges;
-        // Then the plain boxes, each made as `render_flat` makes it.
-        let fits = fits && {
-            let (mut quads, mut draws) = (
-                std::mem::take(&mut self.box_quads),
-                std::mem::take(&mut self.box_draws),
-            );
-            let fit = boxes.iter().all(|(item, place)| {
-                self.patch_box(&mut kept, *place, item, viewport, &mut quads, &mut draws)
-            });
-            (self.box_quads, self.box_draws) = (quads, draws);
-            fit
-        };
+        (self.box_quads, self.box_draws) = (box_quads, box_draws);
+        let fits = fits && boxes_fit;
         if fits {
-            stats.patched_items += boxes.len();
+            stats.patched_items += boxes;
         }
         if !fits {
             // Drawn as usual, reporting what was made.
