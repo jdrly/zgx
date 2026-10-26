@@ -3917,7 +3917,7 @@ impl GpuRenderer {
         if fits {
             for (&(start, len, _, first, end), &place) in ranges.iter().zip(&places) {
                 let item = &mut kept.items[place];
-                kept.upload.wrote(item.start, item.start + item.room);
+                kept.upload.wrote(item.start, item.start + len.max(item.len));
                 let (at, made) = (item.start as usize, len as usize);
                 kept.quads[at..at + made]
                     .copy_from_slice(&self.frame_quads[start as usize..(start + len) as usize]);
@@ -4126,7 +4126,8 @@ impl GpuRenderer {
                     if kept_item.room == 0 || kept_item.draws.end - kept_item.draws.start != 1 {
                         return false;
                     }
-                    kept.upload.wrote(kept_item.start, kept_item.start + kept_item.room);
+                    kept.upload
+                        .wrote(kept_item.start, kept_item.start + kept_item.len.max(1));
                     let at = kept_item.start as usize;
                     kept.quads[at] = quad;
                     // What a longer value left past this one's, emptied.
@@ -4183,7 +4184,8 @@ impl GpuRenderer {
         {
             return false;
         }
-        kept.upload.wrote(kept_item.start, kept_item.start + kept_item.room);
+        kept.upload
+            .wrote(kept_item.start, kept_item.start + len.max(kept_item.len));
         let at = kept_item.start as usize;
         kept.quads[at..at + quads.len()].copy_from_slice(quads);
         // What a longer value left past this one's, emptied.

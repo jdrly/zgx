@@ -96,10 +96,15 @@ impl KeptQuads {
         wrote.clear();
         self.changes.push_back((self.version, wrote));
     }
-    /// This patch wrote quads `start..end`.
+    /// This patch wrote quads `start..end` (one run with the last, when
+    /// they meet: neighbouring items' writes copy at once).
     pub(crate) fn wrote(&mut self, start: u32, end: u32) {
-        if let Some((_, wrote)) = self.changes.back_mut() {
-            wrote.push((start, end));
+        let Some((_, wrote)) = self.changes.back_mut() else {
+            return;
+        };
+        match wrote.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => wrote.push((start, end)),
         }
     }
     /// Its quads moved (a splice): no buffer holds them as they are now.
