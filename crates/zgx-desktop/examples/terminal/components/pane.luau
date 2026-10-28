@@ -138,6 +138,15 @@ return ui.component(function(props: Props)
 			else near and (several() or #state.tabs:get() > 1)
 		grip:set(if show then 1 else 0)
 	end)
+	-- Keys go to the terminal with the keyboard focus, however it got it:
+	-- that is the focused pane (its ring, what ⌘W closes).
+	if term then
+		ui.effect(function()
+			if term.focused and (focus:peek())[tab] ~= pane then
+				focus:set_key(tab, pane)
+			end
+		end)
+	end
 	local inner = function()
 		return frames.radius() - 1
 	end

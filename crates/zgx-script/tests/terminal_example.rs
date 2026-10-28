@@ -1637,6 +1637,83 @@ fn a_tab_resting_on_another_tab_springs_it_open_and_dropped_there_joins_it() {
 }
 
 #[test]
+fn the_focused_pane_is_the_one_with_the_keyboard() {
+    // The keyboard moves to another terminal without zgx's focus moving
+    // (AppKit hands it back after a menu, say): that pane is the focused
+    // one, its ring and what ⌘W closes.
+    let mut app = App::new();
+    app.run("split_right");
+    let terms = app.terminals();
+    let (left, right) = (&terms[0], &terms[1]);
+    right.update_state(|s| s.focused = false);
+    left.update_state(|s| s.focused = true);
+    app.settle();
+    app.run("close_pane");
+    let open: Vec<u64> = app.terminals().iter().map(|t| t.id()).collect();
+    assert_eq!(
+        open,
+        [right.id()],
+        "⌘W closed the pane without the keyboard"
+    );
+    assert_eq!(app.h.host.error().get(), None);
+}
+
+#[test]
+fn a_pane_that_joined_from_another_tab_takes_focus_when_clicked() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new();
+    app.run("split_right");
+    app.run("new_tab");
+    // The second tab dropped on the first: its pane joins the first's two.
+    let strip = app.tab_names();
+    let (first, second) = (strip[0], strip[1]);
+    app.drag(
+        (second.x + 4., second.y + second.height / 2.),
+        (first.x - 8., first.y + first.height / 2.),
+    );
+    app.h
+        .ui
+        .advance_interactions(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert!(app.wait_until(|app| app.panes().len() == 2));
+    let first = app.tab_names()[0];
+    app.drag_to((first.x - 8., first.y + first.height / 2.));
+    app.release((first.x - 8., first.y + first.height / 2.));
+    assert_eq!(app.panes().len(), 3);
+    // Each pane, clicked (zgx's focus on its terminal), is the one ⌘W closes,
+    // the one that came from the other tab too.
+    for _ in 0..3 {
+        app.h.ui.prepare_frame();
+        let nodes: Vec<_> = app
+            .h
+            .natives
+            .nodes()
+            .into_iter()
+            .filter(|n| {
+                matches!(
+                    app.h.natives.content(*n),
+                    Some(zgx::native_view::NativeContent::Terminal(_))
+                )
+            })
+            .collect();
+        let last = *nodes.last().unwrap();
+        let Some(zgx::native_view::NativeContent::Terminal(clicked)) = app.h.natives.content(last)
+        else {
+            unreachable!()
+        };
+        app.h.ui.input.focus(&app.h.ui.scene, Some(last));
+        app.settle();
+        app.run("close_pane");
+        let left: Vec<u64> = app.terminals().iter().map(|t| t.id()).collect();
+        assert!(
+            !left.contains(&clicked.id()),
+            "⌘W closed another pane than the clicked one"
+        );
+    }
+    assert_eq!(app.h.host.error().get(), None);
+}
+
+#[test]
 fn a_dragged_tabs_panel_shows_as_the_window_last_showed_it() {
     let mut app = with_notes("enabled");
     app.open_panel("panel:notes/notes");
