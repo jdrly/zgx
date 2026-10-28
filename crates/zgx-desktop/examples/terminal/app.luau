@@ -11,6 +11,7 @@
 --   saved.luau     the layout across launches
 --   commands.luau  the menu bar's commands
 --   frames.luau    where the active tab's panes go
+--   broadcast.luau typing into several panes at once (Shell › Broadcast Input)
 --   components/    the views: the titlebar, panes, dividers, the sheets,
 --                  the ⌘K palette, plugins' panels
 --

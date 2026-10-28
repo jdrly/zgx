@@ -91,6 +91,15 @@ M.tab_slot = ui.state("tab_slot", {} :: Slot)
 M.lifted = ui.state("lifted", "")
 -- Browser panes waiting to have their address bar focused.
 M.address_focus = ui.state("address_focus", "")
+-- Broadcast input (broadcast.luau): "off", "all" (every pane of every
+-- tab), "tab" (`broadcast_tab`'s panes) or "panes" (`broadcast_panes`).
+M.broadcast = ui.state("broadcast", "off")
+M.broadcast_tab = ui.state("broadcast_tab", "")
+M.broadcast_panes = ui.state("broadcast_panes", {} :: { [string]: boolean })
+-- The one pane whose keys go to the rest, or "" for every member's.
+M.broadcast_source = ui.state("broadcast_source", "")
+-- Broadcasting panes show stripes and an accent border.
+M.broadcast_indicator = ui.state("broadcast_indicator", true)
 -- The panel palette (⌘K) is open; what is typed in it, and the row chosen.
 M.palette = ui.state("palette", false)
 M.palette_query = ui.state("palette_query", "")

@@ -128,6 +128,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opened.publish(host.shared("opened", Value::Nil));
             let taken = opened.clone();
             host.action("take_opened", move |_| taken.take());
+            host.function("session_alive", |id| {
+                Value::Bool(matches!(id, Value::Str(id) if session::exists(&id)))
+            });
             host.action("end_session", |id| {
                 if let Value::Str(id) = id {
                     session::kill(&id);

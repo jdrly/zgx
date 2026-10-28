@@ -5,6 +5,7 @@ local sessions = require("./sessions")
 local actions = require("./actions")
 local palette = require("@components/palette")
 local layout = require("@lib/layout")
+local broadcast = require("./broadcast")
 
 local active, zoom = state.active, state.zoom
 local current = actions.current
@@ -87,6 +88,45 @@ function M.declare()
 	command("close_tab", "Close Tab", "Shell", "cmd+alt+w", function()
 		actions.close_tab(active:peek())
 	end)
+	-- Broadcast Input, as iTerm2's, with its keys (broadcast.luau).
+	ui.command { menu = "Shell", separator = true }
+	local function broadcasting(id: string, title: string, key: string?, run: () -> (), checked: () -> boolean)
+		ui.command {
+			id = id,
+			title = title,
+			menu = "Shell",
+			submenu = "Broadcast Input",
+			key = key,
+			checked = checked,
+			run = run,
+		}
+	end
+	local checked = broadcast.checked
+	broadcasting("broadcast_off", "Send Input to Current Session Only", "cmd+alt+shift+i", broadcast.only, checked.only)
+	broadcasting("broadcast_all", "Broadcast Input to All Panes in All Tabs", "cmd+shift+i", broadcast.all, checked.all)
+	broadcasting(
+		"broadcast_tab",
+		"Broadcast Input to All Panes in Current Tab",
+		"cmd+alt+i",
+		broadcast.tab,
+		checked.tab
+	)
+	broadcasting(
+		"broadcast_pane",
+		"Toggle Broadcast Input to Current Session",
+		"cmd+ctrl+alt+shift+i",
+		broadcast.toggle_current,
+		checked.current
+	)
+	ui.command { menu = "Shell", submenu = "Broadcast Input", separator = true }
+	broadcasting("broadcast_indicator", "Show Broadcast Indicator", nil, broadcast.toggle_indicator, checked.indicator)
+	broadcasting(
+		"broadcast_source",
+		"Current Session is Broadcast Source",
+		nil,
+		broadcast.toggle_source,
+		checked.source
+	)
 
 	command("copy", "Copy", "Edit", "cmd+c", binding("copy_to_clipboard"))
 	command("paste", "Paste", "Edit", "cmd+v", binding("paste_from_clipboard"))

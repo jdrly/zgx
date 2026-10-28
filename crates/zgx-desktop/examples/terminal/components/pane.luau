@@ -12,8 +12,11 @@ local panel = require("./panel")
 local palette = require("./palette")
 local tabs = require("./tabs")
 local layout = require("@lib/layout")
+local broadcast = require("../broadcast")
 
 local focus, zoom, drop, dragging = state.focus, state.zoom, state.drop, state.dragging
+-- Broadcast input's stripes: the accent (terminal.broadcast), faint.
+local BROADCAST_STRIPE = "#ff9f0a1f"
 
 -- The terminal, filling the card (zgx gives it the card's size; the
 -- desktop host hands Ghostty a size that keeps changing a few times a second).
@@ -75,6 +78,24 @@ local function terminal_view(term: Term, pane: string, tab: string, inner: () ->
 					end)
 				)
 				return items
+			end,
+		},
+		-- Broadcast input reaches it (broadcast.luau): stripes over the
+		-- terminal, as iTerm2's pattern, letting the pointer through.
+		ui.canvas {
+			absolute = true,
+			left = 0,
+			top = 0,
+			right = 0,
+			bottom = 0,
+			pointer_events = "none",
+			hidden = function()
+				return not broadcast.shown(pane)
+			end,
+			draw = function(c, w, h)
+				for x = -h, w, 28 do
+					c:line(x, h, x + h, 0, BROADCAST_STRIPE, 8)
+				end
 			end,
 		},
 	}
@@ -189,6 +210,9 @@ return ui.component(function(props: Props)
 		border_color = function()
 			if moving() then
 				return "$terminal.moving"
+			end
+			if broadcast.shown(pane) then
+				return "$terminal.broadcast"
 			end
 			return if several() and focused() then theme.ring else theme.line
 		end,

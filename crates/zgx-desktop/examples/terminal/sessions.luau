@@ -63,8 +63,16 @@ function M.session(pane: string): Term?
 	return ui.term(pane, {
 		cwd = cwd,
 		command = if attach ~= "" then `{attach} --attach {quote(pane)} --cwd {quote(cwd)}` else nil,
+		-- `exit` closes the pane, with no key to press after.
+		close_on_exit = true,
 		-- The process exited (no question), or a close binding asked.
 		on_close = function(alive)
+			-- Its terminal ended but not its shell (the app quitting ends
+			-- every pane's client): the pane and the shell stay, for the next
+			-- launch to attach to.
+			if not alive and attach ~= "" and ui.call_sync("session_alive", pane) then
+				return
+			end
 			M.close_pane(pane, not alive)
 		end,
 	})

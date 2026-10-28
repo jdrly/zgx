@@ -132,6 +132,11 @@ fn request(kind: u8, body: serde_json::Value) -> Option<serde_json::Value> {
     (reply == REPLY).then(|| serde_json::from_slice(&payload).ok())?
 }
 
+/// Whether session `id`'s shell still runs: its pane's terminal ended with
+/// it (`exit`), or ended alone (the app quitting, the client gone).
+pub fn exists(id: &str) -> bool {
+    request(INFO, serde_json::json!({ "id": id })).is_some_and(|info| info["exists"] == true)
+}
 /// End session `id` (its pane closed).
 pub fn kill(id: &str) {
     request(KILL, serde_json::json!({ "id": id }));

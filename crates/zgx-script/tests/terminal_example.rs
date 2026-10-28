@@ -75,15 +75,12 @@ impl App {
             wrap,
         );
         assert_eq!(h.host.error().get(), None);
-        let mut app = Self {
+        Self {
             h,
             actions,
             saved,
             pointer: (0., 0.),
-        };
-        // The test window is 400 points wide: panes get all of it.
-        app.run("toggle_sidebar");
-        app
+        }
     }
     /// ⌘K, then the palette's row for `kind`, chosen by its title as typed
     /// and Return.
@@ -581,7 +578,7 @@ fn a_browser_pane_opens_beside_with_its_address_bar_focused_and_closes() {
 fn resizing_the_window_moves_the_panes_without_running_script() {
     // The panes' frames are percentages and points zgx resolves itself:
     // the script works them out when the split changes, not when the area
-    // does (a window drag, the sidebar easing open).
+    // does (a window drag).
     let mut app = App::new();
     app.run("split_right");
     app.run("split_down");
@@ -603,62 +600,6 @@ fn resizing_the_window_moves_the_panes_without_running_script() {
         (after[0].width - after[1].width).abs() < 2. && after[1].x > after[0].x + after[0].width,
         "{after:?}"
     );
-}
-
-#[test]
-fn agents_in_tabs_not_shown_are_listed_and_a_click_opens_their_tab() {
-    // Two tabs, the second shown; an agent works in the first, which no
-    // window shows: the session server reports it all the same.
-    let layout = Value::from_json(
-        r#"{"version":1,"active":"t3","next_id":7,"kinds":[],"pages":[],"zoom":[],"ratios":{},
-            "focus":{"t1":"p6","t3":"p4"},"dirs":{},
-            "tabs":[{"id":"t1","root":{"id":"s5","kind":"split","axis":"row",
-                        "a":{"id":"p2","kind":"pane"},"b":{"id":"p6","kind":"pane"}}},
-                    {"id":"t3","root":{"id":"p4","kind":"pane"}}]}"#,
-    )
-    .unwrap();
-    let mut app = App::with_saved(layout);
-    app.run("toggle_sidebar");
-    assert_eq!(app.panes().len(), 1, "the second tab, one pane");
-    let agents = app.h.host.shared("agents", Value::Nil);
-    agents.set(
-        Value::from_json(
-            r#"{"sessions":{
-                "p2":{"process":"claude","idle":false,"title":"◐ Fix the build",
-                      "pwd":"file:///Users/someone/zgx",
-                      "status":{"state":"working","since_ms":1000,"reported":false}},
-                "p4":{"process":"zsh","idle":true,"title":"","pwd":"file:///Users/someone",
-                      "status":{"state":"idle","since_ms":1000,"reported":false}}}}"#,
-        )
-        .unwrap(),
-    );
-    app.settle();
-    let texts = app.texts();
-    assert!(texts.iter().any(|t| t == "Fix the build"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "Working · zgx"), "{texts:?}");
-    assert!(app.h.find("agent:p4").is_none(), "a shell is no agent");
-    // Its row opens its tab, with its pane focused.
-    app.h.click("agent:p2");
-    app.settle();
-    assert_eq!(app.panes().len(), 2, "the first tab, two panes");
-    assert_eq!(app.h.host.error().get(), None);
-}
-
-#[test]
-fn the_agents_sidebar_opens_beside_the_panes() {
-    let mut app = App::new();
-    let wide = app.panes();
-    assert!(!app.texts().iter().any(|t| t == "Agents"));
-    app.run("toggle_sidebar");
-    let texts = app.texts();
-    assert!(texts.iter().any(|t| t == "Agents"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "No agents running"), "{texts:?}");
-    let narrow = app.panes();
-    assert!(
-        narrow[0].x >= wide[0].x + 200. && narrow[0].width < wide[0].width - 200.,
-        "{wide:?} -> {narrow:?}"
-    );
-    assert_eq!(app.h.host.error().get(), None);
 }
 
 #[test]
@@ -701,6 +642,103 @@ impl App {
             })
             .collect()
     }
+}
+
+#[test]
+fn typing_exit_closes_the_pane_with_no_key_to_press() {
+    let mut app = App::new();
+    app.run("split_right");
+    let terms = app.terminals();
+    assert_eq!(terms.len(), 2);
+    assert!(terms.iter().all(|t| t.options().close_on_exit));
+}
+
+#[test]
+fn a_pane_whose_shell_runs_on_stays_when_its_terminal_ends() {
+    // Quitting ends every pane's client while its shell runs on in the
+    // session server: the pane and the shell stay for the next launch.
+    // Once the shell has ended (`exit`), the pane closes.
+    let alive = Rc::new(std::cell::Cell::new(true));
+    let answer = alive.clone();
+    let mut app = App::with_host(Value::Nil, move |host| {
+        host.shared("attach", "zterm");
+        host.function("session_alive", move |_| Value::Bool(answer.get()));
+    });
+    app.run("split_right");
+    let ended = |app: &mut App| {
+        app.terminals()[0].emit(zgx::terminal::TerminalEvent::CloseRequested {
+            process_alive: false,
+        });
+        app.settle();
+    };
+    ended(&mut app);
+    assert_eq!(app.terminals().len(), 2);
+    assert!(
+        !app.actions
+            .borrow()
+            .iter()
+            .any(|a| a.starts_with("end_session"))
+    );
+    alive.set(false);
+    ended(&mut app);
+    assert_eq!(app.terminals().len(), 1);
+    assert_eq!(app.h.host.error().get(), None);
+}
+
+#[test]
+fn broadcast_input_reaches_the_panes_its_menu_picks() {
+    // Two panes in the first tab, one in a second; the first shown.
+    let mut app = App::new();
+    app.run("split_right");
+    app.run("new_tab");
+    app.run("previous_tab");
+    let shown: Vec<u64> = app.terminals().iter().map(|t| t.id()).collect();
+    assert_eq!(shown.len(), 2);
+    let members = || {
+        let mut m = zgx::terminal::broadcast().members;
+        m.sort();
+        m
+    };
+    let checked = |app: &App, id: &str| {
+        app.h
+            .host
+            .commands()
+            .get()
+            .into_iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.checked)
+    };
+    assert!(members().is_empty());
+    assert_eq!(checked(&app, "broadcast_off"), Some(true));
+    // Every pane of every tab, and again to stop.
+    app.run("broadcast_all");
+    assert_eq!(members().len(), 3);
+    assert_eq!(checked(&app, "broadcast_all"), Some(true));
+    assert_eq!(checked(&app, "broadcast_off"), Some(false));
+    app.run("broadcast_all");
+    assert!(members().is_empty());
+    // The shown tab's panes.
+    app.run("broadcast_tab");
+    let mut tab = shown.clone();
+    tab.sort();
+    assert_eq!(members(), tab);
+    assert_eq!(checked(&app, "broadcast_tab"), Some(true));
+    // The focused pane leaves; the other stays.
+    app.run("broadcast_pane");
+    assert_eq!(members().len(), 1);
+    assert!(tab.contains(&members()[0]));
+    // ...and joins again, now the only one whose keys go to the rest.
+    app.run("broadcast_pane");
+    assert_eq!(members(), tab);
+    app.run("broadcast_source");
+    assert_eq!(checked(&app, "broadcast_source"), Some(true));
+    let source = zgx::terminal::broadcast().source;
+    assert!(source.is_some_and(|source| tab.contains(&source)));
+    // Back to the focused pane alone.
+    app.run("broadcast_off");
+    assert!(members().is_empty());
+    assert_eq!(checked(&app, "broadcast_off"), Some(true));
+    assert_eq!(app.h.host.error().get(), None);
 }
 
 #[test]

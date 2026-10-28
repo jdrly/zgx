@@ -75,6 +75,8 @@
 		"terminal.grip.shadow": "0 2 8 0 #00000033",
 		"terminal.grip.dot": "#ffffff99",
 		"terminal.moving": "#ffffff59",
+		// A pane broadcast input reaches (broadcast.luau).
+		"terminal.broadcast": "#ff9f0acc",
 		"terminal.footer": "#ffffff05",
 		"terminal.field.bg": "#ffffff0b",
 		"terminal.field.line": "#ffffff0a",
