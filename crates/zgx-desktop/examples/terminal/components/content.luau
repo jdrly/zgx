@@ -9,6 +9,19 @@ local Divider = require("./divider")
 
 local active, drop = state.active, state.drop
 
+type Placed = { id: string, tab: string }
+-- Each mounted pane with the tab it is in, so one that changes tab is built
+-- again: a tab dropped beside a pane shows its pane here before the drop,
+-- while it is still the other tab's, and the drop changes no pane shown.
+local placed = ui.computed(function(): { Placed }
+	local _ = state.tabs:get()
+	local out: { Placed } = {}
+	for _, id in frames.mounted_ids:get() do
+		table.insert(out, { id = id, tab = actions.tab_of(id) or "" })
+	end
+	return out
+end)
+
 return function(): Node
 	return ui.div {
 		grow = 1,
@@ -50,12 +63,12 @@ return function(): Node
 			drop:set {}
 			frames.commit_drop(d)
 		end,
-		ui.each(frames.mounted_ids, function(id: string)
-			return Pane { pane = id }
+		ui.each(placed, function(item: Placed)
+			return Pane { pane = item.id }
 		end, {
 			-- A pane moved to another tab is built again there.
-			key = function(id: string)
-				return `{id}@{actions.tab_of(id) or ""}`
+			key = function(item: Placed)
+				return `{item.id}@{item.tab}`
 			end,
 		}),
 		ui.each(frames.divider_ids, function(id: string)

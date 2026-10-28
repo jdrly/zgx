@@ -1714,6 +1714,57 @@ fn a_pane_that_joined_from_another_tab_takes_focus_when_clicked() {
 }
 
 #[test]
+fn a_tab_dropped_beside_a_pane_takes_focus_there_when_clicked() {
+    // ⌘T, then the new tab dragged onto the first and dropped beside its
+    // pane: the pane that came takes the focus (its ring, ⌘W) when clicked.
+    use std::time::{Duration, Instant};
+    let mut app = App::new();
+    app.run("new_tab");
+    let came = app.terminals()[0].id();
+    let strip = app.tab_names();
+    let (first, second) = (strip[0], strip[1]);
+    app.drag(
+        (second.x + 4., second.y + second.height / 2.),
+        (first.x + 4., first.y + first.height / 2.),
+    );
+    app.h
+        .ui
+        .advance_interactions(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        app.wait_until(|app| app.panes().len() == 1),
+        "the first tab shows"
+    );
+    let pane = app.panes()[0];
+    let beside = (pane.x + pane.width - 10., pane.y + pane.height / 2.);
+    app.drag_to(beside);
+    app.release(beside);
+    assert_eq!(app.panes().len(), 2, "its pane beside the first tab's");
+    assert_eq!(app.tab_names().len(), 1);
+    app.h.ui.prepare_frame();
+    let node = app
+        .h
+        .natives
+        .nodes()
+        .into_iter()
+        .find(|n| {
+            matches!(app.h.natives.content(*n),
+                Some(zgx::native_view::NativeContent::Terminal(t)) if t.id() == came)
+        })
+        .expect("the pane that came is shown");
+    app.h.ui.input.focus(&app.h.ui.scene, Some(node));
+    app.settle();
+    app.run("close_pane");
+    let open: Vec<u64> = app.terminals().iter().map(|t| t.id()).collect();
+    assert_eq!(open.len(), 1);
+    assert!(
+        !open.contains(&came),
+        "⌘W closed another pane than the clicked one"
+    );
+    assert_eq!(app.h.host.error().get(), None);
+}
+
+#[test]
 fn a_dragged_tabs_panel_shows_as_the_window_last_showed_it() {
     let mut app = with_notes("enabled");
     app.open_panel("panel:notes/notes");
