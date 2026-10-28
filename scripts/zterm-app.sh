@@ -3,7 +3,9 @@
 # compiled in (terminal-bundle), and install it: ./scripts/zterm-app.sh [destination]
 # (default /Applications). Needs Zig 0.16 for Ghostty (see
 # crates/zgx-ghostty-sys). ZTERM_DEFAULTS=1 also makes it what opens shell
-# scripts and ssh:// links (scripts/zterm-defaults.swift).
+# scripts and ssh:// links (scripts/zterm-defaults.swift); ZTERM_REGISTER=0
+# leaves it unregistered with Launch Services and Spotlight (a copy to ship,
+# scripts/zterm-release.sh).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 dest=${1:-/Applications}
@@ -130,10 +132,13 @@ plutil -lint "$staging/Contents/Info.plist" >/dev/null
 # shells reading ~/Documents, say) across rebuilds; an ad-hoc signature
 # changes every build, so each install would be a new app to it and asking
 # again, or refusing. ZTERM_SIGN_IDENTITY picks one; else the first valid
-# Apple Development or Developer ID identity, else ad-hoc.
+# Apple Development or Developer ID identity, else ad-hoc. With the hardened
+# runtime and a timestamp, as notarization asks (scripts/zterm.entitlements).
 identity=${ZTERM_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null |
   grep -E '"(Apple Development|Developer ID Application)' | grep -v CSSMERR | head -1 | awk '{print $2}')}
-if [ -n "$identity" ] && codesign --force --deep --sign "$identity" "$staging" >/dev/null 2>&1; then
+sign() { codesign --force --timestamp --options runtime --sign "$identity" "$@"; }
+if [ -n "$identity" ] && sign "$staging/Contents/MacOS/ghostty" &&
+  sign --entitlements scripts/zterm.entitlements "$staging"; then
   echo "signed with $identity"
 else
   codesign --force --deep --sign - "$staging" >/dev/null 2>&1 || true
@@ -144,8 +149,10 @@ fi
 # earlier name (zterm.app) goes: the same path on a case-insensitive disk.
 rm -rf "$dest/zterm.app" "$app"
 mv "$staging" "$app"
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
-mdimport "$app" 2>/dev/null || true
+if [ "${ZTERM_REGISTER:-1}" = 1 ]; then
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
+  mdimport "$app" 2>/dev/null || true
+fi
 echo "installed $app"
 if [ "${ZTERM_DEFAULTS:-0}" = 1 ]; then
   swift scripts/zterm-defaults.swift "$app"
