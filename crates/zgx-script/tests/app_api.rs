@@ -72,6 +72,51 @@ fn a_failed_load_keeps_the_published_commands() {
 }
 
 #[test]
+fn commands_nest_in_submenus_and_their_check_marks_follow_state() {
+    let mut h = Harness::inline(
+        r##"local mode = ui.state("mode", "off")
+        local function pick(name)
+            return function() mode:set(name) end
+        end
+        ui.command { id = "off", title = "Off", menu = "Shell", submenu = "Broadcast",
+            checked = function() return mode:get() == "off" end, run = pick("off") }
+        ui.command { id = "all", title = "All", menu = "Shell", submenu = "Broadcast",
+            checked = function() return mode:get() == "all" end, run = pick("all") }
+        ui.command { id = "pin", title = "Pinned", menu = "View", checked = true, run = function() end }
+        ui.command { id = "plain", title = "Plain", menu = "View", run = function() end }
+        return ui.text { "{mode}", id = "mode" }"##,
+    );
+    let shown = |h: &Harness| -> Vec<(String, Option<String>, Option<bool>)> {
+        h.host
+            .commands()
+            .get()
+            .into_iter()
+            .map(|c| (c.id, c.submenu, c.checked))
+            .collect()
+    };
+    let broadcast = Some("Broadcast".to_string());
+    assert_eq!(
+        shown(&h),
+        vec![
+            ("off".into(), broadcast.clone(), Some(true)),
+            ("all".into(), broadcast.clone(), Some(false)),
+            ("pin".into(), None, Some(true)),
+            ("plain".into(), None, None),
+        ]
+    );
+    assert!(h.host.run_command("all"));
+    h.settle();
+    assert_eq!(h.text("mode"), "all");
+    assert_eq!(
+        shown(&h)[..2],
+        [
+            ("off".into(), broadcast.clone(), Some(false)),
+            ("all".into(), broadcast, Some(true)),
+        ]
+    );
+}
+
+#[test]
 fn scripts_invoke_host_actions() {
     let runtime = zgx::reactive::Runtime::new();
     let host = ScriptHost::inline(
@@ -146,6 +191,67 @@ fn options_after_a_lookup_still_say_how_the_session_starts() {
     term.attach(std::rc::Rc::new(NoBackend));
     assert!(!term.set_options(zgx::terminal::TerminalOptions::default()));
     assert_eq!(term.options().command.as_deref(), Some("attach p1"));
+}
+#[test]
+fn a_terminal_may_close_as_its_process_ends() {
+    let mut h = Harness::inline(
+        r##"local term = ui.term("p1", { command = "attach p1", close_on_exit = true })
+        return ui.terminal { term = term, w = 200, h = 100 }"##,
+    );
+    assert!(terminal(&mut h).options().close_on_exit);
+    // A command waits for a key after it ends unless told to close.
+    let mut h = Harness::inline(
+        r##"return ui.terminal { term = ui.term("p2", { command = "make" }), w = 200, h = 100 }"##,
+    );
+    assert!(!terminal(&mut h).options().close_on_exit);
+}
+#[test]
+fn scripts_broadcast_keyboard_input_between_terminals() {
+    let h = Harness::inline(
+        r##"local a, b, c = ui.term("a", { command = "a" }), ui.term("b", { command = "b" }), ui.term("c", { command = "c" })
+        local mode = ui.state("mode", "all")
+        ui.effect(function()
+            local m = mode:get()
+            if m == "all" then
+                ui.broadcast_input({ a, b, c })
+            elseif m == "source" then
+                ui.broadcast_input({ a, b }, a)
+            else
+                ui.broadcast_input({})
+            end
+        end)
+        ui.command { id = "source", run = function() mode:set("source") end }
+        ui.command { id = "off", run = function() mode:set("off") end }
+        return ui.row {
+            ui.terminal { term = a, w = 50, h = 50 },
+            ui.terminal { term = b, w = 50, h = 50 },
+            ui.terminal { term = c, w = 50, h = 50 },
+        }"##,
+    );
+    h.ui.prepare_frame();
+    let ids: Vec<u64> = h
+        .natives
+        .nodes()
+        .into_iter()
+        .filter_map(|node| match h.natives.content(node) {
+            Some(NativeContent::Terminal(term)) => Some(term.id()),
+            _ => None,
+        })
+        .collect();
+    let [a, b, c] = ids[..] else {
+        panic!("three terminals: {ids:?}")
+    };
+    assert_eq!(zgx::terminal::broadcast_to(a), [b, c]);
+    h.host.run_command("source");
+    h.settle();
+    assert_eq!(zgx::terminal::broadcast_to(a), [b]);
+    assert!(
+        zgx::terminal::broadcast_to(b).is_empty(),
+        "only the source sends"
+    );
+    h.host.run_command("off");
+    h.settle();
+    assert!(zgx::terminal::broadcast_to(a).is_empty());
 }
 #[test]
 fn reading_a_terminal_field_follows_that_field_alone() {

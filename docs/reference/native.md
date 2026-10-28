@@ -54,6 +54,7 @@ A `Web` controller's `url`, `title`, `loading`, `progress`, `can_go_back`, `can_
 | `cwd` | `string` | home | where it starts; `"~"` is home |
 | `env` | `{ [string]: string }` | none | added to the environment |
 | `font_size` | `number` | Ghostty's | points |
+| `close_on_exit` | `boolean` | `false` | asks to close (`on_close`) as its process ends, as a shell typed `exit` into does; otherwise a `command` stays, saying it ended, until a key closes it |
 | `on_title` | `(title: string) -> ()` | none | the program set its title (OSC 0/2) |
 | `on_pwd` | `(pwd: string) -> ()` | none | the shell reported its directory (OSC 7) |
 | `on_process` | `(name: string) -> ()` | none | the foreground program changed |

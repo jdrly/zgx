@@ -67,6 +67,11 @@ keybind = super+ctrl+arrow_down=unbind
 keybind = super+ctrl+arrow_left=unbind
 keybind = super+ctrl+arrow_right=unbind
 keybind = super+ctrl+equal=unbind
+# Broadcast input's (iTerm2's keys): Ghostty's inspector has ⌥⌘I.
+keybind = super+alt+i=unbind
+keybind = super+shift+i=unbind
+keybind = super+alt+shift+i=unbind
+keybind = super+ctrl+alt+shift+i=unbind
 keybind = super+one=unbind
 keybind = super+two=unbind
 keybind = super+three=unbind
@@ -168,6 +173,15 @@ thread_local! {
     static SURFACES: RefCell<HashMap<usize, Retained<TerminalView>>> = RefCell::new(HashMap::new());
 }
 static TICK_PENDING: AtomicBool = AtomicBool::new(false);
+/// Surfaces that close as their process ends (`TerminalOptions::close_on_exit`),
+/// by address: Ghostty asks about one from its own thread.
+static CLOSE_ON_EXIT: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+fn closes_on_exit(surface: usize) -> bool {
+    CLOSE_ON_EXIT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&surface)
+}
 
 fn app() -> Option<g::ghostty_app_t> {
     APP.with(|cell| cell.get_or_init(App::new).as_ref().map(|app| app.app))
@@ -395,12 +409,20 @@ extern "C" fn action(
         g::GHOSTTY_ACTION_SHOW_CHILD_EXITED => {
             // SAFETY: SHOW_CHILD_EXITED's member, plain integers.
             let code = unsafe { payload.child_exited }.exit_code as i32;
+            let close = closes_on_exit(surface);
             deliver(surface, move |term| {
                 term.update_state(|state| state.exited = Some(code));
                 term.emit(TerminalEvent::Exited { code });
+                if close {
+                    term.emit(TerminalEvent::CloseRequested {
+                        process_alive: false,
+                    });
+                }
             });
-            // Ghostty's own "process exited" notice stays.
-            false
+            // Ghostty's own "process exited" notice stays, and its key to
+            // close, unless the terminal closes at once: handled, Ghostty
+            // shows nothing.
+            close
         }
         g::GHOSTTY_ACTION_OPEN_URL => {
             // SAFETY: OPEN_URL's member.
@@ -1792,9 +1814,46 @@ impl TerminalView {
             Some(text) => {
                 let text = CString::new(text).unwrap_or_default();
                 key.text = text.as_ptr();
-                unsafe { g::ghostty_surface_key(surface, key) }
+                let consumed = unsafe { g::ghostty_surface_key(surface, key) };
+                self.broadcast_key(key);
+                consumed
             }
-            None => unsafe { g::ghostty_surface_key(surface, key) },
+            None => {
+                let consumed = unsafe { g::ghostty_surface_key(surface, key) };
+                self.broadcast_key(key);
+                consumed
+            }
+        }
+    }
+    /// The same key to the terminals broadcast input reaches from this one
+    /// (`zgx::terminal::set_broadcast`): each encodes it for its own program.
+    fn broadcast_key(&self, key: g::ghostty_input_key_s) {
+        let Some(from) = self.ivars().term.upgrade().map(|term| term.id()) else {
+            return;
+        };
+        let targets = zgx::terminal::broadcast_to(from);
+        if targets.is_empty() {
+            return;
+        }
+        let surfaces: Vec<g::ghostty_surface_t> = SURFACES.with(|surfaces| {
+            surfaces
+                .borrow()
+                .values()
+                .filter(|view| {
+                    view.ivars()
+                        .term
+                        .upgrade()
+                        .is_some_and(|term| targets.contains(&term.id()))
+                })
+                .map(|view| view.ivars().surface.get())
+                .filter(|surface| !surface.is_null())
+                .collect()
+        });
+        for surface in surfaces {
+            // SAFETY: non-null, so live (`free` nulls it before freeing);
+            // main thread. `key.text` is null or the caller's `CString`,
+            // alive past the call.
+            unsafe { g::ghostty_surface_key(surface, key) };
         }
     }
     /// Committed IME text (or dictation): typed input, never a paste.
@@ -1816,6 +1875,7 @@ impl TerminalView {
         // SAFETY: non-null, so live (`free` nulls it first); main thread.
         // `key.text` is a NUL-terminated `CString` alive past the call.
         unsafe { g::ghostty_surface_key(surface, key) };
+        self.broadcast_key(key);
     }
     fn sync_preedit(&self, clear_if_needed: bool) {
         let surface = self.ivars().surface.get();
@@ -2082,6 +2142,12 @@ impl MacTerminal {
         }
         view.ivars().surface.set(surface);
         SURFACES.with(|surfaces| surfaces.borrow_mut().insert(surface as usize, view.clone()));
+        if options.close_on_exit {
+            CLOSE_ON_EXIT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(surface as usize);
+        }
         // SAFETY: just made, live; main thread.
         unsafe { g::ghostty_surface_set_focus(surface, false) };
         refresh_process(surface as usize);
@@ -2101,6 +2167,10 @@ impl MacTerminal {
             return;
         }
         SURFACES.with(|surfaces| surfaces.borrow_mut().remove(&(surface as usize)));
+        CLOSE_ON_EXIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|s| *s != surface as usize);
         self.view.removeFromSuperview();
         // SAFETY: Ghostty's surface, freed once: the view's pointer is null
         // and the address out of `SURFACES` first, so nothing reaches it

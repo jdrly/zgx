@@ -47,6 +47,12 @@ pub struct TerminalOptions {
     pub env: Vec<(String, String)>,
     /// Points; `None` uses the configured size.
     pub font_size: Option<f32>,
+    /// When its process ends, it asks to close at once
+    /// ([`TerminalEvent::CloseRequested`]), as a shell typed `exit` into
+    /// does. Otherwise a `command` stays, saying it ended, until a key
+    /// closes it (Ghostty's `wait-after-command`, which an embedded
+    /// surface given a command turns on).
+    pub close_on_exit: bool,
 }
 
 /// A terminal session's state, kept by the controller.
@@ -495,4 +501,63 @@ impl Drop for Inner {
 /// grow), round it, clip it, move and fade it.
 pub fn terminal(term: &Terminal) -> View {
     crate::web_view::native_view(NativeContent::Terminal(term.clone()))
+}
+
+/// Keyboard input mirrored across terminals, as iTerm2's Broadcast Input: a
+/// key typed into one of `members` goes to every member, each encoding it
+/// for its own program (its keyboard modes, its keypad). What a terminal
+/// answers its program (a cursor position, a colour) stays its own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Broadcast {
+    /// The terminals ([`Terminal::id`]) that hear each other's keys; none
+    /// is no broadcast.
+    pub members: Vec<u64>,
+    /// The one member whose keys go to the rest; `None`, every member's.
+    pub source: Option<u64>,
+}
+thread_local! {
+    static BROADCAST: RefCell<Broadcast> = RefCell::default();
+}
+/// Mirror keyboard input as `broadcast` says, from now on.
+pub fn set_broadcast(broadcast: Broadcast) {
+    BROADCAST.with(|b| *b.borrow_mut() = broadcast);
+}
+/// The broadcast now.
+pub fn broadcast() -> Broadcast {
+    BROADCAST.with(|b| b.borrow().clone())
+}
+/// The terminals a key typed into terminal `from` also goes to: the other
+/// members, when it is one and may send.
+pub fn broadcast_to(from: u64) -> Vec<u64> {
+    BROADCAST.with(|b| {
+        let b = b.borrow();
+        let sends = b.members.contains(&from) && b.source.is_none_or(|source| source == from);
+        if !sends {
+            return Vec::new();
+        }
+        b.members.iter().copied().filter(|m| *m != from).collect()
+    })
+}
+
+#[cfg(test)]
+mod broadcast_tests {
+    use super::*;
+
+    #[test]
+    fn keys_reach_the_other_members_from_any_member_or_only_the_source() {
+        set_broadcast(Broadcast {
+            members: vec![1, 2, 3],
+            source: None,
+        });
+        assert_eq!(broadcast_to(2), [1, 3]);
+        assert_eq!(broadcast_to(9), [] as [u64; 0], "not a member");
+        set_broadcast(Broadcast {
+            members: vec![1, 2, 3],
+            source: Some(1),
+        });
+        assert_eq!(broadcast_to(1), [2, 3]);
+        assert_eq!(broadcast_to(2), [] as [u64; 0], "only the source sends");
+        set_broadcast(Broadcast::default());
+        assert_eq!(broadcast_to(1), [] as [u64; 0]);
+    }
 }

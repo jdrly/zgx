@@ -886,6 +886,8 @@ export type TermOptions = {
 	cwd: string?,
 	env: { [string]: string }?,
 	font_size: number?,
+	-- Asks to close (on_close) as its process ends; else a command waits for a key.
+	close_on_exit: boolean?,
 	-- Handlers (the latest run's are called).
 	on_title: ((title: string) -> ...unknown)?,
 	on_pwd: ((pwd: string) -> ...unknown)?,
@@ -911,8 +913,12 @@ export type CommandOptions = {
 	title: string?,
 	-- "File" (the default), "Edit", "View", "Window" or any other menu.
 	menu: string?,
+	-- A menu nested in `menu`, where the first command naming it is.
+	submenu: string?,
 	-- Modifiers and a key joined by "+": "cmd+shift+d", "cmd+alt+arrowleft".
 	key: string?,
+	-- A check mark: fixed, or a function kept current as what it reads changes.
+	checked: (boolean | () -> boolean)?,
 	run: (() -> ...unknown)?,
 	-- A separator line in `menu` instead of a command.
 	separator: boolean?,
@@ -2262,6 +2268,9 @@ declare ui: {
 	-- The session for `id`, started the first time; `ui.term(id)` without
 	-- options only looks it up.
 	term: (id: string, opts: TermOptions?) -> Term,
+	-- What is typed into one of `terms` goes to all of them, each encoding
+	-- it for its own program (only `source`'s keys, given one); `{}` stops.
+	broadcast_input: (terms: { Term }, source: Term?) -> (),
 	command: (opts: CommandOptions) -> (),
 	-- Keys ("cmd+shift+z") as this platform shows them: "⇧⌘Z" on macOS,
 	-- "Ctrl+Shift+Z" elsewhere (`cmd` is Command on macOS, Control

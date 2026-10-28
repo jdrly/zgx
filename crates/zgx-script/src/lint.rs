@@ -130,6 +130,7 @@ const NOT_ELEMENTS: &[&str] = &[
     "loop",
     "web",
     "term",
+    "broadcast_input",
     "command",
     "on_mount",
     "null",

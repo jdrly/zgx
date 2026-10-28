@@ -189,6 +189,7 @@ fn options(opts: &Table) -> mlua::Result<TerminalOptions> {
         working_directory,
         env,
         font_size: opts.get::<Option<f32>>("font_size")?,
+        close_on_exit: opts.get::<Option<bool>>("close_on_exit")?.unwrap_or(false),
     })
 }
 
@@ -365,16 +366,41 @@ impl UserData for TermUd {
     }
 }
 
-/// Installs `ui.term`.
+/// Installs `ui.term`, and `ui.broadcast_input`.
 pub(crate) fn install(lua: &Lua, ui: &Table, terms: Rc<Terms>) -> mlua::Result<()> {
+    // `ui.broadcast_input(terms, source?)`: what is typed into one of `terms`
+    // goes to all of them (only `source`'s, given one); `{}` stops it.
+    ui.set(
+        "broadcast_input",
+        lua.create_function(
+            |lua, (members, source): (Table, Option<mlua::AnyUserData>)| {
+                crate::node::env(lua)?.may(crate::Capability::Terminals, "ui.broadcast_input")?;
+                let mut ids = Vec::new();
+                for member in members.sequence_values::<mlua::AnyUserData>() {
+                    ids.push(member?.borrow::<TermUd>()?.term.id());
+                }
+                let source = match source {
+                    Some(source) => Some(source.borrow::<TermUd>()?.term.id()),
+                    None => None,
+                };
+                zgx::terminal::set_broadcast(zgx::terminal::Broadcast {
+                    members: ids,
+                    source,
+                });
+                Ok(())
+            },
+        )?,
+    )?;
     ui.set(
         "term",
         lua.create_function(move |lua, (id, opts): (String, Option<Table>)| {
             crate::node::env(lua)?.may(crate::Capability::Terminals, "ui.term")?;
             if let Some(opts) = &opts {
                 for (key, _) in opts.clone().pairs::<String, LuaValue>().flatten() {
-                    let known = matches!(key.as_str(), "command" | "cwd" | "env" | "font_size")
-                        || HANDLERS.contains(&key.as_str());
+                    let known = matches!(
+                        key.as_str(),
+                        "command" | "cwd" | "env" | "font_size" | "close_on_exit"
+                    ) || HANDLERS.contains(&key.as_str());
                     if !known {
                         return Err(mlua::Error::runtime(format!(
                             "ui.term: unknown option `{key}`"

@@ -9,7 +9,8 @@ use zgx::input::{Key, Modifiers};
 use zgx_desktop::{AppMenu, AppMenuEntry, Application, MenuAccelerator, WindowOptions};
 use zgx_script::{Command, ScriptHost};
 
-/// Menus in the order the script first names them, items in its order.
+/// Menus in the order the script first names them, items in its order; a
+/// command's `submenu` nests in its menu where the script first names it.
 pub fn menus(commands: &[Command]) -> Vec<AppMenu> {
     let mut menus: Vec<AppMenu> = Vec::new();
     for command in commands {
@@ -23,13 +24,30 @@ pub fn menus(commands: &[Command]) -> Vec<AppMenu> {
         let entry = if command.separator {
             AppMenuEntry::Separator
         } else {
-            let item = AppMenuEntry::item(command.title.clone(), command.id.as_str());
+            let mut item = AppMenuEntry::item(command.title.clone(), command.id.as_str());
+            if let Some(checked) = command.checked {
+                item = item.checked(checked);
+            }
             match command.key.as_deref().and_then(accelerator) {
                 Some(key) => item.accelerator(key),
                 None => item,
             }
         };
-        menus[index].entries.push(entry);
+        let entries = &mut menus[index].entries;
+        let Some(name) = &command.submenu else {
+            entries.push(entry);
+            continue;
+        };
+        let at = entries
+            .iter()
+            .position(|e| matches!(e, AppMenuEntry::Submenu(m) if m.label == *name))
+            .unwrap_or_else(|| {
+                entries.push(AppMenuEntry::Submenu(AppMenu::new(name.clone(), [])));
+                entries.len() - 1
+            });
+        if let AppMenuEntry::Submenu(submenu) = &mut entries[at] {
+            submenu.entries.push(entry);
+        }
     }
     menus
 }
@@ -491,6 +509,39 @@ pub fn follow_windows(host: &ScriptHost, cx: &zgx_desktop::WindowContext) -> zgx
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn submenus_nest_where_first_named_and_items_carry_check_marks() {
+        let command = |id: &str, submenu: Option<&str>, checked: Option<bool>| Command {
+            id: id.into(),
+            title: id.into(),
+            menu: "Shell".into(),
+            key: None,
+            separator: false,
+            submenu: submenu.map(Into::into),
+            checked,
+        };
+        let menus = menus(&[
+            command("new_tab", None, None),
+            command("only", Some("Broadcast"), Some(true)),
+            command("close", None, None),
+            command("all", Some("Broadcast"), Some(false)),
+        ]);
+        let [shell] = &menus[..] else {
+            panic!("one menu: {menus:?}")
+        };
+        let label = |entry: &AppMenuEntry| match entry {
+            AppMenuEntry::Item { label, checked, .. } => format!("{label} {checked:?}"),
+            AppMenuEntry::Submenu(menu) => format!("> {}", menu.label),
+            other => format!("{other:?}"),
+        };
+        let top: Vec<String> = shell.entries.iter().map(label).collect();
+        assert_eq!(top, ["new_tab None", "> Broadcast", "close None"]);
+        let AppMenuEntry::Submenu(broadcast) = &shell.entries[1] else {
+            unreachable!()
+        };
+        let nested: Vec<String> = broadcast.entries.iter().map(label).collect();
+        assert_eq!(nested, ["only Some(true)", "all Some(false)"]);
+    }
     #[test]
     fn a_zgx_json_configures_the_window_and_rejects_what_it_does_not_know() {
         let dir = std::env::temp_dir().join(format!("zgx-run-config-{}", std::process::id()));
