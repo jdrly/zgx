@@ -4,7 +4,8 @@
 //!   system's services, when the menu bar is installed and when it is
 //!   replaced (the app's menus changed);
 //! - a shortcut pressed before the menu bar is made (it comes after the
-//!   first frame) still runs its item.
+//!   first frame) still runs its item;
+//! - each of the app's menus shows once.
 fn main() {
     #[cfg(target_os = "macos")]
     {
@@ -12,7 +13,7 @@ fn main() {
         use zgx::input::Key;
         use zgx_desktop::app_menu::{
             AppMenu, AppMenuEntry, MenuAccelerator, debug_key_before_menu_bar,
-            debug_menu_bar_services_filled,
+            debug_menu_bar_services_filled, debug_menu_bar_titles,
         };
         for install in ["installed", "replaced"] {
             assert!(
@@ -42,5 +43,20 @@ fn main() {
             "a key no item has was taken"
         );
         println!("menu_services: a shortcut before the menu bar is made runs its item");
+
+        let item = |label: &str| AppMenuEntry::item(label, label);
+        let menus = [
+            AppMenu::new("Shell", [item("New Tab")]),
+            AppMenu::new("Edit", [item("Copy")]),
+            AppMenu::new("View", [item("Zoom Pane")]),
+        ];
+        let titles = debug_menu_bar_titles(&menus).unwrap();
+        // After the application's menu, which AppKit titles itself.
+        assert_eq!(
+            titles[1..],
+            ["Shell", "Edit", "View", "Window"],
+            "{titles:?}"
+        );
+        println!("menu_services: each menu shows once");
     }
 }
