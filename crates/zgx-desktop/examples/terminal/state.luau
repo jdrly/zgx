@@ -98,7 +98,7 @@ M.broadcast_tab = ui.state("broadcast_tab", "")
 M.broadcast_panes = ui.state("broadcast_panes", {} :: { [string]: boolean })
 -- The one pane whose keys go to the rest, or "" for every member's.
 M.broadcast_source = ui.state("broadcast_source", "")
--- Broadcasting panes show stripes and an accent border.
+-- Broadcasting panes show an amber border.
 M.broadcast_indicator = ui.state("broadcast_indicator", true)
 -- The panel palette (⌘K) is open; what is typed in it, and the row chosen.
 M.palette = ui.state("palette", false)

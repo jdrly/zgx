@@ -12,8 +12,8 @@ ui.theme.tokens {
 		-- one under the pointer.
 		glass = "{pressed}",
 		glass_hover = "{hover}",
-		-- The focused pane's border, when there are several.
-		ring = "{border.strong}",
+		-- The focused pane's border, when there are several: where typing goes.
+		ring = "{accent}",
 		-- A tab's icon tiles (dimmer in a background tab) and their edge.
 		tile_bg = "{pressed}",
 		tile_dim = "{hover}",
@@ -110,6 +110,9 @@ ui.theme.tokens {
 		footer = "alpha(#ffffff, 0.02)",
 		-- A pane being moved: its edge.
 		moving = "{border.strong}",
+		-- Panes broadcast input reaches: the focused one's edge, the others'.
+		broadcast = "{warning}",
+		broadcast_dim = "{border.strong}",
 		-- Rows to choose from: ⌘K's, and the agents'.
 		row = { option_radius = 9, agent_pad_x = 10, agent_pad_y = 7, agent_gap = 10 },
 		-- Context menus: frosted panels.
